@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Homokfutam</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700;800&family=Saira:wght@400;500;600&display=swap">
+<style>
+/* Layout: full-bleed 3D canvas; HUD pinned to the corners; menus as one left-aligned glass panel over the scene. */
+:root {
+  --ink: #1b140e;
+  --glass: rgba(27, 20, 14, 0.66);
+  --glass-strong: rgba(22, 16, 11, 0.86);
+  --sand: #f2e4c9;
+  --sand-dim: #c4ad8b;
+  --flame: #ff7b2e;
+  --arc: #c86bff;
+  --line: rgba(242, 228, 201, 0.16);
+  --good: #8fe39a;
+  --bad: #ff5a4a;
+  --font-display: "Saira Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --font-body: "Saira", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; overflow: hidden; background: var(--ink); color: var(--sand);
+  font-family: var(--font-body); font-size: 15px;
+  -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+}
+#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+button { font: inherit; color: inherit; }
+button:focus-visible { outline: 2px solid var(--flame); outline-offset: 3px; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- HUD ---------- */
+#hud { position: fixed; inset: 0; pointer-events: none; }
+.hud-tl, .hud-tr {
+  position: absolute; top: calc(16px + env(safe-area-inset-top, 0px));
+  display: flex; flex-direction: column; gap: 4px;
+}
+.hud-tl { left: 20px; }
+.hud-tr { right: 20px; align-items: flex-end; }
+.lbl { font-family: var(--font-display); font-weight: 500; font-size: 12px; letter-spacing: .16em; color: var(--sand-dim); text-transform: uppercase; }
+#posBig { font-family: var(--font-display); font-weight: 800; font-size: 64px; line-height: .9; text-shadow: 0 2px 18px rgba(0,0,0,.45); }
+#posBig small { font-size: 26px; font-weight: 700; color: var(--sand-dim); margin-left: 2px; }
+#lapTxt { font-family: var(--font-display); font-weight: 700; font-size: 22px; letter-spacing: .04em; }
+.trow { display: flex; gap: 12px; align-items: baseline; justify-content: flex-end; }
+.trow b { font-family: var(--font-display); font-weight: 700; font-size: 22px; min-width: 92px; text-align: right; }
+.trow.main b { font-size: 30px; }
+#bestLapVal.fresh { color: var(--good); }
+
+.hud-speed {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 240px;
+}
+#speedVal { font-family: var(--font-display); font-weight: 800; font-size: 76px; line-height: .85; text-shadow: 0 2px 20px rgba(0,0,0,.4); }
+.speed-unit { font-family: var(--font-display); font-weight: 500; font-size: 15px; letter-spacing: .2em; color: var(--sand-dim); }
+.heat { width: 240px; display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; }
+.heat-track { height: 6px; border-radius: 3px; background: rgba(242,228,201,.18); overflow: hidden; }
+#heatFill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--arc), var(--flame)); border-radius: 3px; transition: background .2s; }
+#heatFill.over { background: var(--bad); animation: blink .35s steps(2) infinite; }
+#boostTag { font-family: var(--font-display); font-weight: 700; font-size: 12px; letter-spacing: .14em; color: var(--arc); min-width: 52px; text-align: right; }
+#boostTag.off { color: var(--bad); }
+@keyframes blink { 50% { opacity: .35; } }
+
+#minimap {
+  position: absolute; left: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  width: 170px; height: 170px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(27,20,14,.55), rgba(27,20,14,.25) 70%, transparent 72%);
+}
+#center {
+  position: absolute; left: 0; right: 0; top: 30%; text-align: center;
+  font-family: var(--font-display); font-weight: 800; font-size: 120px; line-height: 1;
+  text-shadow: 0 4px 30px rgba(0,0,0,.5); letter-spacing: .02em;
+}
+#center.go { color: var(--flame); }
+#center small { display: block; font-size: 22px; font-weight: 600; letter-spacing: .18em; color: var(--sand); margin-top: 10px; }
+#toast {
+  position: absolute; left: 50%; top: 20%; transform: translateX(-50%);
+  font-family: var(--font-display); font-weight: 700; font-size: 26px; letter-spacing: .12em;
+  padding: 6px 18px; border-radius: 4px; background: var(--glass); white-space: nowrap;
+}
+#toast.warn { color: var(--bad); }
+
+/* ---------- Touch controls ---------- */
+#touch { position: fixed; inset: auto 0 0 0; height: 0; pointer-events: none; }
+.tbtn {
+  position: fixed; bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  width: 74px; height: 74px; border-radius: 50%; border: 1px solid var(--line);
+  background: rgba(27,20,14,.42); color: var(--sand); pointer-events: auto;
+  font-family: var(--font-display); font-weight: 700; font-size: 15px; letter-spacing: .1em;
+  display: grid; place-items: center; touch-action: none;
+}
+.tbtn.on { background: rgba(255,123,46,.45); }
+#tLeft { left: 18px; } #tRight { left: 104px; }
+#tBoost { right: 18px; width: 86px; height: 86px; color: var(--arc); }
+#tBrake { right: 116px; }
+body.touch #minimap { bottom: auto; top: calc(130px + env(safe-area-inset-top, 0px)); left: 12px; width: 120px; height: 120px; }
+
+/* ---------- Panels ---------- */
+.screen {
+  position: fixed; inset: 0; display: flex; align-items: flex-start;
+  padding-inline: max(16px, 6vw); padding-block: 24px;
+  background: linear-gradient(90deg, rgba(20,14,9,.78) 0%, rgba(20,14,9,.4) 45%, rgba(20,14,9,0) 75%);
+  overflow-y: auto;
+}
+.panel { width: min(440px, 100%); display: flex; flex-direction: column; gap: 22px; margin-block: auto; }
+.brand { font-family: var(--font-display); font-weight: 800; font-size: clamp(54px, 11vw, 92px); line-height: .82; letter-spacing: -.01em; text-wrap: balance; margin: 0; }
+.brand span { color: var(--flame); }
+.tag { margin: 0; color: var(--sand-dim); font-size: 15px; line-height: 1.5; max-width: 38ch; }
+.opt { display: flex; flex-direction: column; gap: 8px; }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button {
+  border: 0; background: transparent; padding: 10px 6px; cursor: pointer;
+  font-family: var(--font-display); font-weight: 700; font-size: 16px; letter-spacing: .06em; color: var(--sand-dim);
+}
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--sand); color: var(--ink); }
+.cta {
+  border: 0; border-radius: 6px; padding: 16px 20px; cursor: pointer;
+  background: var(--flame); color: var(--ink);
+  font-family: var(--font-display); font-weight: 800; font-size: 24px; letter-spacing: .12em;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.cta:hover { filter: brightness(1.08); }
+.ghost {
+  border: 1px solid var(--line); border-radius: 6px; padding: 12px 16px; cursor: pointer; background: transparent;
+  font-family: var(--font-display); font-weight: 700; font-size: 17px; letter-spacing: .1em; text-align: left;
+}
+.ghost:hover { background: rgba(242,228,201,.08); }
+.btns { display: flex; flex-direction: column; gap: 10px; }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13.5px; color: var(--sand-dim); }
+.keys kbd {
+  font-family: var(--font-display); font-weight: 700; font-size: 13px; letter-spacing: .06em; color: var(--sand);
+  border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; justify-self: start; white-space: nowrap;
+}
+.record { font-size: 14px; color: var(--sand-dim); }
+.record b { color: var(--sand); font-family: var(--font-display); font-weight: 700; font-size: 17px; }
+.res-head { font-family: var(--font-display); font-weight: 800; font-size: clamp(56px, 12vw, 88px); line-height: .85; margin: 0; }
+.res-head small { font-size: .38em; color: var(--sand-dim); font-weight: 700; letter-spacing: .1em; margin-left: 8px; }
+.res-sub { margin: 0; color: var(--sand-dim); }
+table.res { width: 100%; border-collapse: collapse; font-size: 15px; }
+table.res td { padding: 7px 4px; border-bottom: 1px solid var(--line); }
+table.res td:first-child { font-family: var(--font-display); font-weight: 700; width: 28px; color: var(--sand-dim); }
+table.res td:last-child { text-align: right; font-family: var(--font-display); font-weight: 700; font-size: 17px; }
+table.res tr.me td { color: var(--flame); }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
+#loading { position: fixed; inset: 0; display: grid; place-items: center; background: var(--ink); font-family: var(--font-display); font-weight: 700; letter-spacing: .2em; color: var(--sand-dim); }
+#err { color: var(--bad); max-width: 40ch; text-align: center; letter-spacing: 0; font-family: var(--font-body); font-weight: 500; }
+
+
+/* ---------- Name, multiplayer, room ---------- */
+.field { display: flex; flex-direction: column; gap: 8px; }
+input.txt {
+  font-family: var(--font-display); font-weight: 700; font-size: 18px; letter-spacing: .06em; color: var(--sand);
+  background: rgba(242,228,201,.06); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; min-width: 0; width: 100%;
+  box-sizing: border-box; -webkit-user-select: text; user-select: text;
+}
+input.txt::placeholder { color: var(--sand-dim); opacity: .6; }
+input.txt:focus-visible { outline: 2px solid var(--flame); outline-offset: 2px; }
+input.txt.err { border-color: var(--bad); }
+.mp { display: flex; flex-direction: column; gap: 10px; padding-top: 18px; border-top: 1px solid var(--line); }
+.mp-row { display: grid; grid-template-columns: 1fr 86px auto; gap: 8px; }
+.mp-row .ghost { text-align: center; padding-inline: 12px; }
+#codeInput { text-transform: uppercase; text-align: center; letter-spacing: .22em; }
+.note { margin: 0; font-size: 13.5px; color: var(--flame); }
+.ghost.hot { border-color: var(--flame); color: var(--flame); }
+.room-code { font-family: var(--font-display); font-weight: 800; font-size: clamp(64px, 14vw, 104px); line-height: .85; letter-spacing: .08em; color: var(--flame); }
+.invite { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.invite code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; color: var(--sand-dim); overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; }
+.players { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.players li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--line); font-size: 15px; }
+.players li em { font-style: normal; color: var(--sand-dim); font-size: 13px; margin-left: 6px; }
+.players li b { font-family: var(--font-display); font-weight: 700; letter-spacing: .08em; color: var(--sand-dim); white-space: nowrap; }
+.players li b.ok { color: var(--good); }
+.room-status { margin: 0; color: var(--sand-dim); font-size: 14px; line-height: 1.5; min-height: 1.5em; }
+.seg button:disabled { cursor: default; }
+.seg button:disabled:not([aria-pressed="true"]) { opacity: .55; }
+.cta.on { background: var(--sand); }
+
+@media (max-width: 640px) {
+  #posBig { font-size: 48px; }
+  .trow b { font-size: 18px; min-width: 76px; } .trow.main b { font-size: 22px; }
+  #speedVal { font-size: 56px; }
+  .hud-speed { min-width: 0; }
+  body.touch .hud-speed { bottom: calc(118px + env(safe-area-inset-bottom, 0px)); }
+  .heat { width: 190px; }
+  #center { font-size: 84px; }
+  .screen { background: rgba(20,14,9,.7); align-items: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) { #heatFill.over { animation: none; } }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="hud" hidden>
+  <div class="hud-tl">
+    <span class="lbl">Helyezés</span>
+    <div id="posBig" class="num">1<small>/6</small></div>
+    <div id="lapTxt" class="num">KÖR 1/3</div>
+  </div>
+  <div class="hud-tr">
+    <div class="trow main"><span class="lbl">Idő</span><b id="totalVal" class="num">0:00.00</b></div>
+    <div class="trow"><span class="lbl">Kör</span><b id="lapVal" class="num">0:00.00</b></div>
+    <div class="trow"><span class="lbl">Legjobb</span><b id="bestLapVal" class="num">–</b></div>
+  </div>
+  <canvas id="minimap" width="340" height="340"></canvas>
+  <div class="hud-speed">
+    <div id="speedVal" class="num">0</div>
+    <div class="speed-unit">KM/H</div>
+    <div class="heat">
+      <span class="lbl">Hő</span>
+      <div class="heat-track"><div id="heatFill"></div></div>
+      <span id="boostTag">BOOST</span>
+    </div>
+  </div>
+  <div id="center"></div>
+  <div id="toast" hidden></div>
+</div>
+
+<div id="touch" hidden>
+  <button class="tbtn" id="tLeft" aria-label="Balra">◀</button>
+  <button class="tbtn" id="tRight" aria-label="Jobbra">▶</button>
+  <button class="tbtn" id="tBrake" aria-label="Fék">FÉK</button>
+  <button class="tbtn" id="tBoost" aria-label="Boost">BOOST</button>
+</div>
+
+<section id="menu" class="screen" hidden>
+  <div class="panel">
+    <h1 class="brand">HOMOK<br><span>FUTAM</span></h1>
+    <p class="tag">Podverseny a sivatagban: rajt az arénából, ki a sziklatűk közé, át a kanyonon, és vissza a tribünök elé. Öt ellenfél vár.</p>
+    <div class="field">
+      <label class="lbl" for="nameInput">Neved</label>
+      <input class="txt" id="nameInput" maxlength="16" placeholder="Játékos" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="opt">
+      <span class="lbl">Körök</span>
+      <div class="seg" id="lapsSeg">
+        <button id="laps1" data-v="1" aria-pressed="false">1 KÖR</button>
+        <button id="laps3" data-v="3" aria-pressed="true">3 KÖR</button>
+        <button id="laps5" data-v="5" aria-pressed="false">5 KÖR</button>
+      </div>
+    </div>
+    <div class="opt">
+      <span class="lbl">Ellenfelek</span>
+      <div class="seg" id="diffSeg">
+        <button id="diff0" data-v="0" aria-pressed="false">KÖNNYŰ</button>
+        <button id="diff1" data-v="1" aria-pressed="true">NORMÁL</button>
+        <button id="diff2" data-v="2" aria-pressed="false">PROFI</button>
+      </div>
+    </div>
+    <button class="cta" id="startBtn"><span>RAJT EGYEDÜL</span><span aria-hidden="true">→</span></button>
+    <div class="record" id="recordTxt"></div>
+    <div class="mp">
+      <span class="lbl">Haverokkal · 2–6 játékos</span>
+      <p id="inviteNote" class="note" hidden>Meghívtak egy szobába: írd be a neved, és nyomj a BELÉPÉS gombra.</p>
+      <div class="mp-row">
+        <button class="ghost" id="createBtn">ÚJ SZOBA</button>
+        <input class="txt" id="codeInput" maxlength="4" placeholder="KÓD" autocomplete="off" spellcheck="false" aria-label="Szobakód">
+        <button class="ghost" id="joinBtn">BELÉPÉS</button>
+      </div>
+    </div>
+    <div class="keys" id="keysHelp">
+      <kbd>W / ↑</kbd><span>gáz</span>
+      <kbd>S / ↓</kbd><span>fék</span>
+      <kbd>A D / ← →</kbd><span>kormányzás</span>
+      <kbd>Shift / Space</kbd><span>boost (melegíti a hajtóműveket)</span>
+      <kbd>C</kbd><span>kamera</span>
+      <kbd>R</kbd><span>vissza a pályára</span>
+      <kbd>Esc / P</kbd><span>szünet</span>
+      <kbd>M</kbd><span>hang ki/be</span>
+    </div>
+  </div>
+</section>
+
+<section id="room" class="screen" hidden>
+  <div class="panel">
+    <div class="opt">
+      <span class="lbl">Szobakód</span>
+      <div class="room-code" id="roomCode">----</div>
+    </div>
+    <div class="invite">
+      <code id="inviteLink"></code>
+      <button class="ghost" id="copyBtn">LINK MÁSOLÁSA</button>
+    </div>
+    <ul class="players" id="playerList"></ul>
+    <div class="opt">
+      <span class="lbl">Körök</span>
+      <div class="seg" id="roomLapsSeg">
+        <button id="rl1" data-v="1" aria-pressed="false">1 KÖR</button>
+        <button id="rl3" data-v="3" aria-pressed="true">3 KÖR</button>
+        <button id="rl5" data-v="5" aria-pressed="false">5 KÖR</button>
+      </div>
+    </div>
+    <div class="opt">
+      <span class="lbl">Botok</span>
+      <div class="seg" id="roomDiffSeg">
+        <button id="rd0" data-v="0" aria-pressed="false">KÖNNYŰ</button>
+        <button id="rd1" data-v="1" aria-pressed="true">NORMÁL</button>
+        <button id="rd2" data-v="2" aria-pressed="false">PROFI</button>
+      </div>
+    </div>
+    <p class="room-status" id="roomStatus"></p>
+    <button class="cta" id="readyBtn"><span id="readyTxt">KÉSZ VAGYOK</span><span aria-hidden="true">✓</span></button>
+    <button class="ghost" id="leaveBtn">KILÉPÉS A SZOBÁBÓL</button>
+  </div>
+</section>
+
+<section id="pause" class="screen" hidden>
+  <div class="panel">
+    <h2 class="brand">SZÜNET</h2>
+    <div class="btns">
+      <button class="cta" id="resumeBtn"><span>FOLYTATÁS</span><span aria-hidden="true">→</span></button>
+      <button class="ghost" id="restartBtn">ÚJRAINDÍTÁS</button>
+      <button class="ghost" id="menuBtn">FŐMENÜ</button>
+    </div>
+  </div>
+</section>
+
+<section id="result" class="screen" hidden>
+  <div class="panel">
+    <h2 class="res-head" id="resHead">1.<small>HELY</small></h2>
+    <p class="res-sub" id="resSub"></p>
+    <table class="res" id="resTable"></table>
+    <div class="btns">
+      <button class="cta" id="againBtn"><span>ÚJ FUTAM</span><span aria-hidden="true">→</span></button>
+      <button class="ghost" id="resMenuBtn">FŐMENÜ</button>
+    </div>
+  </div>
+</section>
+
+<div id="loading">PÁLYA ÉPÍTÉSE…</div>
+
+<script type="module" src="./main.js"></script>
+<script>
+  window.addEventListener('error', function (e) {
+    var el = document.getElementById('loading');
+    if (el && !el.hidden) el.innerHTML = '<div id="err">A játék nem tudott elindulni: ' + (e.message || 'ismeretlen hiba') + '<br>Kell hozzá WebGL-t támogató böngésző.</div>';
+  });
+</script>
+</body>
+</html>

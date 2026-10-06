@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="hu">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BLOCKSHOT</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- In-game HUD -->
+      <div id="hud" class="hidden">
+        <div id="scope" class="hidden"></div>
+        <div id="crosshair"><i></i><i></i><i></i><i></i><b></b></div>
+        <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
+        <div id="markers"></div>
+
+        <div id="scoreBar">
+          <div class="team t0"><div class="flagIcon" id="flagIcon0"></div><div class="fstate" id="flagState0">BÁZISON</div><b id="caps0">0</b></div>
+          <div class="mid"><div id="timer">10:00</div><div id="scoreGoal">3 ZÁSZLÓIG</div></div>
+          <div class="team t1"><b id="caps1">0</b><div class="fstate" id="flagState1">BÁZISON</div><div class="flagIcon" id="flagIcon1"></div></div>
+        </div>
+        <div id="carryBanner" class="hidden"></div>
+
+        <div id="killfeed"></div>
+
+        <div id="vitals">
+          <div class="row hp"><span class="lbl">ÉLET</span><b id="hpVal">100</b><div class="bar"><div id="hpFill"></div></div></div>
+          <div class="row armor"><span class="lbl">PÁNCÉL</span><b id="armorVal">0</b><div class="bar"><div id="armorFill"></div></div></div>
+        </div>
+
+        <div id="weaponBar"></div>
+
+        <div id="ammo">
+          <div id="weaponName">GÉPKARABÉLY</div>
+          <div><span id="ammoVal">30</span><span class="max"> / <span id="ammoReserve">90</span></span></div>
+          <div id="reloadBar"><div></div></div>
+          <div class="reloadTxt">TÖLTÉS…</div>
+        </div>
+
+        <div id="toasts"></div>
+        <div id="bigMsg"></div>
+        <div id="damage"></div>
+        <div id="lowHp"></div>
+        <div id="deathScreen" class="hidden">
+          <div class="title">MEGHALTÁL</div>
+          <div class="by" id="deathBy"></div>
+          <div class="respawn">Újraéledés: <b id="respawnIn">3</b></div>
+        </div>
+        <div id="scoreboard" class="hidden"></div>
+        <div id="lockHint" class="hidden">KATTINTS A JÁTÉKHOZ</div>
+      </div>
+
+      <!-- Lobby -->
+      <div id="lobby">
+        <div class="panel">
+          <h1>BLOCK<span>SHOT</span></h1>
+          <div class="tagline">4v4 zászlórablás az űrben — te + 3 bot</div>
+
+          <div id="startView">
+            <label class="field">
+              <span>Neved</span>
+              <input id="nameInput" maxlength="16" placeholder="Játékos" autocomplete="off" />
+            </label>
+            <div id="inviteNote" class="note hidden">Meghívtak egy szobába — kattints a <b>Csatlakozás</b> gombra!</div>
+            <button id="createBtn" class="btn primary">ÚJ SZOBA</button>
+            <div class="joinRow">
+              <input id="codeInput" maxlength="4" placeholder="KÓD" autocomplete="off" />
+              <button id="joinBtn" class="btn">CSATLAKOZÁS</button>
+            </div>
+            <button id="botBtn" class="btn ghost">GYAKORLÁS: TE + 3 BOT vs 4 BOT</button>
+          </div>
+
+          <div id="roomView" class="hidden">
+            <div class="miniLabel">SZOBA</div>
+            <div id="roomCode">----</div>
+            <div id="inviteBox" class="hidden">
+              <div id="inviteLink"></div>
+              <button id="copyBtn" class="btn small">LINK MÁSOLÁSA</button>
+            </div>
+            <div id="peerInfo"></div>
+            <div id="roomStatus"></div>
+            <button id="readyBtn" class="btn primary" disabled>KÉSZ VAGYOK</button>
+            <button id="leaveBtn" class="btn ghost small">KILÉPÉS</button>
+          </div>
+
+          <label class="field sens">
+            <span>Egér érzékenység <b id="sensVal">1.0</b></span>
+            <input id="sensInput" type="range" min="0.2" max="3" step="0.1" value="1" />
+          </label>
+
+          <div class="controls">
+            <div><kbd>WASD</kbd> mozgás · <kbd>Space</kbd> ugrás · <kbd>Egér</kbd> célzás</div>
+            <div><kbd>Bal klikk</kbd> lövés · <kbd>Jobb klikk</kbd> távcső · <kbd>R</kbd> töltés</div>
+            <div><kbd>1–5</kbd> / <kbd>görgő</kbd> fegyver · <kbd>Tab</kbd> eredmények · <kbd>Esc</kbd> egér</div>
+            <p>Hozd el az ellenfél zászlaját a tornyuk aljából, és vidd a saját zászlódhoz — de csak akkor számít, ha a tiéd otthon van. <b>3 zászló</b> nyer. A sárga <b>ugrópadok</b> a tornyok emeleteire visznek, a tetején <b>mesterlövészpuska</b> vár. Vigyázz, az aszteroidáról le lehet esni!</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Match result -->
+      <div id="result" class="hidden">
+        <div class="panel">
+          <h2 id="resultTitle">GYŐZELEM</h2>
+          <div id="resultSub"></div>
+          <div id="resultStats"></div>
+          <div id="rematchStatus"></div>
+          <button id="rematchBtn" class="btn primary">VISSZAVÁGÓ</button>
+          <button id="resultLeaveBtn" class="btn ghost small">KILÉPÉS</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
