@@ -101,10 +101,16 @@ def strata_rgb(z, edges, hard, rng, scheme):
     soft = np.array([PAL['orange'], PAL['rose'], PAL['tan']])[(np.arange(len(hard)) * 5) % 3]
     tint = np.where(hard[:, None] > 0.5, base, soft * 0.6 + base * 0.4)
     tint = tint * 0.55 + tint.mean(0, keepdims=True) * 0.45            # keep the bands subtle
-    col = tint[k]
-    lam = 1 + 0.05 * np.sin(z * 2 * math.pi / 1.1 + np.sin(z * 0.37) * 2)
+    col = tint[k] * (0.95 + 0.08 * s)[:, None]                          # each bed darker at its base
+    lam = 1 + 0.03 * np.sin(z * 2 * math.pi / 1.1 + np.sin(z * 0.37) * 2)
     col = col * lam[:, None]
     return col
+
+
+def bed_coord(x, y, z, dip, phi, seed):
+    """Height in bed space: the beds dip gently (slope dip towards phi) and wander a few metres."""
+    w = R.fbm3(np.stack([x / 25.0, y / 25.0, z / 40.0], -1), 2, seed + 21) - 0.5
+    return z + dip * (x * math.cos(phi) + y * math.sin(phi)) + w * 2.5
 
 
 # ---------------------------------------------------------------------------- spires
@@ -130,36 +136,46 @@ def spire(idx):
     edges, hard = beds(rng, H, 7, 19, cap_t)
     ny, nt = 230, 128
     z = np.linspace(-8, H, ny)
-    k, s = bed_at(edges, np.clip(z, 0, H - 1e-3))
+    th = np.linspace(0, 2 * math.pi, nt, endpoint=False)
+    # The beds dip and wander (bed_coord), so the necks and bands tilt and vary round the column instead
+    # of stacking up as level rings; each bed necks by its own amount (most a little, a few a lot) at its
+    # own height, and the windward side weathers deeper.
+    dip, phi, wind = rng.uniform(0.04, 0.12), rng.uniform(0, 2 * math.pi), rng.uniform(0, 2 * math.pi)
+    nk = rng.uniform(0.15, 1.0, len(hard)) ** 1.5
+    skew = rng.uniform(0.6, 1.6, len(hard))
+    taper = 1 - 0.42 * np.clip(z / H, 0, 1) ** 1.25
+    cx = lean * (np.clip(z, 0, H) / H) ** 2 * H * 0.12
+    cy = lean * 0.4 * (np.clip(z, 0, H) / H) ** 2.5 * H * 0.12
+    X = cx[:, None] + (R0 * taper)[:, None] * np.cos(th)[None, :]
+    Y = cy[:, None] + (R0 * taper)[:, None] * np.sin(th)[None, :]
+    zb = bed_coord(X.ravel(), Y.ravel(), np.repeat(z, nt), dip, phi, seed).reshape(ny, nt)
+    k, s = bed_at(edges, np.clip(zb, 0, H - 1e-3))
     soft = 1 - hard[k]
-    prof = 1 - 0.42 * np.clip(z / H, 0, 1) ** 1.25
-    neck = np.sin(math.pi * s) ** 1.2 * R.smoothstep(0.35, 0.6, soft)
-    prof *= 1 - necks * (0.06 + 0.24 * soft) * neck                                # soft beds weather into necks
-    prof *= 1 + 0.015 * hard[k] * np.exp(-((1 - s) / 0.15) ** 2)                  # slight lips on hard beds
-    prof *= 1 + 0.32 * R.smoothstep(11, -3, z)                                     # foot spreading into the talus
+    face = 0.55 + 0.45 * np.cos(th - wind)[None, :]
+    neck = np.sin(math.pi * s ** skew[k]) ** 1.2 * R.smoothstep(0.35, 0.6, soft) * nk[k] * face
+    prof = taper[:, None] * (1 - necks * (0.08 + 0.3 * soft) * neck)                  # soft beds weather into necks
+    prof *= 1 + 0.015 * hard[k] * np.exp(-((1 - s) / 0.15) ** 2)                      # slight lips on hard beds
+    prof *= (1 + 0.32 * R.smoothstep(11, -3, z))[:, None]                              # foot spreading into the talus
     if cap:
         zc = H - cap_t
-        below = np.interp(zc - 0.5, z, prof)
-        inc = z >= zc
-        prof = np.where(inc, below * rng.uniform(1.25, 1.45) * (1 - 0.06 * (z - zc) / cap_t), prof)
-        prof *= np.where(z > H - 2.2, np.sqrt(np.clip(1 - ((z - (H - 2.2)) / 2.4) ** 2, 0.05, 1)), 1)
+        below = prof[np.argmin(np.abs(z - (zc - 0.5)))]
+        inc = (z >= zc)[:, None]
+        prof = np.where(inc, below[None, :] * rng.uniform(1.25, 1.45) * (1 - 0.06 * (z - zc) / cap_t)[:, None], prof)
+        prof *= np.where(z > H - 2.2, np.sqrt(np.clip(1 - ((z - (H - 2.2)) / 2.4) ** 2, 0.05, 1)), 1)[:, None]
     else:
-        prof *= np.where(z > H - 10, np.sqrt(np.clip(1 - ((z - (H - 10)) / 10.5) ** 2, 0.03, 1)), 1)
-    th = np.linspace(0, 2 * math.pi, nt, endpoint=False)
+        prof *= np.where(z > H - 10, np.sqrt(np.clip(1 - ((z - (H - 10)) / 10.5) ** 2, 0.03, 1)), 1)[:, None]
     P = np.stack([np.repeat(np.cos(th)[None, :] * 1.4, ny, 0), np.repeat(np.sin(th)[None, :] * 1.4, ny, 0),
                   np.repeat(z[:, None] / 30, nt, 1)], -1).reshape(-1, 3)
     lob = (R.fbm3(P + seed * 3.1, 3, seed) - 0.5) * 2
     P2 = np.stack([P[:, 0] * 2.5, P[:, 1] * 2.5, P[:, 2] * 3.3], -1)
     lob2 = (R.fbm3(P2 + seed, 2, seed + 7) - 0.5) * 2
-    radius = (R0 * prof)[:, None] * (1 + 0.17 * lob.reshape(ny, nt) + 0.06 * lob2.reshape(ny, nt))
-    cx = lean * (np.clip(z, 0, H) / H) ** 2 * H * 0.12
-    cy = lean * 0.4 * (np.clip(z, 0, H) / H) ** 2.5 * H * 0.12
+    radius = R0 * prof * (1 + 0.17 * lob.reshape(ny, nt) + 0.06 * lob2.reshape(ny, nt))
     ob = lathe(f'spire{idx}', z, radius, cx, cy, 0.8)
     R.remesh(ob, 0.45)
 
     def detail(c, n):
         zz = c[:, 2]
-        kk, ss = bed_at(edges, np.clip(zz, 0, H - 1e-3))
+        kk, ss = bed_at(edges, np.clip(bed_coord(c[:, 0], c[:, 1], zz, dip, phi, seed), 0, H - 1e-3))
         sft = 1 - hard[kk]
         d = (R.fbm3(c / 9.0, 3, seed + 1) - 0.5) * 2.4
         flute = R.ridged3(c * np.array([1 / 2.4, 1 / 2.4, 1 / 18.0]), 2, seed + 2)
@@ -173,7 +189,7 @@ def spire(idx):
     R.displace(ob, detail)
     R.smooth(ob, 0.35, 1)
     c = R.co(ob)
-    rgb = strata_rgb(c[:, 2], edges, hard, rng, scheme)
+    rgb = strata_rgb(bed_coord(c[:, 0], c[:, 1], c[:, 2], dip, phi, seed), edges, hard, rng, scheme)
     rgb *= (1 + (R.fbm3(c / 5.0, 2, seed + 9) - 0.5) * 0.18)[:, None]
     ao = R.bake_ao(ob, 9.0, 48)
     R.set_colors(ob, rgb, ao)

@@ -403,6 +403,9 @@ function sweep(i0, i1, side, profile, colorFn, step = 1) {
 const CLIFF = { scale: 1 / 12, chroma: 0.35, contrast: 1.1, side: THREE.DoubleSide, rough: [0.62, 0.35], varnish: 1, foot: 3 };
 const rockMat = rockMaterial(Q, ROCKL.cliff, CLIFF);
 const rockMatI = rockMaterial(Q, ROCKL.cliff, CLIFF);      // instanced copies (fallback spires), see rockMatAOSolo
+// the canyon walls: their own sky occlusion (aAO), and the canyon's light probe once it is baked
+// (the texture only adds grain here: its cracks and spots read as drawn on at this scale)
+const canyonMat = rockMaterial(Q, ROCKL.cliff, { ...CLIFF, contrast: 0.7, chroma: 0.25, ao: true, aoAlbedo: 0.2 });
 const boulderMat = rockMaterial(Q, ROCKL.boulder, { scale: 1 / 6, chroma: 0.45, contrast: 1.05, rough: [0.6, 0.35], foot: 1.2 });
 function rangeWhere(arr, thr) {         // contiguous index range where arr > thr (handles wrap)
   let start = -1;
@@ -546,36 +549,75 @@ let CANYON_BRIDGE = null;
 {
   const r = rangeWhere(TR.canyon, 0.01);
   if (r) {
+    // The walls, swept every 2 m of arc length. Sandstone beds (4-11 m) dip gently along the canyon
+    // and wander; the soft beds are cut back into recesses and alcoves, the hard ones stand out with a
+    // lip at the top; vertical joints and buttresses break the wall up along the track. The colour
+    // comes from the same beds (pale hard beds, redder soft ones), so the bands follow the ledges.
+    // aAO: how much sky a point sees from down in the slot (darker low down and in the recesses).
+    const hash1 = (k) => { const x = Math.sin(k * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+    const PAL = ['#d6be9f', '#c8a27e', '#b98864', '#a87457', '#e0d0b6'].map(C);
+    const HARD = [0, 4, 1], SOFT = [2, 3, 1, 2];
+    const tp = { x: 0, y: 0, z: 0, yaw: 0, i: 0 };
+    const at = (arr, s) => {            // arr (per track sample) at arc length s, after trackPoint(s)
+      const i0 = tp.i, i1 = TR.idx(i0 + 1), ds = TR.s[i0 + 1] - TR.s[i0];
+      return lerp(arr[i0], arr[i1], clamp((((s - TR.s[i0]) % TR.L) + TR.L) % TR.L / ds, 0, 1));
+    };
+    const bed = (y, s, side) => {       // y: metres above the canyon floor
+      const u = (y + s * 0.011 + (fbm(s * 0.004 + side * 2, y * 0.012, 2) - 0.5) * 7) / 7.2 + (fbm(y * 0.06, 3.3, 2) - 0.5) * 0.9;
+      const k = Math.floor(u);
+      return { k, f: u - k, hard: hash1(k) };
+    };
+    const s0 = TR.s[TR.idx(r[0] - 2)], len = (((TR.s[TR.idx(r[1] + 2)] - s0) % TR.L) + TR.L) % TR.L;
+    const J = 56, STEP = 2;
     for (const side of [-1, 1]) {
-      const J = 36;
-      const prof = (i) => {
-        const c = TR.canyon[i], H = TR.wallH[i] * c, hw = TR.hw[i], ty = TR.py[i], s = TR.s[i];
-        const out = [];
+      const pos = [], col = [], occ = [], index = [];
+      let rows = 0, M = 0;
+      const vert = (o, y, rgb, a) => { pos.push(tp.x + tp.rx * o, y, tp.z + tp.rz * o); col.push(rgb.r, rgb.g, rgb.b); occ.push(a); };
+      for (let s = s0; s <= s0 + len + 1e-3; s += STEP) {
+        trackPoint(s, 0, tp);
+        tp.rx = -Math.cos(tp.yaw) * side; tp.rz = Math.sin(tp.yaw) * side;
+        const c = at(TR.canyon, s), H = at(TR.wallH, s) * c, hw = at(TR.hw, s), ty = tp.y;
+        const jn = 1 - Math.abs(2 * fbm(s * 0.05 + side * 9, side * 3.1, 2) - 1);
+        const joint = Math.pow(jn, 10) * 2.6;                                 // narrow vertical slots
+        const butt = (fbm(s * 0.013 + side * 4, 1.7, 3) - 0.5) * 9;          // buttresses and bays
+        const drift = fbm(s * 0.003 + side, 0.5, 2);
+        const start = pos.length / 3;
         for (let j = 0; j <= J; j++) {
           const h = j / J, y = H * h;
+          const b = bed(y, s, side), soft = 1 - b.hard;
           const n = fbm(s * 0.035, h * 8 + side * 31, 3) - 0.5;
-          const fine = fbm(s * 0.16 + 11, h * 22 + side * 7, 2) - 0.5;
-          // eroded sandstone: soft layers stand out as ledges every ~7 m
-          const tq = (y + fbm(s * 0.01, side, 2) * 6) / 7, fr = tq - Math.floor(tq);
-          const ledge = smooth(0.62, 0.92, fr) * 1.4 * h;
-          // alcoves: rounded recesses scooped out of the soft beds, a few metres deep
-          const alc = smooth(0.56, 0.78, fbm(s * 0.011 + side * 3, h * 1.6 + 2, 2)) * Math.pow(Math.sin(Math.PI * clamp((h - 0.12) / 0.6, 0, 1)), 1.5) * 4.5;
-          out.push([hw + 0.8 + 6 * h * h + n * 6 * h + fine * 1.6 * h - ledge + alc + (j === 0 ? 0 : 1.2), ty - 1.5 + y + n * 2 * h]);
+          const fine = fbm(s * 0.2 + 11, h * 26 + side * 7, 2) - 0.5;
+          const up = smooth(0.04, 0.16, h);            // the foot stays plain: the pods scrape along it
+          const recess = soft > 0.4 ? Math.pow(Math.sin(Math.PI * b.f), 0.8) * (soft - 0.4) * 4.2 : 0;
+          const lip = b.hard > 0.6 ? Math.exp(-Math.pow((1 - b.f) / 0.18, 2)) * 0.7 : 0;
+          const alc = smooth(0.58, 0.8, fbm(s * 0.011 + side * 3, h * 1.6 + 2, 2)) * Math.pow(Math.sin(Math.PI * clamp((h - 0.12) / 0.6, 0, 1)), 1.5) * 4.5 * (0.4 + soft);
+          const cut = recess + alc + joint * smooth(0.05, 0.3, h);
+          const o = j === 0 ? hw + 0.8 : hw + 2 + 5 * Math.pow(h, 1.6) + butt * h + n * 4 * h + fine * 0.8 * h + (cut - lip) * up;
+          const pick = b.hard > 0.5 ? HARD[((b.k % 3) + 3) % 3] : SOFT[((b.k % 4) + 4) % 4];
+          _col.copy(PAL[pick]).lerp(PAL[1], drift * 0.35)
+            .multiplyScalar((0.94 + 0.08 * b.f) * (1 + 0.025 * Math.sin(y * 5.7)) * (1 + (fbm(s * 0.05, y * 0.08 + side, 2) - 0.5) * 0.12));
+          const sky = (0.32 + 0.68 * Math.pow(h, 0.65)) * (1 - 0.45 * clamp(cut / 3.5, 0, 1) * up);
+          vert(o, ty - 1.5 + y + n * 2 * h, _col, sky);
         }
-        out.push([hw + 14, ty + H + 1.5 + (fbm(s * 0.05, side * 5) - 0.5) * 3]);
-        out.push([hw + 30, ty + H + (fbm(s * 0.02, side * 5) - 0.5) * 6]);
-        out.push([hw + 75, ty + H * 0.85]);
-        out.push([hw + 135, ty - 6]);
-        return out;
-      };
-      // softer bands than the open-desert strata, drifting in tone along the canyon
-      const wallCol = (i, j, y, out) => {
-        if (j > J) return out.copy(ROCK.top).lerp(ROCK.light, 0.3);
-        strata(y, TR.s[i] + side * 70, out).lerp(ROCK.mid, 0.42);
-        return out.lerp(ROCK.light, (fbm(TR.s[i] * 0.006, y * 0.03 + side, 2) - 0.5) * 0.5);
-      };
-      const g = sweep(r[0] - 2, r[1] + 2, side, prof, wallCol);
-      const m = new THREE.Mesh(g, rockMat);
+        _col.copy(PAL[4]).lerp(PAL[0], 0.4);
+        vert(hw + 14, ty + H + 1.5 + (fbm(s * 0.05, side * 5) - 0.5) * 3, _col, 1);
+        vert(hw + 30, ty + H + (fbm(s * 0.02, side * 5) - 0.5) * 6, _col, 1);
+        vert(hw + 75, ty + H * 0.85, _col, 1);
+        vert(hw + 135, ty - 6, _col, 1);
+        M = pos.length / 3 - start;
+        rows++;
+      }
+      for (let q = 0; q < rows - 1; q++) for (let j = 0; j < M - 1; j++) {
+        const a = q * M + j, b = a + M;
+        index.push(a, b, a + 1, a + 1, b, b + 1);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      g.setAttribute('aAO', new THREE.Float32BufferAttribute(occ, 1));
+      g.setIndex(index);
+      g.computeVertexNormals();
+      const m = new THREE.Mesh(g, canyonMat);
       m.castShadow = m.receiveShadow = true;
       m.userData.rock = true;
       scene.add(m);
@@ -2868,7 +2910,7 @@ function renderFrame(dt) {
 // local testing hook (only on localhost): fast-forward the race without rendering every frame
 if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
   window.__homok = {
-    THREE, scene, renderer, camera, fx: () => ({ DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST }), get post() { return post; }, set post(v) { post = v; },
+    THREE, scene, renderer, camera, rocks: ROCKS, fx: () => ({ DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST }), get post() { return post; }, set post(v) { post = v; },
     start(l = 1, d = 1, intro = false) { laps = l; diff = d; newRace(); if (!intro) endIntro(); return this.info(); },
     cine: CINE, photo: PHOTO,
     perf(frames = 120) {
@@ -2964,6 +3006,7 @@ function boot(data) {
   }
   bakeWorldShadow(renderer, scene, WORLD_BOUNDS, Q.staticShadow);
   try { PROBES = bakePodProbes(); } catch (e) { console.warn('HOMOKFUTAM: light probes failed', e); }
+  if (PROBES?.canyon) canyonMat.envMap = PROBES.canyon;         // sky through the slot, red rock all round
   // LOW: only the things that move (pods, debris) draw into the near shadow map every frame; the
   // static world keeps just its baked shadow
   if (Q.casters === false) {

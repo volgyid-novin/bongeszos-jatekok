@@ -457,6 +457,8 @@ export function trackMaterial(Q, trackLength) {
         col *= 1.0 - smoothstep( 0.9, 1.0, edge ) * ( 1.0 - smoothstep( 1.0, 1.15, edge ) ) * 0.15;
         diffuseColor.rgb = col * mix( vec3( 1.0 ), gDesertTint( xz, mac ), mix( 0.45, 1.0, out_ ) );
         float gAO = mix( 1.0, gS.ao, 0.85 ) * mix( 1.0, mac.r, out_ );
+        // down in the canyon the floor sees only a strip of sky, less still by the walls
+        gAO *= 1.0 - canyon * ( 0.35 + 0.25 * smoothstep( 0.55, 1.0, edge ) );
         diffuseColor.rgb *= mix( 1.0, gS.ao, 0.35 );
         float polish = groove * 0.2 + trail.r * 0.1 + oil * 0.42;
         float gNK = ( 1.0 - smoothstep( 80.0, 600.0, camD ) * 0.7 ) * ( 1.0 - groove * 0.4 );
@@ -478,20 +480,20 @@ export function trackMaterial(Q, trackLength) {
 //  rock (needs the macro height map); cliffs get desert varnish streaks.
 // ---------------------------------------------------------------------------
 export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast = 1, normal = 1, rough = [0.55, 0.6], vertexColors = true, color = '#ffffff',
-  macro = 0.3, side = THREE.FrontSide, flat = false, sand = 1, foot = 2.5, varnish = 0, ao = false, arena = false, metalness = 0 } = {}) {
+  macro = 0.3, side = THREE.FrontSide, flat = false, sand = 1, foot = 2.5, varnish = 0, ao = false, aoAlbedo = 0.45, arena = false, metalness = 0 } = {}) {
   const m = new THREE.MeshStandardMaterial({ vertexColors, color, roughness: 1, metalness, side, flatShading: flat });
   const u = {
     // arena: the building texture set, used for its own colour (not relative to its mean)
     gRC: arena ? GU.gAC : GU.gRC, gRN: arena ? GU.gAN : GU.gRN,
     rLayer: { value: layer }, rScale: { value: scale }, rChroma: { value: chroma }, rContrast: { value: contrast },
     rNormal: { value: normal }, rRough: { value: new THREE.Vector2(...rough) }, rMacro: { value: macro },
-    rSand: { value: sand }, rFoot: { value: foot }, rVarnish: { value: varnish },
+    rSand: { value: sand }, rFoot: { value: foot }, rVarnish: { value: varnish }, rAOAlb: { value: aoAlbedo },
   };
   const defs = { GQ: Q.groundQ ?? 2 };
   if (ao) defs.ROCK_AO = 1;          // the geometry carries the occlusion baked in Blender (aAO)
   if (arena) defs.ABSOLUTE = 1;
   return patch(m, 'hf-rock2', defs, u, {
-    pars: /* glsl */`uniform highp sampler2DArray gRC, gRN; uniform float rLayer, rScale, rChroma, rContrast, rNormal, rMacro, rSand, rFoot, rVarnish; uniform vec2 rRough;
+    pars: /* glsl */`uniform highp sampler2DArray gRC, gRN; uniform float rLayer, rScale, rChroma, rContrast, rNormal, rMacro, rSand, rFoot, rVarnish, rAOAlb; uniform vec2 rRough;
       #ifdef ROCK_AO
         varying float vRockAO;
       #endif
@@ -540,7 +542,7 @@ export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast 
         diffuseColor.rgb *= mix( 1.0, tpAO, 0.3 * ( 1.0 - sandK ) );
         #ifdef ROCK_AO
           gAO *= vRockAO;
-          diffuseColor.rgb *= mix( 1.0, vRockAO, 0.45 );          // deep cavities stay dark in sunlight too
+          diffuseColor.rgb *= mix( 1.0, vRockAO, rAOAlb );        // deep cavities stay dark in sunlight too (aoAlbedo)
         #endif
         vec3 gNW = hfGN;`,
       roughnessmap_fragment: /* glsl */`float roughnessFactor = clamp( mix( rRough.x + rRough.y * tpR - varn * 0.15, sN.b, sandK ), 0.04, 1.0 );`,
