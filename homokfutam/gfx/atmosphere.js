@@ -16,6 +16,7 @@ export const SUN_DIR = new THREE.Vector3(Math.cos(SUN_EL) * Math.cos(SUN_AZ), Ma
 export const PALETTE = {
   zenith: new THREE.Color('#2a5fa6'),
   skyHorizon: new THREE.Color('#ebbf8c'),
+  skyMid: new THREE.Color().setRGB(0.40, 0.50, 0.61),        // linear: the pale blue between horizon and zenith
   fog: new THREE.Color('#dcae7a'),
   fogSun: new THREE.Color('#ffc47e'),
   sun: new THREE.Color('#ffd6a6'),
@@ -177,7 +178,7 @@ export function cloudTexture(size = 256) {
 export function skyMaterial() {
   return new THREE.ShaderMaterial({
     side: THREE.BackSide, depthWrite: false, fog: false,
-    uniforms: { hfZenith: { value: PALETTE.zenith }, hfSkyHorizon: { value: PALETTE.skyHorizon }, hfGround: { value: PALETTE.ground }, hfEnv: { value: 0 } },
+    uniforms: { hfZenith: { value: PALETTE.zenith }, hfSkyHorizon: { value: PALETTE.skyHorizon }, hfSkyMid: { value: PALETTE.skyMid }, hfGround: { value: PALETTE.ground }, hfEnv: { value: 0 } },
     vertexShader: /* glsl */`
       varying vec3 vDir;
       #include <fog_pars_vertex>
@@ -189,15 +190,32 @@ export function skyMaterial() {
         #include <fog_vertex>
       }`,
     fragmentShader: /* glsl */`
-      uniform vec3 hfZenith, hfSkyHorizon, hfGround;
+      uniform vec3 hfZenith, hfSkyHorizon, hfGround, hfSkyMid;
       uniform float hfEnv;
       varying vec3 vDir;
       #include <common>
       #include <fog_pars_fragment>
+      // the gradient blends in Oklab (Ottosson): mixing the warm horizon and the blue zenith in
+      // linear RGB goes through a greyish lilac halfway up
+      vec3 hfLin2Ok( vec3 c ) {
+        vec3 lms = vec3( dot( c, vec3( 0.4122214708, 0.5363325363, 0.0514459929 ) ), dot( c, vec3( 0.2119034982, 0.6806995451, 0.1073969566 ) ), dot( c, vec3( 0.0883024619, 0.2817188376, 0.6299787005 ) ) );
+        lms = pow( max( lms, vec3( 0.0 ) ), vec3( 1.0 / 3.0 ) );
+        return vec3( dot( lms, vec3( 0.2104542553, 0.7936177850, -0.0040720468 ) ), dot( lms, vec3( 1.9779984951, -2.4285922050, 0.4505937099 ) ), dot( lms, vec3( 0.0259040371, 0.7827717662, -0.8086757660 ) ) );
+      }
+      vec3 hfOk2Lin( vec3 c ) {
+        vec3 lms = vec3( c.x + 0.3963377774 * c.y + 0.2158037573 * c.z, c.x - 0.1055613458 * c.y - 0.0638541728 * c.z, c.x - 0.0894841775 * c.y - 1.2914855480 * c.z );
+        lms = lms * lms * lms;
+        return vec3( dot( lms, vec3( 4.0767416621, -3.3077115913, 0.2309699292 ) ), dot( lms, vec3( -1.2684380046, 2.6097574011, -0.3413193965 ) ), dot( lms, vec3( -0.0041960863, -0.7034186147, 1.7076147010 ) ) );
+      }
       void main() {
         vec3 rd = normalize( vDir );
         float h = max( rd.y, 0.0 );
-        vec3 col = mix( hfSkyHorizon, hfZenith, pow( smoothstep( 0.0, 0.62, h ), 0.72 ) );
+        // warm horizon (cooler on the side away from the sun) -> pale blue -> zenith blue
+        float toSun = 0.5 + 0.5 * dot( normalize( rd.xz + vec2( 1e-5 ) ), normalize( hfSunDir.xz ) );
+        vec3 hor = mix( hfSkyHorizon * vec3( 0.84, 0.92, 1.06 ), hfSkyHorizon, toSun * toSun );
+        vec3 ok = mix( hfLin2Ok( hor ), hfLin2Ok( hfSkyMid ), smoothstep( 0.0, 0.2, h ) );
+        ok = mix( ok, hfLin2Ok( hfZenith ), pow( smoothstep( 0.06, 0.7, h ), 0.85 ) );
+        vec3 col = hfOk2Lin( ok );
         float sd = max( dot( rd, hfSunDir ), 0.0 );
         col += hfSunCol * ( pow( sd, 10.0 ) * 0.22 + pow( sd, 120.0 ) * 0.6 );
         // cloud layer on a plane above the camera

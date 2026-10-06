@@ -93,7 +93,8 @@ Teszteléshez az URL-ben is meg lehet adni: `?q=low|medium|high|ultra`, egyes be
 
 Mi van a képen:
 
-- **Fény:** alacsonyan álló, aranyórás nap. A visszaverődések az égboltból számolódnak. Az egész pálya árnyéka betöltéskor egyszer elkészül, a kamera közelében pedig a podoknak és a részleteknek külön, éles árnyéka van. A felhők árnyéka végigvonul a homokon.
+- **Fény:** alacsonyan álló, aranyórás nap. A visszaverődések az égboltból számolódnak, a podok viszont a betöltéskor a pályán sütött fénypróbákból kapják a fényt és a tükröződést (nyílt sivatag, aréna, kanyon, a sziklaív alatt), mindig annak a helynek a próbájából, ahol épp járnak: a kanyonban vörösen verődik vissza rájuk a szikla, az arénában a lelátók tükröződnek rajtuk. Az egész pálya árnyéka betöltéskor egyszer elkészül, a kamera közelében pedig a podoknak és a részleteknek külön, éles árnyéka van. A felhők árnyéka végigvonul a homokon.
+- **Ég és szín:** az égbolt színátmenete észlelés szerint egyenletes színtérben (Oklab) keveredik, így a meleg láthatár és a kék zenit között nincs lilás sáv; a nappal ellentétes oldalon a láthatár hűvösebb. A tónusleképezés AgX, mint a Blenderben, így a nap, a lángok és a nyaláb fénye fehérbe fut ki, nem sárgul el.
 - **Levegő:** magasságfüggő köd, ami a nap felé melegebb. A távoli hegyek és mezák ettől lesznek kékesek és párásak.
 - **Talaj:** hét saját, Blenderben sütött felület (fodros homok, puha homok, sivatagi kavicsburkolat, repedezett agyag, letaposott pályahomok, csupasz homokkő, kőlapok), GPU-n tömörített KTX2-textúrákban (`assets/tex/`). A felületek a magasságuk szerint keverednek, így a kavicsok kibújnak a homokból. A mintázat nem ismétlődik láthatóan. Hogy hol mi van, azt a betöltéskor kiszámolt nagy léptékű térkép dönti el: a dűnék szél felőli oldalán fodrok, a csúszólejtőkön puha homok, a lapos mélyedésekben kavics és repedezett agyag, a sziklák körül kavicstörmelék és csupasz kő, mögöttük a szél árnyékában homoknyelv. Ugyanez a térkép adja a nagy léptékű árnyékolást is. A homok csillog a napfényben, a dűnék gerince súroló fényben felragyog.
 - **Dűnék:** a pályától távolabb a szél formálta, éles gerincű harántdűnék vannak (hosszú, lankás szél felőli oldal, rövid, meredek csúszólejtő), a gerincekről a szél homokfátylat fúj le. A pálya közelében a terep a régi, a fizika és a köridők nem változnak.
@@ -125,6 +126,7 @@ homokfutam/
                     homok a sziklákon, nyomok a pályán
   gfx/surfaces.js   triplanáris kőanyag a régi kőtextúrával (csak tartalék)
   gfx/post.js       utófeldolgozás (pmndrs/postprocessing + N8AO)
+  gfx/probes.js     a podok fénypróbái: a pálya néhány pontjáról sütött környezeti fény, és a keverésük a podok anyagaiban
   gfx/particles.js  részecskék: por, füst, szikra, tűz, konfetti, szimulált füst- és tűzképsorok
   gfx/podfx.js      lángcsóva, fúvókaizzás, boost- és visszalövés-effektek, hőremegés, talajfény, lökéshullám, nyomok a pályán, törmelék
   gfx/beam.js       energianyaláb a hajtóművek között, és a fény, amit vet

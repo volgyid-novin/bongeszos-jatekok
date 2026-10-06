@@ -42,6 +42,7 @@ export function buildHorizon(scene, renderer) {
     ring.frustumCulled = false;
     ring.renderOrder = -0.5;
     ring.userData.noBake = true;
+    ring.userData.inProbe = true;        // the light probes see the far ranges too (gfx/probes.js)
     scene.add(ring);
     return {
       mesh: ring,

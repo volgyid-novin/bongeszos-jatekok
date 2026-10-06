@@ -135,7 +135,7 @@ class GradeEffect extends Effect {
   constructor() {
     super('GradeEffect', GRADE_FRAG, {
       uniforms: new Map([
-        ['uSat', new THREE.Uniform(1.12)], ['uContrast', new THREE.Uniform(1.1)], ['uVignette', new THREE.Uniform(0.38)],
+        ['uSat', new THREE.Uniform(1.3)], ['uContrast', new THREE.Uniform(1.15)], ['uVignette', new THREE.Uniform(0.38)],
         ['uGrain', new THREE.Uniform(0.022)], ['uFade', new THREE.Uniform(0)], ['uFlash', new THREE.Uniform(0)],
         ['uShadow', new THREE.Uniform(new THREE.Vector3(0.94, 0.98, 1.06))], ['uHigh', new THREE.Uniform(new THREE.Vector3(1.04, 1.0, 0.94))],
         ['uFlashCol', new THREE.Uniform(new THREE.Color('#fff3e0'))],
@@ -190,7 +190,9 @@ export function createPost(renderer, scene, camera, Q, sunDir) {
   const flare = new FlareEffect();
   flare.uniforms.get('uIntensity').value = Q.flare ? 1 : 0;
   effects.push(flare);
-  const tone = new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC });
+  // AgX: highlights (sun, flames, the beam) roll off to white instead of skewing yellow, and the sand and
+  // rock keep their hue; the grade puts back the saturation and contrast it takes out
+  const tone = new ToneMappingEffect({ mode: ToneMappingMode.AGX });
   effects.push(tone);
   const grade = new GradeEffect();
   effects.push(grade);

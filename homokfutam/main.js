@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RaceRoom, selfId } from './net.js';
-import { loadPodModel, setPodLivery, animatePlayerPod, podLift } from './playerPod.js';
+import { loadPodModel, setPodLivery, setPodEnv, animatePlayerPod, podLift } from './playerPod.js';
 import { pickQuality, saveQuality, createDynRes, ORDER as GFX_ORDER } from './gfx/quality.js';
 import { installAtmosphere, ATMO, SUN_DIR, PALETTE, skyMaterial, cloudTexture, buildEnvironment, bakeWorldShadow } from './gfx/atmosphere.js';
 import { loadSurfaces, triplanarMaterial } from './gfx/surfaces.js';
@@ -13,6 +13,7 @@ import { buildScatter } from './world/scatter.js';
 import { buildHorizon } from './world/horizon.js';
 import { buildHaze } from './world/haze.js';
 import { createPost } from './gfx/post.js';
+import { bakeProbes } from './gfx/probes.js';
 import { Particles, loadFlipbooks } from './gfx/particles.js';
 import { createPodFx, createDebris, HeatLayer, createTrailMap } from './gfx/podfx.js';
 import { createBeam, createBeamLights, createBeamFlares } from './gfx/beam.js';
@@ -308,8 +309,11 @@ TEX.checker.magFilter = THREE.NearestFilter;
 const canvas = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: !Q.post, powerPreference: 'high-performance', stencil: false });
 // with post-processing on, tone mapping happens in the effect chain (gfx/post.js)
+// With post-processing the tone mapping is AgX at the end of the post chain (gfx/post.js, like Blender's
+// view transform), and it takes this exposure. Without it (LOW) the materials tone map with ACES: it needs
+// no extra exposure and keeps its punch without the colour grade.
 renderer.toneMapping = Q.post ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMappingExposure = Q.post ? 1.1 : 1.0;
 renderer.shadowMap.enabled = true;
 renderer.info.autoReset = false;
 renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -1695,6 +1699,7 @@ function racerFx(r, dt, t) {
     POD_FX.hot = pfx ? pfx.hot : 0; POD_FX.flash = pfx ? Math.max(pfx.flash[0], pfx.flash[1]) : 0;
     POD_FX.beam = ud.beam.S.k + ud.beam.S.flash[0] * 0.5; POD_FX.beamCol.copy(ud.beam.group.children[0].material.uniforms.uCol.value);
     animatePlayerPod(ud.pod, r, dt, POD_FX);
+    if (PROBES) { const [b, w] = podProbe(r); setPodEnv(ud.pod, PROBES.desert, b, w, PROBE_K); }
     ud.body.position.y = podLift(ud.pod, r, groundQuery, dt);
   }
   podFx.update(r, dt, groundQuery, camera.position);       // also brings the pod's world matrices up to date
@@ -2899,11 +2904,53 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
     racer(n = 0) { return racers[n]; },
     force(o) { DEBUG_FORCE = o; },
     groundDebug(n) { groundDebug(n); renderFrame(0.016); },
+    rebakeProbes() { PROBES = bakePodProbes(); },
+    // podEnv(0): pods back on the sky-only environment; podEnv(k): the light probes at strength k
+    podEnv(k) {
+      for (const r of racers) {
+        const p = r.mesh.userData.pod;
+        if (!p || !PROBES) continue;
+        if (k === 0) { for (const m of p.mats) m.envMap = null; p.envBase = null; p.env.envMapMix.value = 0; }
+        else { const [b, w] = podProbe(r); setPodEnv(p, PROBES.desert, b, w, k); }
+      }
+      renderFrame(0.016);
+    },
     crash(n = 0, power = 60) { const r = racers[n]; crashFx(r, r.x + Math.sin(r.yaw) * 2, r.z + Math.cos(r.yaw) * 2, power); },
     info() {
       return { state, raceT: +raceT.toFixed(1), mp: MP.room ? { code: MP.room.code, host: MP.room.isHost, peers: MP.room.peers.size, inRace: MP.inRace } : null, racers: racers.map((r) => ({ n: r.name, ctl: r.ctl, gone: r.gone, lap: r.lap, prog: Math.round(r.prog), d: +r.loc.d.toFixed(1), v: Math.round(r.fwd * 3.6), fin: r.finished, ft: +r.finishTime.toFixed(1), laps: r.lapTimes.map((t) => +t.toFixed(1)), heat: Math.round(r.heat), roll: +r.roll.toFixed(2) })) };
     },
   };
+}
+
+// Light probes for the pods (gfx/probes.js), at pod height: the middle of the longest open stretch,
+// the arena, the canyon and under the arch. A pod is lit by the open-desert probe with the probe
+// of the zone it is in faded in (TR.arena / TR.canyon fade along the track; the arch's shade is short).
+let PROBES = null;
+const PROBE_K = 1.0;              // probe light strength on the pods
+// metres along the track from sample i to the arch
+const archGap = (i) => { if (!ROCKS.arch) return 1e9; const d = Math.abs(TR.s[i] - TR.s[ROCKS.arch.i]); return Math.min(d, TR.L - d); };
+function bakePodProbes() {
+  const at = (i) => new THREE.Vector3(TR.px[i], TR.py[i] + 2, TR.pz[i]);
+  let best = [0, 0], run = 0;
+  for (let i = 0; i < TR.N; i++) {
+    run = TR.arena[i] < 0.01 && TR.canyon[i] < 0.01 && archGap(i) > 300 ? run + 1 : 0;
+    if (run > best[1]) best = [i, run];
+  }
+  const points = { desert: at(best[0] - (best[1] >> 1)) };
+  const ar = rangeWhere(TR.arena, 0.55), cr = rangeWhere(TR.canyon, 0.5);
+  if (ar) points.arena = at(TR.idx(Math.round((ar[0] + ar[1]) / 2)));
+  if (cr) points.canyon = at(TR.idx(Math.round((cr[0] + cr[1]) / 2)));
+  if (ROCKS.arch) points.arch = at(ROCKS.arch.i);
+  const t0 = performance.now();
+  const probes = bakeProbes(renderer, scene, points, (p) => { scene.userData.sky.position.copy(p); HORIZON?.update(p); });
+  console.log(`HOMOKFUTAM: ${Object.keys(probes).length} light probes in ${Math.round(performance.now() - t0)} ms`);
+  return probes;
+}
+function podProbe(r) {
+  const i = r.loc.i, a = TR.arena[i], c = TR.canyon[i];
+  const h = 1 - smooth(10, 45, archGap(i));
+  if (a >= c && a >= h) return [PROBES.arena, a];
+  return c >= h ? [PROBES.canyon, c] : [PROBES.arch, h];
 }
 
 // static sun shadow for the whole world, rendered once everything static exists
@@ -2916,6 +2963,7 @@ function boot(data) {
     catch (e) { console.warn('HOMOKFUTAM: ground clutter failed', e); }
   }
   bakeWorldShadow(renderer, scene, WORLD_BOUNDS, Q.staticShadow);
+  try { PROBES = bakePodProbes(); } catch (e) { console.warn('HOMOKFUTAM: light probes failed', e); }
   // LOW: only the things that move (pods, debris) draw into the near shadow map every frame; the
   // static world keeps just its baked shadow
   if (Q.casters === false) {
@@ -2929,7 +2977,7 @@ function boot(data) {
       if (heatLayer) { post.speed.uniforms.get('uDistort').value = heatLayer.rt.texture; post.speed.uniforms.get('uDistortOn').value = 1; }
       resize();
     }
-    catch (e) { console.warn('HOMOKFUTAM: post-processing failed, rendering without it', e); post = null; renderer.toneMapping = THREE.ACESFilmicToneMapping; }
+    catch (e) { console.warn('HOMOKFUTAM: post-processing failed, rendering without it', e); post = null; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0; }
   }
   if (data && data.laps) { laps = data.laps; syncSeg('lapsSeg', laps); }
   if (data && data.diff != null) { diff = data.diff; syncSeg('diffSeg', diff); }

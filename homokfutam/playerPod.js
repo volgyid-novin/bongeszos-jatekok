@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { atmoUniforms } from './gfx/atmosphere.js';
+import { podEnvPatch } from './gfx/probes.js';
 
 // Detailed pod, used by every racer in its own livery. The model is generated in Blender by models/pod/*.py:
 // build_pod.py builds it, bake_export.py bakes the textures and writes the two assets below.
@@ -142,6 +143,7 @@ function makePod(src, livery) {
   const root = cloneRig(src);
   const paint = new THREE.Color(), trim = new THREE.Color(), heat = { value: new THREE.Vector2() };
   const parts = [], mats = new Map();
+  const env = { envMapB: { value: null }, envMapMix: { value: 0 } };
   let glow = null, beamMat = null;
   root.traverse((o) => {
     if (o.userData.anim) parts.push(o);
@@ -153,6 +155,10 @@ function makePod(src, livery) {
       // transparent + double-sided is drawn in two passes, each flagging the material for a
       // shader re-check; the canopy is thin enough that one pass looks the same
       if (m.transparent && m.side === THREE.DoubleSide) m.forceSinglePass = true;
+      // light and reflections from the probes of the zone the pod is in (gfx/probes.js, setPodEnv)
+      const before = m.onBeforeCompile, key = m.customProgramCacheKey;
+      m.onBeforeCompile = (sh, r) => { before.call(m, sh, r); podEnvPatch(sh, env); };
+      m.customProgramCacheKey = () => key.call(m) + '|pod-env';
       mats.set(o.material, m);
     }
     o.material = m;
@@ -167,7 +173,7 @@ function makePod(src, livery) {
   const beam = ['BeamAnchor_L', 'BeamAnchor_R'].map((n, k) => node(n).position.clone().add(engines[k].position));
   const flames = ['FlameAnchor_L', 'FlameAnchor_R'].map((n) => node(n).position.clone());
   return {
-    root, body: node('Body'), engines, beam, flames, parts, glow, beamMat, paint, trim, heat,
+    root, body: node('Body'), engines, beam, flames, parts, glow, beamMat, paint, trim, heat, env, mats: [...mats.values()], envBase: null,
     smooth: { brake: 0, steer: 0, boost: 0, thr: 0 }, lift: 0,
   };
 }
@@ -202,6 +208,14 @@ export function podLift(pod, r, groundAt, dt) {
   // rise fast so nothing cuts in, settle back slowly so it does not bob
   pod.lift += (need - pod.lift) * (1 - Math.exp(-(need > pod.lift ? 30 : 4) * dt));
   return pod.lift;
+}
+
+// Light probes (gfx/probes.js): the pod is lit by base, with b faded in by mix; intensity scales both.
+export function setPodEnv(pod, base, b, mix, intensity) {
+  if (pod.envBase !== base) { pod.envBase = base; for (const m of pod.mats) m.envMap = base; }
+  for (const m of pod.mats) m.envMapIntensity = intensity;
+  pod.env.envMapB.value = b || null;
+  pod.env.envMapMix.value = b ? mix : 0;
 }
 
 export function setPodLivery(pod, color, accent) {
