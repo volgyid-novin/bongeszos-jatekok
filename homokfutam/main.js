@@ -659,13 +659,55 @@ const START_LIGHTS = [];
 let gantrySign = null;
 const ARENA_LAYOUT = { range: null, base: null, T: null, R: null, quat: null, hw: 0, y0: 0, span: 0, towers: [], lamps: [], old: [] };
 const AM = (layer, o = {}) => rockMaterial(Q, layer, Object.assign({ arena: true, scale: 1 / 4, chroma: 1, rough: [0, 1], macro: 0.1, foot: 0.8 }, o));
+// The openings in the arena walls (the modules' "dark" parts): instead of a flat black face, a room
+// behind it by interior mapping. The view ray goes through the face into a box 4.5 m deep (module
+// space: the openings face +z, the floor is at y = 0); sunlight pools on the floor near the entrance
+// and fades into warm darkness at the back. No textures, no extra geometry.
+function interiorMaterial() {
+  const m = new THREE.MeshStandardMaterial({ color: '#0d0907', roughness: 1 });
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, ATMO);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vIntP, vIntC;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        mat4 intM = modelMatrix;
+        #ifdef USE_INSTANCING
+          intM = modelMatrix * instanceMatrix;
+        #endif
+        vIntP = position;
+        vIntC = ( inverse( intM ) * vec4( cameraPosition, 1.0 ) ).xyz;`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vIntP, vIntC;')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        {
+          vec3 d = normalize( vIntP - vIntC );
+          float D = 4.5, tBack = D / max( - d.z, 0.15 );
+          float tFloor = d.y < -1e-3 ? vIntP.y / - d.y : 1e9;
+          vec3 room;
+          if ( tFloor < tBack ) {
+            // floor: sunlit sand near the entrance, darker further in
+            vec3 q = vIntP + d * tFloor;
+            float depth = clamp( ( vIntP.z - q.z ) / D, 0.0, 1.0 );
+            room = vec3( 0.42, 0.31, 0.2 ) * mix( 1.0, 0.12, pow( depth, 0.6 ) );
+          } else {
+            // back wall: bounce light from the floor at its foot, dark above
+            vec3 q = vIntP + d * tBack;
+            room = vec3( 0.16, 0.11, 0.075 ) * ( 0.25 + 0.75 * exp( - max( q.y, 0.0 ) * 0.9 ) );
+          }
+          // in the colour of the sunlight that comes in
+          totalEmissiveRadiance += room * hfSunCol * 0.9;
+        }`);
+  };
+  m.customProgramCacheKey = () => 'arena-interior';
+  return m;
+}
 const ARENA_MATS = {
   stone: AM(ARENA.stone, { ao: true }),
   plaster: AM(ARENA.plaster, { ao: true }),
   wood: AM(ARENA.wood, { ao: true, scale: 1 / 2, sand: 0.4 }),
   cloth: AM(ARENA.cloth, { ao: true, scale: 1 / 2, sand: 0.12, macro: 0, side: THREE.DoubleSide }),
   metal: AM(ARENA.metal, { ao: true, scale: 1 / 2, sand: 0.2, macro: 0, metalness: 0.2 }),
-  dark: new THREE.MeshStandardMaterial({ color: '#241b15', roughness: 0.92 }),
+  dark: interiorMaterial(),
 };
 {
   const standsStone = AM(ARENA.stone, { flat: true, side: THREE.DoubleSide });

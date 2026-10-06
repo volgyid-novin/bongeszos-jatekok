@@ -32,7 +32,7 @@ uniform vec3 hfSunDir;
 uniform sampler2DShadow hfShadowMap;
 uniform mat4 hfShadowMatrix;
 uniform float hfShadowOn;
-varying vec2 vUv; varying vec4 vCol; varying float vArms, vSun;
+varying vec2 vUv, vCell; varying vec4 vCol; varying float vSun;
 #include <fog_pars_vertex>
 void main() {
   float seed = iCol.w;
@@ -40,13 +40,17 @@ void main() {
   float wave = uWave * smoothstep( 0.6, 1.0, sin( iPos.w * 0.045 - uTime * 3.2 ) );
   float jump = uCheer * max( 0.0, sin( uTime * ( 7.0 + seed * 5.0 ) + seed * 40.0 ) ) * 0.35;
   float stand = max( wave, smoothstep( 0.2, 0.6, uCheer ) * step( 0.35, fract( seed * 7.3 ) ) );
-  vArms = max( wave, uCheer * step( 0.5, fract( seed * 3.1 ) ) );
-  vec3 feet = iPos.xyz + vec3( 0.0, jump + wave * 0.4 + stand * 0.25, 0.0 );
-  float h = mix( 1.25, 1.75, stand ) * ( 0.9 + fract( seed * 13.7 ) * 0.2 );
+  float arms = max( wave, uCheer * step( 0.5, fract( seed * 3.1 ) ) );
+  // sitting: the same figure sunk behind the row in front of it
+  vec3 feet = iPos.xyz + vec3( 0.0, jump + wave * 0.4 - ( 1.0 - stand ) * 0.5, 0.0 );
+  float k = ( 0.9 + fract( seed * 13.7 ) * 0.2 );                    // body size
   vec3 toCam = cameraPosition - feet; toCam.y = 0.0;
   vec3 right = normalize( vec3( toCam.z, 0.0, - toCam.x ) + 1e-5 );
-  vec3 p = feet + right * position.x * 0.75 + vec3( 0.0, ( position.y + 0.5 ) * h, 0.0 );
+  // the atlas cell is 1.1 m x 2.2 m around a 1.74 m figure (models/world/build_crowd.py)
+  vec3 p = feet + right * position.x * 1.1 * k + vec3( 0.0, ( position.y + 0.5 ) * 2.2 * k, 0.0 );
   vUv = position.xy + 0.5;
+  if ( fract( seed * 5.3 ) > 0.5 ) vUv.x = 1.0 - vUv.x;            // mirrored half the time
+  vCell = vec2( floor( fract( seed * 4.71 ) * 4.0 ), min( floor( arms * 3.0 ), 2.0 ) );   // body type, arm pose
   vCol = iCol;
   vec3 sc = ( hfShadowMatrix * vec4( feet + vec3( 0.0, 1.0, 0.0 ) + hfSunDir * 2.0, 1.0 ) ).xyz;
   float inside = step( 0.0, sc.x ) * step( sc.x, 1.0 ) * step( 0.0, sc.y ) * step( sc.y, 1.0 );
@@ -57,24 +61,24 @@ void main() {
 }`;
 const CROWD_F = /* glsl */`
 uniform vec3 uAmbient, uSunCol;
-varying vec2 vUv; varying vec4 vCol; varying float vArms, vSun;
+uniform sampler2D uAtlas;
+varying vec2 vUv, vCell; varying vec4 vCol; varying float vSun;
 #include <common>
 #include <fog_pars_fragment>
-float box( vec2 p, vec2 b, float r ) { vec2 d = abs( p ) - b + r; return length( max( d, 0.0 ) ) + min( max( d.x, d.y ), 0.0 ) - r; }
+// atlas (models/world/build_crowd.py): 4 body types x 3 arm poses; R shirt, G skin, B shading, A coverage
 void main() {
-  vec2 p = vec2( ( vUv.x - 0.5 ) * 0.75, vUv.y );
+  vec2 uv = vec2( ( vCell.x + vUv.x ) / 4.0, 1.0 - ( vCell.y + 1.0 - vUv.y ) / 3.0 );
+  vec4 t = texture2D( uAtlas, uv );
+  // a crisp edge that keeps its coverage when the figure is a few pixels tall (Golus' alpha sharpening)
+  float a = ( t.a - 0.5 ) / max( fwidth( t.a ), 1e-4 ) + 0.5;
+  if ( a < 0.5 ) discard;
   float seed = vCol.w;
-  float head = length( p - vec2( 0.0, 0.86 ) ) - 0.085;
-  float body = box( p - vec2( 0.0, 0.52 ), vec2( 0.13, 0.24 ), 0.06 );
-  float legs = box( p - vec2( 0.0, 0.16 ), vec2( 0.1, 0.16 ), 0.03 );
-  float armY = mix( 0.5, 0.95, vArms );
-  float arms = min( box( p - vec2( 0.17, armY ), vec2( 0.035, 0.18 ), 0.03 ), box( p - vec2( -0.17, armY ), vec2( 0.035, 0.18 ), 0.03 ) );
-  float d = min( min( head, body ), min( legs, arms ) );
-  if ( d > 0.0 ) discard;
-  vec3 skin = mix( vec3( 0.55, 0.36, 0.24 ), vec3( 0.95, 0.75, 0.6 ), fract( seed * 5.7 ) ) * 0.8;
-  vec3 col = head < 0.0 ? skin : ( legs < 0.0 && body > 0.0 ? vec3( 0.18, 0.16, 0.15 ) : ( arms < 0.0 && body > 0.0 ? skin : vCol.rgb ) );
-  if ( head < 0.0 && p.y > 0.9 ) col = mix( vec3( 0.06, 0.04, 0.03 ), vec3( 0.5, 0.35, 0.15 ), fract( seed * 9.1 ) );
-  float shade = 0.75 + 0.25 * vUv.y;
+  vec3 skin = mix( vec3( 0.32, 0.19, 0.12 ), vec3( 0.86, 0.66, 0.52 ), fract( seed * 5.7 ) );
+  vec3 hair = mix( vec3( 0.05, 0.035, 0.025 ), vec3( 0.42, 0.28, 0.14 ), fract( seed * 9.1 ) * fract( seed * 2.3 ) );
+  if ( vCell.x == 1.0 ) hair = mix( vec3( 0.62, 0.5, 0.32 ), vec3( 0.25, 0.2, 0.16 ), fract( seed * 3.3 ) );   // the hats
+  vec3 legs = mix( vec3( 0.12, 0.13, 0.17 ), vec3( 0.42, 0.36, 0.27 ), step( 0.6, fract( seed * 6.1 ) ) );
+  vec3 col = t.r > 0.5 ? vCol.rgb : t.g > 0.5 ? skin : ( vUv.y > 0.62 ? hair : legs );
+  float shade = mix( 0.5, 1.05, t.b );
   gl_FragColor = vec4( col * ( uAmbient + uSunCol * vSun * 0.85 ) * shade, 1.0 );
   #include <fog_fragment>
 }`;
@@ -102,6 +106,14 @@ function clothMaterial(params, { amp = 0.4, freq = 1.2, speed = 3.5, fixedEdge =
   return m;
 }
 
+// the crowd's sprites (models/world/build_crowd.py): masks and shading, not colour, so linear
+function crowdAtlas() {
+  const t = new THREE.TextureLoader().load(new URL('../assets/crowd_atlas.png', import.meta.url).href);
+  t.colorSpace = THREE.NoColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
 export function buildDressing(ctx) {
   const { scene, TR, Q, groundQuery, nearestCoarse, rangeWhere, rng, fbm, vnoise, triplanarMaterial, mergeGeometries } = ctx;
   const rand = rng(4242);
@@ -124,7 +136,8 @@ export function buildDressing(ctx) {
   const side = (i, s, o, y) => P.set(TR.px[i] - TR.tz[i] * s * o, y, TR.pz[i] + TR.tx[i] * s * o);
 
   // crowd
-  const crowdU = { uTime: ATMO.hfTime, uCheer: { value: 0 }, uWave: { value: 0 }, uAmbient: { value: C('#7d6f63') }, uSunCol: { value: C('#ffd9b0') } };
+  const crowdU = { uTime: ATMO.hfTime, uCheer: { value: 0 }, uWave: { value: 0 }, uAmbient: { value: C('#7d6f63') }, uSunCol: { value: C('#ffd9b0') },
+    uAtlas: { value: crowdAtlas() } };
   if (arenaSamples.length && Q.crowd > 0) {
     const pos = [], col = [];
     const shirts = ['#c8342c', '#2f6fd0', '#e8772e', '#efe6d4', '#e2b93b', '#3c8f6a', '#7a4fc0', '#1d1a18', '#9c4a2a', '#5a7da8'].map(C);
