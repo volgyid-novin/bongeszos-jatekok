@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ATMO, SUN_DIR } from '../gfx/atmosphere.js';
-import { WIND_DIR } from '../gfx/surfaces.js';
+import { WIND_DIR } from '../gfx/ground.js';
 
 // ============================================================
 //  World dressing: everything that makes the place feel inhabited.
@@ -111,7 +111,7 @@ export function buildDressing(ctx) {
   const mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), P = new THREE.Vector3(), S = new THREE.Vector3(1, 1, 1);
   const metal = new THREE.MeshStandardMaterial({ color: '#3b342e', metalness: 0.75, roughness: 0.45 });
   const metalLight = new THREE.MeshStandardMaterial({ color: '#8c857c', metalness: 0.8, roughness: 0.35 });
-  const stoneMat = triplanarMaterial('blocks', { scale: 1 / 4, chroma: 0.25, vertexColors: false, color: '#d8c3a0', rough: [0.55, 0.45], macro: 0.15 });
+  const stoneMat = ctx.stoneMat || triplanarMaterial('blocks', { scale: 1 / 4, chroma: 0.25, vertexColors: false, color: '#d8c3a0', rough: [0.55, 0.45], macro: 0.15 });
   const out = { update: null, setStandings: null, cheer: 0, wave: 0 };
 
   // ---------------- arena ----------------
@@ -591,10 +591,12 @@ export function buildDressing(ctx) {
       return g;
     };
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, side: THREE.DoubleSide });
+    out.mountains = [];          // replaced by the rendered horizon (world/horizon.js) once it loads
     for (const [R, H, sd] of [[5200, 520, 1.3], [6600, 900, 4.1]]) {
       const m = new THREE.Mesh(ring(R, H, sd), mat);
       m.userData.noBake = true;
       scene.add(m);
+      out.mountains.push(m);
     }
   }
   // a settlement on the horizon: domes, a tower with a beacon

@@ -6,3 +6,4 @@ homokfutam/models/pod/build/
 homokfutam/models/fx/build/
 __pycache__/
 waveletNoiseTile.bin
+homokfutam/models/world/build/

@@ -5,7 +5,13 @@ import { RaceRoom, selfId } from './net.js';
 import { loadPodModel, setPodLivery, animatePlayerPod, podLift } from './playerPod.js';
 import { pickQuality, saveQuality, createDynRes, ORDER as GFX_ORDER } from './gfx/quality.js';
 import { installAtmosphere, ATMO, SUN_DIR, PALETTE, skyMaterial, cloudTexture, buildEnvironment, bakeWorldShadow } from './gfx/atmosphere.js';
-import { loadSurfaces, triplanarMaterial, terrainMaterial, trackMaterial, WIND_DIR } from './gfx/surfaces.js';
+import { loadSurfaces, triplanarMaterial } from './gfx/surfaces.js';
+import { loadGround, terrainMaterial, trackMaterial, rockMaterial, groundDebug, ROCK as ROCKL, ARENA, WIND_DIR } from './gfx/ground.js';
+import { bakeMacro } from './world/macro.js';
+import { loadRockModels, LodInstances } from './world/rocks.js';
+import { buildScatter } from './world/scatter.js';
+import { buildHorizon } from './world/horizon.js';
+import { buildHaze } from './world/haze.js';
 import { createPost } from './gfx/post.js';
 import { Particles, loadFlipbooks } from './gfx/particles.js';
 import { createPodFx, createDebris, HeatLayer, createTrailMap } from './gfx/podfx.js';
@@ -226,11 +232,34 @@ function duneH(x, z) {
   const ripple = fbm(x * 0.011 + 40, z * 0.006, 2);
   return (big - 0.42) * 70 + ripple * 7;
 }
+// Transverse dunes built by the wind (WIND_DIR): a long gentle windward slope up to a sharp
+// brink, then a short steep slip face. Crests meander, swell and die out along their length.
+// Only faded in well away from the track, so the racing surface and its banks are unchanged.
+const WDX = 0.92 / Math.hypot(0.92, 0.39), WDZ = 0.39 / Math.hypot(0.92, 0.39), DUNE_L = 175, DUNE_C = 0.78;
+function dunePhase(x, z, out) {
+  const a = x * WDX + z * WDZ, b = -x * WDZ + z * WDX;
+  const warp = (fbm(b * 0.0035 + 7, a * 0.0016, 2) - 0.5) * 2.4 + (fbm(b * 0.011 - 3, a * 0.005, 2) - 0.5) * 0.5;
+  const ph = a / DUNE_L + warp;
+  out.t = ph - Math.floor(ph);
+  out.amp = 4 + 16 * smooth(0.3, 0.75, fbm(b * 0.0028 + 11, a * 0.0013 - 4, 3));
+  return out;
+}
+const _dp = { t: 0, amp: 0 };
+function windDune(x, z) {
+  const { t, amp } = dunePhase(x, z, _dp);
+  const p = t < DUNE_C ? 1 - Math.pow(1 - t / DUNE_C, 1.3) : Math.pow(1 - (t - DUNE_C) / (1 - DUNE_C), 1.2);
+  return amp * (p - 0.45);
+}
+// 0..1: how much a point sits on a tall, sharp brink (spindrift comes off those)
+function duneCrest(x, z) {
+  const { t, amp } = dunePhase(x, z, _dp);
+  return smooth(0.05, 0.0, Math.abs(t - DUNE_C + 0.01)) * smooth(8, 18, amp);
+}
 const _nc = { i: 0, d: 0 };
 function groundAt(x, z, i, dist) {
-  if (i < 0) return duneH(x, z);
+  if (i < 0) return duneH(x, z) + windDune(x, z);
   const ty = TR.py[i], hw = TR.hw[i], c = TR.canyon[i];
-  let far = duneH(x, z);
+  let far = duneH(x, z) + windDune(x, z) * smooth(hw + 55, 150, dist);
   if (c > 0.001) far = lerp(far, ty + TR.wallH[i] * c - 0.6, c);
   const inner = lerp(hw + 6, hw + 16, c), outer = lerp(hw + 95, hw + 32, c);
   return lerp(ty - 0.35, far, smooth(inner, outer, dist));
@@ -258,21 +287,6 @@ function grain(g, w, h, base, amp, seed) {
   g.putImageData(img, 0, 0);
 }
 const TEX = {
-  track: canvasTex(256, 512, (g, w, h) => {
-    grain(g, w, h, [205, 170, 122], 26, 7);
-    const r = rng(11);
-    for (let k = 0; k < 140; k++) {           // streaks along the racing direction
-      const x = r() * w, len = 60 + r() * 380, y = r() * h;
-      g.strokeStyle = `rgba(${r() < 0.5 ? '120,85,50' : '245,220,180'},${0.05 + r() * 0.12})`;
-      g.lineWidth = 1 + r() * 4;
-      g.beginPath(); g.moveTo(x, y); g.lineTo(x + (r() - 0.5) * 6, y + len); g.stroke();
-      g.beginPath(); g.moveTo(x, y - h); g.lineTo(x + (r() - 0.5) * 6, y - h + len); g.stroke();
-    }
-    const grd = g.createLinearGradient(0, 0, w, 0);      // darker, packed edges
-    grd.addColorStop(0, 'rgba(110,75,40,.45)'); grd.addColorStop(0.08, 'rgba(110,75,40,0)');
-    grd.addColorStop(0.92, 'rgba(110,75,40,0)'); grd.addColorStop(1, 'rgba(110,75,40,.45)');
-    g.fillStyle = grd; g.fillRect(0, 0, w, h);
-  }),
   glow: canvasTex(128, 128, (g, w) => {
     const grd = g.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2);
     grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.25, 'rgba(255,255,255,.55)');
@@ -300,6 +314,7 @@ renderer.info.autoReset = false;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 const dynRes = createDynRes(renderer, Q, () => resize());
 const SURF = loadSurfaces(renderer);
+const GROUND_READY = loadGround(renderer, Q);
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(PALETTE.fog, 1, 2);      // only switches USE_FOG on; the real fog is ATMO's height fog
@@ -378,8 +393,8 @@ function sweep(i0, i1, side, profile, colorFn, step = 1) {
   g.computeVertexNormals();
   return g;
 }
-const rockMat = triplanarMaterial('cliff', { scale: 1 / 13, chroma: 0.35, contrast: 1.15, side: THREE.DoubleSide, rough: [0.6, 0.45] });
-const boulderMat = triplanarMaterial('boulder', { scale: 1 / 6, chroma: 0.4, contrast: 1.1, rough: [0.55, 0.5] });
+const rockMat = rockMaterial(Q, ROCKL.cliff, { scale: 1 / 12, chroma: 0.35, contrast: 1.1, side: THREE.DoubleSide, rough: [0.62, 0.35], varnish: 1, foot: 3 });
+const boulderMat = rockMaterial(Q, ROCKL.boulder, { scale: 1 / 6, chroma: 0.45, contrast: 1.05, rough: [0.6, 0.35], foot: 1.2 });
 function rangeWhere(arr, thr) {         // contiguous index range where arr > thr (handles wrap)
   let start = -1;
   for (let i = 0; i < TR.N; i++) if (arr[i] > thr && arr[TR.idx(i - 1)] <= thr) { start = i; break; }
@@ -400,8 +415,7 @@ const ARCH = { x: 0, z: 0 };
 const TERRAIN = { cx: 90, cz: -690, size: 7200 };
 {
   const { cx, cz, size } = TERRAIN, TILE = 150, NT = size / TILE, CH = 12;
-  const SEGS = [[24, 12, 6, 3], [40, 20, 10, 5], [50, 25, 12, 6], [60, 30, 15, 8]][Q.terrain];
-  const sandHi = C('#ecd0a0'), sandLo = C('#cf9d63'), dune = C('#e2b57e');
+  const SEGS = [[24, 12, 7, 4], [40, 22, 12, 7], [50, 30, 16, 10], [60, 36, 22, 13]][Q.terrain];
   const coarse = [];
   for (let i = 0; i < TR.N; i += 6) coarse.push(i);
   const edgeDist = (x, z) => {        // rough distance from a point to the track edge
@@ -409,9 +423,9 @@ const TERRAIN = { cx: 90, cz: -690, size: 7200 };
     for (const i of coarse) { const d = (TR.px[i] - x) ** 2 + (TR.pz[i] - z) ** 2; if (d < bd) { bd = d; bi = i; } }
     return Math.sqrt(bd) - TR.hw[bi];
   };
-  const mat = terrainMaterial();
+  const mat = terrainMaterial(Q);
   for (let ci = 0; ci < NT / CH; ci++) for (let cj = 0; cj < NT / CH; cj++) {
-    const pos = [], nrm = [], col = [], trk = [], index = [];
+    const pos = [], nrm = [], trk = [], index = [];
     for (let ti = ci * CH; ti < (ci + 1) * CH; ti++) for (let tj = cj * CH; tj < (cj + 1) * CH; tj++) {
       const x0 = cx - size / 2 + ti * TILE, z0 = cz - size / 2 + tj * TILE;
       const e = edgeDist(x0 + TILE / 2, z0 + TILE / 2) - TILE * 0.71;
@@ -421,7 +435,7 @@ const TERRAIN = { cx: 90, cz: -690, size: 7200 };
         const x = x0 + (i - 1) * st, z = z0 + (j - 1) * st;
         nearestCoarse(x, z, _nc);
         H[j * W + i] = groundAt(x, z, _nc.i, _nc.d);
-        K[j * W + i] = _nc.i >= 0 ? 1 - smooth(TR.hw[_nc.i] + 2, TR.hw[_nc.i] + 46, _nc.d) : 0;
+        K[j * W + i] = _nc.i >= 0 ? clamp(_nc.d - TR.hw[_nc.i], 0, 250) : 250;
       }
       const base = pos.length / 3;
       const vtx = (i, j, drop) => {
@@ -429,9 +443,6 @@ const TERRAIN = { cx: 90, cz: -690, size: 7200 };
         pos.push(x, y - drop, z);
         const nx = H[k - 1] - H[k + 1], nz = H[k - W] - H[k + W], ny = 2 * st, l = Math.hypot(nx, ny, nz);
         nrm.push(nx / l, ny / l, nz / l);
-        const t = clamp((y + 12) / 50, 0, 1) * 0.6 + fbm(x * 0.008, z * 0.008, 2) * 0.4;
-        _col.copy(sandLo).lerp(sandHi, t).lerp(dune, clamp(1 - ny / l, 0, 1) * 1.6);
-        col.push(_col.r, _col.g, _col.b);
         trk.push(K[k]);
       };
       for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) vtx(i, j, 0);
@@ -454,12 +465,12 @@ const TERRAIN = { cx: 90, cz: -690, size: 7200 };
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-    g.setAttribute('aTrackK', new THREE.Float32BufferAttribute(trk, 1));
+    g.setAttribute('aTrackD', new THREE.Float32BufferAttribute(trk, 1));
     g.setIndex(index);
     g.computeBoundingSphere();
     const m = new THREE.Mesh(g, mat);
     m.receiveShadow = true;
+    m.userData.terrain = true;
     scene.add(m);
   }
 }
@@ -469,17 +480,30 @@ const TERRAIN = { cx: 90, cz: -690, size: 7200 };
 // ============================================================
 let TRACK_MESH = null;
 {
-  const pos = [], uv = [], tr = [], index = [];
-  const cols = [-1.25, -1.08, -0.5, 0, 0.5, 1.08, 1.25];   // multiples of half-width (outer = sand shoulder)
+  // Across the track: the packed surface over the half-width, then on each side a berm of sand
+  // the pods have pushed up (a low ridge ~2.6 m out) running down to meet the terrain ~7 m out.
+  // Only the look: physics keeps using groundAt. No berm in the arena or the canyon.
+  const pos = [], tr = [], dir = [], zone = [], index = [];
+  const IN = [-1, -0.5, 0, 0.5, 1];                // multiples of the half-width
+  const OUT = [1.2, 2.6, 4.5, 7.0];                // metres past the edge
+  const cols = [...OUT.slice().reverse().map((e) => [-1, e]), ...IN.map((c) => [c, null]), ...OUT.map((e) => [1, e])];
   const NC = cols.length;
   for (let k = 0; k <= TR.N; k++) {
-    const i = TR.idx(k), hw = TR.hw[i], y = TR.py[i];
+    const i = TR.idx(k), hw = TR.hw[i], y = TR.py[i], s = TR.s[k];
     const rx = -TR.tz[i], rz = TR.tx[i];
-    for (const c of cols) {
-      const o = c * hw;
-      pos.push(TR.px[i] + rx * o, y + (Math.abs(c) > 1.1 ? -0.3 : Math.abs(c) > 1 ? -0.02 : 0.06), TR.pz[i] + rz * o);
-      uv.push((c + 1) / 2, TR.s[k] / 46);
-      tr.push(o, TR.s[k], TR.line[i], hw);
+    const open = (1 - TR.arena[i]) * (1 - TR.canyon[i]);
+    for (const [c, e] of cols) {
+      let o, h;
+      if (e === null) { o = c * hw; h = 0.06; }
+      else {
+        const b = open * (0.6 + 0.8 * fbm(s * 0.021, c * 13.1, 2));
+        o = c * (hw + e);
+        h = e < 2 ? 0.06 + 0.1 * b : e < 3 ? 0.02 + 0.55 * b - (1 - b) * 0.06 : e < 5 ? -0.14 + 0.26 * b : -0.3;
+      }
+      pos.push(TR.px[i] + rx * o, y + h, TR.pz[i] + rz * o);
+      tr.push(o, s, TR.line[i], hw);
+      dir.push(TR.tx[i], TR.tz[i]);
+      zone.push(TR.arena[i], TR.canyon[i]);
     }
   }
   for (let r = 0; r < TR.N; r++) for (let j = 0; j < NC - 1; j++) {
@@ -488,10 +512,11 @@ let TRACK_MESH = null;
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   g.setAttribute('aTr', new THREE.Float32BufferAttribute(tr, 4));
+  g.setAttribute('aDir', new THREE.Float32BufferAttribute(dir, 2));
+  g.setAttribute('aZone', new THREE.Float32BufferAttribute(zone, 2));
   g.setIndex(index); g.computeVertexNormals();
-  const m = new THREE.Mesh(g, trackMaterial(TEX.track, TR.L));
+  const m = new THREE.Mesh(g, trackMaterial(Q, TR.L));
   m.receiveShadow = true;
   scene.add(m);
   TRACK_MESH = m;
@@ -508,14 +533,15 @@ let TRACK_MESH = null;
 // ============================================================
 //  Canyon
 // ============================================================
+let CANYON_BRIDGE = null;
 {
   const r = rangeWhere(TR.canyon, 0.01);
   if (r) {
     for (const side of [-1, 1]) {
+      const J = 36;
       const prof = (i) => {
         const c = TR.canyon[i], H = TR.wallH[i] * c, hw = TR.hw[i], ty = TR.py[i], s = TR.s[i];
         const out = [];
-        const J = 24;
         for (let j = 0; j <= J; j++) {
           const h = j / J, y = H * h;
           const n = fbm(s * 0.035, h * 8 + side * 31, 3) - 0.5;
@@ -523,7 +549,9 @@ let TRACK_MESH = null;
           // eroded sandstone: soft layers stand out as ledges every ~7 m
           const tq = (y + fbm(s * 0.01, side, 2) * 6) / 7, fr = tq - Math.floor(tq);
           const ledge = smooth(0.62, 0.92, fr) * 1.4 * h;
-          out.push([hw + 0.8 + 6 * h * h + n * 6 * h + fine * 1.6 * h - ledge + (j === 0 ? 0 : 1.2), ty - 1.5 + y + n * 2 * h]);
+          // alcoves: rounded recesses scooped out of the soft beds, a few metres deep
+          const alc = smooth(0.56, 0.78, fbm(s * 0.011 + side * 3, h * 1.6 + 2, 2)) * Math.pow(Math.sin(Math.PI * clamp((h - 0.12) / 0.6, 0, 1)), 1.5) * 4.5;
+          out.push([hw + 0.8 + 6 * h * h + n * 6 * h + fine * 1.6 * h - ledge + alc + (j === 0 ? 0 : 1.2), ty - 1.5 + y + n * 2 * h]);
         }
         out.push([hw + 14, ty + H + 1.5 + (fbm(s * 0.05, side * 5) - 0.5) * 3]);
         out.push([hw + 30, ty + H + (fbm(s * 0.02, side * 5) - 0.5) * 6]);
@@ -531,9 +559,16 @@ let TRACK_MESH = null;
         out.push([hw + 135, ty - 6]);
         return out;
       };
-      const g = sweep(r[0] - 2, r[1] + 2, side, prof, (i, j, y, out) => (j >= 25 ? out.copy(ROCK.top).lerp(ROCK.light, 0.3) : strata(y, TR.s[i] + side * 70, out)));
+      // softer bands than the open-desert strata, drifting in tone along the canyon
+      const wallCol = (i, j, y, out) => {
+        if (j > J) return out.copy(ROCK.top).lerp(ROCK.light, 0.3);
+        strata(y, TR.s[i] + side * 70, out).lerp(ROCK.mid, 0.42);
+        return out.lerp(ROCK.light, (fbm(TR.s[i] * 0.006, y * 0.03 + side, 2) - 0.5) * 0.5);
+      };
+      const g = sweep(r[0] - 2, r[1] + 2, side, prof, wallCol);
       const m = new THREE.Mesh(g, rockMat);
       m.castShadow = m.receiveShadow = true;
+      m.userData.rock = true;
       scene.add(m);
     }
     // a natural rock bridge across the canyon
@@ -557,81 +592,93 @@ let TRACK_MESH = null;
     bridge.position.set(TR.px[mid], TR.py[mid] + H, TR.pz[mid]);
     bridge.rotation.y = TR.yaw[mid];
     bridge.castShadow = bridge.receiveShadow = true;
+    bridge.userData.rock = true;
+    bridge.userData.span = 2 * (TR.hw[mid] + 22);
     scene.add(bridge);
+    CANYON_BRIDGE = bridge;          // gets the Blender model once rocks.glb is in
   }
 }
 
 // ============================================================
-//  Arena: wall, stands, banners, start gantry with lights
+//  Arena: stands, wall bays, awnings, battlements, start gantry with lights
+//  The stands are swept along the track here; the wall bays, awnings, battlements, gate towers
+//  and the gantry come from assets/world/arena.glb (models/world/build_arena.py) once loaded.
 // ============================================================
 const START_LIGHTS = [];
 let gantrySign = null;
+const ARENA_LAYOUT = { range: null, base: null, T: null, R: null, quat: null, hw: 0, y0: 0, span: 0, towers: [], lamps: [], old: [] };
+const AM = (layer, o = {}) => rockMaterial(Q, layer, Object.assign({ arena: true, scale: 1 / 4, chroma: 1, rough: [0, 1], macro: 0.1, foot: 0.8 }, o));
+const ARENA_MATS = {
+  stone: AM(ARENA.stone, { ao: true }),
+  plaster: AM(ARENA.plaster, { ao: true }),
+  wood: AM(ARENA.wood, { ao: true, scale: 1 / 2, sand: 0.4 }),
+  cloth: AM(ARENA.cloth, { ao: true, scale: 1 / 2, sand: 0.12, macro: 0, side: THREE.DoubleSide }),
+  metal: AM(ARENA.metal, { ao: true, scale: 1 / 2, sand: 0.2, macro: 0, metalness: 0.2 }),
+  dark: new THREE.MeshStandardMaterial({ color: '#241b15', roughness: 0.92 }),
+};
 {
-  const stoneA = C('#e6d3b3'), stoneB = C('#cfb38c'), stoneC = C('#b99a72');
-  const standsMat = triplanarMaterial('blocks', { scale: 1 / 5, chroma: 0.25, side: THREE.DoubleSide, flat: true, rough: [0.55, 0.45], macro: 0.15 });
+  const standsStone = AM(ARENA.stone, { flat: true, side: THREE.DoubleSide });
+  const standsPlaster = AM(ARENA.plaster, { flat: true, side: THREE.DoubleSide });
+  const benchWood = AM(ARENA.wood, { flat: true, scale: 1 / 2, sand: 0.3 });
+  const tintA = C('#f3e9d6'), tintB = C('#e4d3b6'), plasterTint = C('#f7efe2');
   const r = rangeWhere(TR.arena, 0.55);
+  ARENA_LAYOUT.range = r;
   if (r) {
+    const tier = (i, j) => [TR.hw[i] + 2.8 + 3.2 * (j + 1), TR.py[i] + 4.2 + 2.2 * j];
     for (const side of [-1, 1]) {
+      // the tiers, from behind the front-wall bays up to the last row
       const prof = (i) => {
         const hw = TR.hw[i], y0 = TR.py[i];
-        const out = [[hw + 1.2, y0 - 0.6], [hw + 1.2, y0 + 2.4], [hw + 2.8, y0 + 2.4], [hw + 2.8, y0 + 4.2]];
-        for (let j = 0; j < 11; j++) {
-          const o = hw + 2.8 + 3.2 * (j + 1), y = y0 + 4.2 + 2.2 * j;
-          out.push([o, y], [o, y + 2.2]);
-        }
-        const last = out[out.length - 1];
-        out.push([last[0], last[1] + 4.5], [last[0] + 2.5, last[1] + 4.5], [last[0] + 2.5, y0 - 4]);
+        const out = [[hw + 2.8, y0 - 0.6], [hw + 2.8, y0 + 4.2]];
+        for (let j = 0; j < 11; j++) { const [o, y] = tier(i, j); out.push([o, y], [o, y + 2.2]); }
         return out;
       };
-      const g = sweep(r[0], r[1], side, prof, (i, j, y, out) => {
-        if (j < 3) return out.copy(stoneC);
-        const block = hash2(i >> 3, side + 7);
-        out.copy(j % 2 ? stoneA : stoneB).lerp(stoneC, block * 0.35);
-        return out;
-      });
-      const m = new THREE.Mesh(g, standsMat);
+      const g = sweep(r[0], r[1], side, prof, (i, j, y, out) => out.copy(hash2(i >> 2, j + side * 31) > 0.5 ? tintA : tintB));
+      const m = new THREE.Mesh(g, standsStone);
       m.castShadow = m.receiveShadow = true;
       scene.add(m);
+      // plastered back wall
+      const back = (i) => {
+        const [o, y] = tier(i, 10);
+        return [[o, y + 2.2], [o, y + 6.7], [o + 2.5, y + 6.7], [o + 2.5, TR.py[i] - 4]];
+      };
+      const bw = new THREE.Mesh(sweep(r[0], r[1], side, back, (i, j, y, out) => out.copy(plasterTint)), standsPlaster);
+      bw.castShadow = bw.receiveShadow = true;
+      scene.add(bw);
+      // a wooden bench along the back of every row
+      for (let j = 0; j < 11; j++) {
+        const bench = (i) => {
+          const [o, y] = tier(i, j);
+          return [[o - 0.75, y], [o - 0.75, y + 0.48], [o - 0.06, y + 0.48], [o - 0.06, y]];
+        };
+        const b = new THREE.Mesh(sweep(r[0], r[1], side, bench, (i, k, y, out) => out.setRGB(1, 1, 1)), benchWood);
+        b.castShadow = b.receiveShadow = true;
+        scene.add(b);
+      }
     }
-
   }
 
-  // start gantry: two domed towers and a bridge with five lights
+  // start gantry: two gate towers and a bridge with five lights
   const i = 0, hw = TR.hw[i], y0 = TR.py[i];
   const T = new THREE.Vector3(TR.tx[i], 0, TR.tz[i]), U = new THREE.Vector3(0, 1, 0), R = new THREE.Vector3(-TR.tz[i], 0, TR.tx[i]);
   const base = new THREE.Vector3(TR.px[i], y0, TR.pz[i]);
-  const towerMat = triplanarMaterial('blocks', { scale: 1 / 4, chroma: 0.2, vertexColors: false, color: '#e9dcc5', rough: [0.5, 0.45], macro: 0.1 });
-  const darkMat = new THREE.MeshStandardMaterial({ color: '#4a3b2c', roughness: 0.7 });
-  for (const side of [-1, 1]) {
-    const t = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(6.5, 7.2, 22, 20), towerMat);
-    body.position.y = 11;
-    const dome = new THREE.Mesh(new THREE.SphereGeometry(6.5, 20, 10, 0, TAU, 0, Math.PI / 2), towerMat);
-    dome.position.y = 22;
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(6.65, 6.65, 1.2, 20), darkMat);
-    band.position.y = 17;
-    t.add(body, dome, band);
-    t.position.copy(base).addScaledVector(R, side * (hw + 12));
-    t.traverse((o) => { o.castShadow = o.receiveShadow = true; });
-    scene.add(t);
-    COLLIDERS.push({ x: t.position.x, z: t.position.z, r: 7.5 });
-  }
   const span = 2 * (hw + 12);
-  const gantry = new THREE.Mesh(new THREE.BoxGeometry(span, 5, 5), towerMat);
-  const mtx = new THREE.Matrix4().makeBasis(R, U, T.clone().negate());
-  gantry.quaternion.setFromRotationMatrix(mtx);
-  gantry.position.copy(base).setY(y0 + 17);
-  gantry.castShadow = true;
-  scene.add(gantry);
+  const quat = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(R, U, T.clone().negate()));
+  Object.assign(ARENA_LAYOUT, { base, T, R, quat, hw, y0, span });
+  for (const side of [-1, 1]) {
+    const p = base.clone().addScaledVector(R, side * (hw + 12));
+    ARENA_LAYOUT.towers.push(p);
+    COLLIDERS.push({ x: p.x, z: p.z, r: 7.5 });
+  }
   // lights face the grid (which sits behind the line, on -T)
   for (let k = 0; k < 5; k++) {
     const lamp = new THREE.Mesh(new THREE.CircleGeometry(0.9, 18), new THREE.MeshBasicMaterial({ color: '#2b2118', fog: false }));
-    lamp.quaternion.copy(gantry.quaternion);
+    lamp.quaternion.copy(quat);
     lamp.position.copy(base).addScaledVector(R, (k - 2) * 2.6).addScaledVector(T, -2.56).setY(y0 + 15.6);
     scene.add(lamp);
     START_LIGHTS.push(lamp);
   }
-  // sign on the far side of the gantry
+  // sign on both faces of the gantry
   const sc = document.createElement('canvas'); sc.width = 1024; sc.height = 128;
   const stex = new THREE.CanvasTexture(sc); stex.colorSpace = THREE.SRGBColorSpace;
   const drawSign = () => {
@@ -647,12 +694,93 @@ let gantrySign = null;
   const signMat = new THREE.MeshStandardMaterial({ map: stex, roughness: 0.8 });
   for (const dir of [1, -1]) {           // gantry local +z points at the grid (-T)
     const sign = new THREE.Mesh(new THREE.PlaneGeometry(18, 2.25), signMat);
-    sign.quaternion.copy(gantry.quaternion);
+    sign.quaternion.copy(quat);
     if (dir > 0) sign.rotateY(Math.PI);
     sign.position.copy(base).addScaledVector(T, 2.56 * dir).setY(y0 + (dir > 0 ? 17 : 18.2));
     scene.add(sign);
   }
 }
+
+// the modelled arena pieces, placed along the stands
+function buildArenaVisuals(models) {
+  const L = ARENA_LAYOUT, MATN = ['stone', 'plaster', 'wood', 'cloth', 'metal', 'dark'];
+  const parts = (name) => MATN.map((m) => [m, models.get(`${name}_${m}`)]).filter(([, g]) => g);
+  const instances = (name, list) => {
+    if (!list.length) return;
+    for (const [m, g] of parts(name)) {
+      const im = new THREE.InstancedMesh(g, ARENA_MATS[m], list.length);
+      list.forEach((mx, n) => im.setMatrixAt(n, mx));
+      im.computeBoundingSphere();
+      im.castShadow = im.receiveShadow = true;
+      scene.add(im);
+    }
+  };
+  // module frame: x along the track (mirrored per side so the module stays right-handed),
+  // y up, z towards the track; the Blender modules face the track along their -Y
+  const U = new THREE.Vector3(0, 1, 0), X = new THREE.Vector3(), Z = new THREE.Vector3();
+  const frame = (x, y, z, tx, tz, side) => {
+    X.set(tx * -side, 0, tz * -side);
+    Z.set(tz * side, 0, -tx * side);
+    return new THREE.Matrix4().makeBasis(X, U, Z).setPosition(x, y, z);
+  };
+  const bays = [], awnings = [], merlons = [];
+  if (L.range) {
+    const [r0, r1] = L.range;
+    for (const side of [-1, 1]) {
+      for (let k = r0 + 1; k < r1; k += 2) {
+        const i = TR.idx(k), o = TR.hw[i] + 1.2;
+        bays.push(frame(TR.px[i] - TR.tz[i] * side * o, TR.py[i], TR.pz[i] + TR.tx[i] * side * o, TR.tx[i], TR.tz[i], side));
+      }
+      for (let k = r0 + 2; k < r1 - 1; k++) {
+        const i = TR.idx(k), ss = TR.s[i] > TR.L / 2 ? TR.s[i] - TR.L : TR.s[i];
+        const o = TR.hw[i] + 2.8 + 3.2 * 11, top = TR.py[i] + 4.2 + 2.2 * 10 + 6.7;
+        if (Math.abs(ss - 40) < 170) {
+          if ((k - r0) % 4 === 0) awnings.push(frame(TR.px[i] - TR.tz[i] * side * o, top, TR.pz[i] + TR.tx[i] * side * o, TR.tx[i], TR.tz[i], side));
+        } else {
+          for (const f of [0, 0.5]) {
+            const j2 = TR.idx(k + 1);
+            const x = lerp(TR.px[i], TR.px[j2], f), z = lerp(TR.pz[i], TR.pz[j2], f), oo = o + 1.7;
+            merlons.push(frame(x - TR.tz[i] * side * oo, top, z + TR.tx[i] * side * oo, TR.tx[i], TR.tz[i], side));
+          }
+        }
+      }
+    }
+  }
+  instances('bay', bays);
+  instances('awning', awnings);
+  instances('merlon', merlons);
+  const yaw = Math.atan2(L.T.x, L.T.z);
+  instances('tower', L.towers.map((p) => new THREE.Matrix4().compose(p, new THREE.Quaternion().setFromAxisAngle(U, yaw), new THREE.Vector3(1, 1, 1))));
+  instances('gantry', [new THREE.Matrix4().compose(L.base, L.quat, new THREE.Vector3(L.span / 70, 1, 1))]);
+  for (const lamp of START_LIGHTS) lamp.position.addScaledVector(L.T, -0.38);        // in front of the lamp housings
+}
+// the old simple shapes, if arena.glb can't be loaded
+function buildArenaFallback() {
+  const L = ARENA_LAYOUT;
+  const towerMat = triplanarMaterial('blocks', { scale: 1 / 4, chroma: 0.2, vertexColors: false, color: '#e9dcc5', rough: [0.5, 0.45], macro: 0.1 });
+  if (L.range) for (const side of [-1, 1]) {
+    const front = (i) => [[TR.hw[i] + 1.2, TR.py[i] - 0.6], [TR.hw[i] + 1.2, TR.py[i] + 2.4], [TR.hw[i] + 2.8, TR.py[i] + 2.4]];
+    const m = new THREE.Mesh(sweep(L.range[0], L.range[1], side, front, (i, j, y, out) => out.setRGB(0.85, 0.78, 0.66)), towerMat);
+    m.castShadow = m.receiveShadow = true;
+    scene.add(m);
+  }
+  for (const p of L.towers) {
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(6.5, 7.2, 22, 20), towerMat);
+    body.position.copy(p).setY(L.y0 + 11);
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(6.5, 20, 10, 0, TAU, 0, Math.PI / 2), towerMat);
+    dome.position.copy(p).setY(L.y0 + 22);
+    for (const o of [body, dome]) { o.castShadow = o.receiveShadow = true; scene.add(o); }
+  }
+  const gantry = new THREE.Mesh(new THREE.BoxGeometry(L.span, 5, 5), towerMat);
+  gantry.quaternion.copy(L.quat);
+  gantry.position.copy(L.base).setY(L.y0 + 17);
+  gantry.castShadow = true;
+  scene.add(gantry);
+}
+const ARENA_READY = loadRockModels(new URL('./assets/world/arena.glb', import.meta.url).href).then(buildArenaVisuals).catch((e) => {
+  console.warn('HOMOKFUTAM: arena models failed, using the simple shapes', e);
+  buildArenaFallback();
+});
 
 // ============================================================
 //  Rock spires, boulders, mesas, natural arch
@@ -708,34 +836,46 @@ function lumpGeometry(seed, detail = 4) {
   g.computeVertexNormals();
   return g;
 }
-// many copies of a few shapes -> one InstancedMesh per shape
+// many copies of a few shapes -> one InstancedMesh per shape (fallback when rocks.glb is missing)
 function instanced(geos, mat, list) {
-  const mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), P = new THREE.Vector3(), S = new THREE.Vector3();
   geos.forEach((geo, gi) => {
     const mine = list.filter((it) => it.g % geos.length === gi);
     if (!mine.length) return;
     const im = new THREE.InstancedMesh(geo, mat, mine.length);
-    mine.forEach((it, n) => {
-      mtx.compose(P.set(it.x, it.y, it.z), q.setFromEuler(e.set(it.rx || 0, it.ry || 0, it.rz || 0)), S.set(it.sx, it.sy, it.sz));
-      im.setMatrixAt(n, mtx);
-    });
+    mine.forEach((it, n) => im.setMatrixAt(n, it.mOld || it.m));
     im.computeBoundingSphere();
     im.castShadow = im.receiveShadow = true;
+    im.userData.rock = true;
     scene.add(im);
   });
 }
+const _m4p = new THREE.Vector3(), _m4s = new THREE.Vector3(), _m4q = new THREE.Quaternion(), _m4e = new THREE.Euler();
+const mtx = (x, y, z, rx, ry, rz, sx, sy, sz) => new THREE.Matrix4().compose(_m4p.set(x, y, z), _m4q.setFromEuler(_m4e.set(rx, ry, rz)), _m4s.set(sx, sy, sz));
+// Placement (and the colliders) is decided here; the meshes are built once rocks.glb has loaded
+// (models/world/build_rocks.py): spires and boulders as instanced levels of detail, talus piles
+// at the feet of the spires, buttes on the horizon and the arch over the track.
+const ROCKS = { spires: [], boulders: [], talus: [], mesas: [], arch: null, lods: [], scatter: [], tick: 0 };
+const rockMatAO = rockMaterial(Q, ROCKL.cliff, { scale: 1 / 12, chroma: 0.35, contrast: 1.1, rough: [0.62, 0.35], varnish: 1, foot: 3, ao: true });
+const boulderMatAO = rockMaterial(Q, ROCKL.boulder, { scale: 1 / 6, chroma: 0.45, contrast: 1.05, rough: [0.6, 0.35], foot: 1.2, ao: true });
+const mesaMatAO = rockMaterial(Q, ROCKL.cliff, { scale: 1 / 40, chroma: 0.3, normal: 0.6, macro: 0.4, varnish: 1, foot: 14, ao: true });
 {
   const rand = rng(1999);
-  const spires = Array.from({ length: 8 }, (_, k) => spireGeometry(k * 1.7 + 0.3, (rand() - 0.5) * 0.25));
-  const spireList = [];
-  const place = (x, z, h, r, gi) => {
-    spireList.push({ x, y: groundQuery(x, z) - 3, z, ry: rand() * TAU, sx: r, sy: h, sz: r, g: gi });
+  const place = (x, z, h, r, gi, near) => {
+    const y = groundQuery(x, z) - 3, ry = rand() * TAU, s = r / 15;
+    ROCKS.spires.push({ g: gi, x, y: y + h * 0.5, z, r: h * 0.5, m: mtx(x, y, z, 0, ry, 0, s, h / 100, s * (0.85 + rand() * 0.3)),
+      mOld: mtx(x, y, z, 0, ry, 0, r, h, r) });
     COLLIDERS.push({ x, z, r: r * 0.9 });
+    // fallen blocks piled against the foot of the spires near the track
+    if (near) for (let k = 0, n = 1 + Math.floor(rand() * 2.2); k < n; k++) {
+      const a = rand() * TAU, d = r * (0.95 + rand() * 0.35), tx = x + Math.cos(a) * d, tz = z + Math.sin(a) * d;
+      const ts = clamp(r / 9, 0.8, 2.6) * (0.7 + rand() * 0.5), ty = groundQuery(tx, tz);
+      ROCKS.talus.push({ g: ROCKS.talus.length, x: tx, y: ty, z: tz, r: ts * 6, m: mtx(tx, ty - 0.4 * ts, tz, 0, rand() * TAU, 0, ts, ts * (0.8 + rand() * 0.4), ts) });
+    }
   };
   // a signature cluster you see when leaving the arena
   [[540, -215, 150, 22], [610, -300, 115, 17], [455, -310, 95, 15], [700, -390, 70, 12]].forEach(([x, z, h, r], k) => {
     nearestCoarse(x, z, _nc);
-    if (_nc.d > TR.hw[Math.max(_nc.i, 0)] + 30) place(x, z, h, r, k);
+    if (_nc.d > TR.hw[Math.max(_nc.i, 0)] + 30) place(x, z, h, r, k, true);
   });
   let placed = 0, tries = 0;
   while (placed < 70 && tries++ < 3000) {
@@ -744,80 +884,147 @@ function instanced(geos, mat, list) {
     if (_nc.i >= 0 && (_nc.d < TR.hw[_nc.i] + 45 || TR.canyon[_nc.i] > 0.05)) continue;
     const near = _nc.i >= 0;
     const h = near ? 40 + rand() * 90 : 60 + rand() * 140;
-    place(x, z, h, h * (0.12 + rand() * 0.06), placed);
+    place(x, z, h, h * (0.12 + rand() * 0.06), placed + 4, near && _nc.d < 320);
     placed++;
   }
-  instanced(spires, rockMat, spireList);
 
   // boulders near the racing line (open sections only)
-  const lumps = [lumpGeometry(1), lumpGeometry(2.5), lumpGeometry(4.2)];
-  const lumpList = [];
   for (let k = 0; k < 140; k++) {
     const i = Math.floor(rand() * TR.N);
     if (TR.arena[i] > 0.05 || TR.canyon[i] > 0.05) continue;
     const side = rand() < 0.5 ? -1 : 1, o = TR.hw[i] + 12 + rand() * 70, r = 1.5 + rand() * rand() * 7;
-    const x = TR.px[i] - TR.tz[i] * side * o, z = TR.pz[i] + TR.tx[i] * side * o;
-    lumpList.push({ x, y: groundQuery(x, z) + r * 0.12, z, rx: (rand() - 0.5) * 0.5, ry: rand() * TAU, rz: (rand() - 0.5) * 0.5, sx: r, sy: r, sz: r, g: k });
+    const x = TR.px[i] - TR.tz[i] * side * o, z = TR.pz[i] + TR.tx[i] * side * o, gy = groundQuery(x, z);
+    const rx = (rand() - 0.5) * 0.5, ry = rand() * TAU, rz = (rand() - 0.5) * 0.5;
+    ROCKS.boulders.push({ g: k, x, y: gy, z, r, m: mtx(x, gy + r * 0.05, z, rx, ry, rz, r, r, r), mOld: mtx(x, gy + r * 0.12, z, rx, ry, rz, r, r, r) });
     COLLIDERS.push({ x, z, r: r * 0.85 });
   }
-  instanced(lumps, boulderMat, lumpList);
+  // blocks fallen from the canyon walls, lying against their feet (the walls already stop the pods)
+  const cr = rangeWhere(TR.canyon, 0.5);
+  if (cr) for (let k = cr[0]; k <= cr[1]; k += 8 + Math.floor(rand() * 10)) {
+    const i = TR.idx(k), side = rand() < 0.5 ? -1 : 1, o = TR.hw[i] + 2.5 + rand() * 2.5;
+    const x = TR.px[i] - TR.tz[i] * side * o, z = TR.pz[i] + TR.tx[i] * side * o, y = TR.py[i] - 0.35;
+    if (rand() < 0.55) {
+      const ts = 0.8 + rand();
+      ROCKS.talus.push({ g: ROCKS.talus.length, x, y, z, r: ts * 6, m: mtx(x, y - 0.3 * ts, z, 0, rand() * TAU, 0, ts, ts * (0.7 + rand() * 0.5), ts) });
+    } else {
+      const r = 1 + rand() * 2.2, rx = (rand() - 0.5) * 0.4, ry = rand() * TAU, rz = (rand() - 0.5) * 0.4;
+      ROCKS.boulders.push({ g: ROCKS.boulders.length, x, y, z, r, m: mtx(x, y + r * 0.05, z, rx, ry, rz, r, r, r), mOld: mtx(x, y + r * 0.12, z, rx, ry, rz, r, r, r) });
+    }
+  }
 
-  // distant mesas: one merged mesh with layered cliffs and flat tops
-  const mesas = [];
+  // buttes on the horizon
   for (let k = 0; k < 18; k++) {
     const a = (k / 18) * TAU + rand() * 0.25, d = 2300 + rand() * 900;
+    const w = 250 + rand() * 450, H = 120 + rand() * 230, asp = 0.5 + rand() * 0.5, ry = rand() * TAU;
+    const x = 90 + Math.cos(a) * d, z = -690 + Math.sin(a) * d;
+    ROCKS.mesas.push({ g: k, x, z, w, H, asp, ry, m: mtx(x, groundQuery(x, z) - 6, z, 0, ry, 0, w / 330, H / 200, w / 330 * (0.6 + asp * 0.6)) });
+  }
+
+  // the natural arch over the track: a sandstone fin with the opening cut through it
+  const ai = TR.idx(Math.round(TR.N * (TR.ctrlS[13] + 25) / TR.L));
+  ARCH.x = TR.px[ai]; ARCH.z = TR.pz[ai];
+  const sx = clamp((TR.hw[ai] + 11) / 30, 0.9, 1.4);
+  ROCKS.arch = { i: ai, sx, x: TR.px[ai], y: TR.py[ai] - 2, z: TR.pz[ai], yaw: TR.yaw[ai] };
+  for (const side of [-1, 1]) for (const xo of [37, 47, 57, 66, 74]) {
+    COLLIDERS.push({ x: TR.px[ai] - TR.tz[ai] * side * xo * sx, z: TR.pz[ai] + TR.tx[ai] * side * xo * sx, r: 11 });
+  }
+}
+
+function buildRockVisuals(models) {
+  const lod = (prefix, n, levels) => Array.from({ length: n }, (_, k) => Array.from({ length: levels }, (_, l) => models.get(`${prefix}${k}_lod${l}`)));
+  ROCKS.lods.push(new LodInstances(scene, lod('spire', 8, 3), rockMatAO, ROCKS.spires, [380, 1400]));
+  ROCKS.lods.push(new LodInstances(scene, lod('boulder', 6, 2), boulderMatAO, ROCKS.boulders, [160]));
+  ROCKS.lods.push(new LodInstances(scene, lod('talus', 2, 2), boulderMatAO, ROCKS.talus, [180]));
+  // buttes: one instanced mesh per shape, no detail levels (they are always kilometres away)
+  for (let v = 0; v < 4; v++) {
+    const mine = ROCKS.mesas.filter((it) => it.g % 4 === v);
+    const im = new THREE.InstancedMesh(models.get(`mesa${v}`), mesaMatAO, mine.length);
+    mine.forEach((it, n) => im.setMatrixAt(n, it.m));
+    im.computeBoundingSphere();
+    im.receiveShadow = true;
+    im.userData.rock = true;
+    scene.add(im);
+  }
+  const A = ROCKS.arch, arch = new THREE.LOD();
+  [0, 1].forEach((l) => {
+    const m = new THREE.Mesh(models.get(`arch_lod${l}`), rockMatAO);
+    m.castShadow = m.receiveShadow = true;
+    m.userData.rock = true;
+    arch.addLevel(m, l ? 900 : 0);
+  });
+  arch.position.set(A.x, A.y, A.z);
+  arch.rotation.y = A.yaw;
+  arch.scale.set(A.sx, 1, 1);
+  scene.add(arch);
+  if (CANYON_BRIDGE) {
+    const b = CANYON_BRIDGE;
+    b.geometry.dispose();
+    b.geometry = models.get('bridge');
+    b.material = rockMatAO;
+    b.scale.set(b.userData.span / 76, 1, 1);
+  }
+}
+
+// the old procedural shapes, if rocks.glb can't be loaded
+function buildRockFallback() {
+  const rand = rng(77);
+  instanced(Array.from({ length: 8 }, (_, k) => spireGeometry(k * 1.7 + 0.3, (rand() - 0.5) * 0.25)), rockMat, ROCKS.spires);
+  instanced([lumpGeometry(1), lumpGeometry(2.5), lumpGeometry(4.2)], boulderMat, ROCKS.boulders);
+  const mesas = ROCKS.mesas.map((it, k) => {
     const g = weld(new THREE.CylinderGeometry(1, 1.25, 1, 56, 16));
     const p = g.attributes.position, col = new Float32Array(p.count * 3);
-    const w = 250 + rand() * 450, H = 120 + rand() * 230;
     for (let v = 0; v < p.count; v++) {
-      const x = p.getX(v), y = p.getY(v) + 0.5, z = p.getZ(v), r = Math.hypot(x, z);
-      const ang = Math.atan2(z, x), ca = Math.cos(ang), sa = Math.sin(ang);
-      let sc = 0.8 + 0.4 * vnoise(ca * 2 + k, sa * 2) + 0.1 * (vnoise(ca * 7 + k, sa * 7 + y * 3) - 0.5);
-      sc -= smooth(0.6, 0.95, (y * H / 22) % 1) * 0.03;              // cliff bands
+      const x = p.getX(v), y = p.getY(v) + 0.5, z = p.getZ(v), ang = Math.atan2(z, x);
+      const sc = 0.8 + 0.4 * vnoise(Math.cos(ang) * 2 + k, Math.sin(ang) * 2);
       p.setXYZ(v, x * sc, y, z * sc);
-      strata(y * H * 0.5, k * 17, _col);
-      if (y > 0.99 && r < 0.98) _col.lerp(ROCK.top, 0.7);
+      strata(y * it.H * 0.5, k * 17, _col);
       col.set([_col.r, _col.g, _col.b], v * 3);
     }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    g.scale(w, H, w * (0.5 + rand() * 0.5));
-    g.rotateY(rand() * TAU);
-    g.translate(90 + Math.cos(a) * d, -25, -690 + Math.sin(a) * d);
-    mesas.push(g);
-  }
+    g.scale(it.w * 0.6, it.H, it.w * 0.6 * it.asp);
+    g.rotateY(it.ry);
+    g.translate(it.x, -25, it.z);
+    return g;
+  });
   const mg = mergeGeometries(mesas);
   mg.computeVertexNormals();
-  const mesaMesh = new THREE.Mesh(mg, triplanarMaterial('cliff', { scale: 1 / 60, chroma: 0.3, normal: 0.6, macro: 0.4 }));
+  const mesaMesh = new THREE.Mesh(mg, rockMaterial(Q, ROCKL.cliff, { scale: 1 / 40, chroma: 0.3, normal: 0.6, macro: 0.4, varnish: 1, foot: 12 }));
   mesaMesh.receiveShadow = true;
+  mesaMesh.userData.rock = true;
   scene.add(mesaMesh);
-
-  // natural arch over the track
-  const ai = TR.idx(Math.round(TR.N * (TR.ctrlS[13] + 25) / TR.L));
-  ARCH.x = TR.px[ai]; ARCH.z = TR.pz[ai];
-  const R = TR.hw[ai] + 14;
+  const A = ROCKS.arch, R = TR.hw[A.i] + 14;
   const ag = weld(new THREE.TorusGeometry(R, 7, 26, 90, Math.PI));
   const ap = ag.attributes.position, acol = new Float32Array(ap.count * 3);
   for (let v = 0; v < ap.count; v++) {
-    const x = ap.getX(v), y = ap.getY(v), z = ap.getZ(v);
-    const n = vnoise(x * 0.12 + 3, y * 0.12 + z * 0.1) - 0.5;
-    const f = fbm(x * 0.4 + 7, y * 0.4 + z * 0.3, 2) - 0.5;
-    ap.setXYZ(v, x * (1 + n * 0.12 + f * 0.03), y * (1 + n * 0.1 + f * 0.03), z * (1.4 + n * 0.6 + f * 0.25));
+    const x = ap.getX(v), y = ap.getY(v), z = ap.getZ(v), n = vnoise(x * 0.12 + 3, y * 0.12 + z * 0.1) - 0.5;
+    ap.setXYZ(v, x * (1 + n * 0.12), y * (1 + n * 0.1), z * (1.4 + n * 0.6));
     strata(y, 900, _col); acol.set([_col.r, _col.g, _col.b], v * 3);
   }
   ag.setAttribute('color', new THREE.BufferAttribute(acol, 3));
   ag.computeVertexNormals();
   const arch = new THREE.Mesh(ag, rockMat);
-  arch.position.set(TR.px[ai], TR.py[ai] - 4, TR.pz[ai]);
-  arch.rotation.y = TR.yaw[ai];
+  arch.position.set(A.x, A.y - 2, A.z);
+  arch.rotation.y = A.yaw;
   arch.castShadow = arch.receiveShadow = true;
+  arch.userData.rock = true;
   scene.add(arch);
-  for (const side of [-1, 1]) COLLIDERS.push({ x: TR.px[ai] - TR.tz[ai] * side * R, z: TR.pz[ai] + TR.tx[ai] * side * R, r: 9 });
 }
+let PROPS_MODELS = null;          // assets/world/props.glb: ground clutter, placed at boot (needs the macro map)
+const PROPS_READY = loadRockModels(new URL('./assets/world/props.glb', import.meta.url).href).then((m) => { PROPS_MODELS = m; })
+  .catch((e) => console.warn('HOMOKFUTAM: props failed, no ground clutter', e));
+const ROCKS_READY = loadRockModels().then(buildRockVisuals).catch((e) => {
+  console.warn('HOMOKFUTAM: rock models failed, using the simple shapes', e);
+  buildRockFallback();
+});
 
 // ============================================================
 //  Dressing: crowd, flags, screens, chase lights, power line, ruins, life (world/dressing.js)
 // ============================================================
-const DRESS = buildDressing({ scene, TR, Q, groundQuery, nearestCoarse, rangeWhere, rng, fbm, vnoise, triplanarMaterial, mergeGeometries });
+let HORIZON = null;
+const DRESS = buildDressing({ scene, TR, Q, groundQuery, nearestCoarse, rangeWhere, rng, fbm, vnoise, triplanarMaterial, mergeGeometries,
+  stoneMat: AM(ARENA.stone, { vertexColors: false, color: '#e9dcc6', foot: 1.5 }) });
+buildHorizon(scene, renderer).then((h) => { HORIZON = h; for (const m of DRESS.mountains || []) m.visible = false; })
+  .catch((e) => console.warn('HOMOKFUTAM: horizon panorama failed, keeping the simple ridges', e));
 
 // ============================================================
 //  Pod model: two engines joined by an energy beam, cables, cockpit
@@ -1529,6 +1736,16 @@ function updateWind(dt) {
     const a = Math.random() * TAU, d = 25 + Math.random() * 110;
     const x = camera.position.x + Math.cos(a) * d, z = camera.position.z + Math.sin(a) * d, g = groundQuery(x, z);
     emit(SAND, x, g + 0.8 + Math.random() * 2, z, WIND_DIR.x * (5 + Math.random() * 5), 0.3, WIND_DIR.y * (5 + Math.random() * 5), 4 + Math.random() * 3, { ground: g });
+  }
+  // spindrift: thin veils of sand streaming off the dune brinks downwind
+  for (let k = Math.floor(dt * 60 * PQ + Math.random()); k > 0; k--) {
+    const a = Math.random() * TAU, d = 40 + Math.random() * 260;
+    const x = camera.position.x + Math.cos(a) * d, z = camera.position.z + Math.sin(a) * d;
+    const cr = duneCrest(x, z);
+    if (cr < 0.25 || Math.random() > cr) continue;
+    const g = groundQuery(x, z), v = 7 + Math.random() * 6;
+    emit(SAND, x, g + 0.3, z, WIND_DIR.x * v, 0.6 + Math.random() * 0.8, WIND_DIR.y * v, 2.2 + Math.random() * 1.5,
+      { ground: g - 3, size0: 1.5 + Math.random(), size1: 6 + Math.random() * 5, alpha: 0.1 + cr * 0.08 });
   }
 }
 
@@ -2511,6 +2728,9 @@ function arenaLife(dt) {
   CROWD.wave = damp(CROWD.wave, waveOn ? 1 : 0, 1.5, dt);
   DRESS.cheer = CROWD.cheer; DRESS.wave = CROWD.wave;
   DRESS.update(dt, simT, camera.position);
+  for (const l of ROCKS.lods) l.update(camera.position);
+  HORIZON?.update(camera.position);
+  if ((ROCKS.tick++ & 3) === 0) for (const l of ROCKS.scatter) l.update(camera.position);
   // drones follow the two leading pods (in the menu: the player and the pod beside it)
   const order = racing || state === 'countdown' ? standings().filter((r) => !r.gone) : [player, racers.find((r) => r !== player)];
   DRESS.updateDrones(order.slice(0, 2), dt, simT);
@@ -2620,6 +2840,7 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
     view(d) { DEBUG_CAM = d; updateCamera(1); renderFrame(0.016); },
     racer(n = 0) { return racers[n]; },
     force(o) { DEBUG_FORCE = o; },
+    groundDebug(n) { groundDebug(n); renderFrame(0.016); },
     crash(n = 0, power = 60) { const r = racers[n]; crashFx(r, r.x + Math.sin(r.yaw) * 2, r.z + Math.cos(r.yaw) * 2, power); },
     info() {
       return { state, raceT: +raceT.toFixed(1), mp: MP.room ? { code: MP.room.code, host: MP.room.isHost, peers: MP.room.peers.size, inRace: MP.inRace } : null, racers: racers.map((r) => ({ n: r.name, ctl: r.ctl, gone: r.gone, lap: r.lap, prog: Math.round(r.prog), d: +r.loc.d.toFixed(1), v: Math.round(r.fwd * 3.6), fin: r.finished, ft: +r.finishTime.toFixed(1), laps: r.lapTimes.map((t) => +t.toFixed(1)), heat: Math.round(r.heat), roll: +r.roll.toFixed(2) })) };
@@ -2630,7 +2851,14 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
 // static sun shadow for the whole world, rendered once everything static exists
 const WORLD_BOUNDS = new THREE.Box3(new THREE.Vector3(-1850, -70, -2450), new THREE.Vector3(2050, 270, 1000));
 function boot(data) {
+  try { bakeMacro(renderer, scene, { x0: TERRAIN.cx - TERRAIN.size / 2, z0: TERRAIN.cz - TERRAIN.size / 2, size: TERRAIN.size, res: 1024 }); }
+  catch (e) { console.warn('HOMOKFUTAM: macro map failed', e); }
+  if (PROPS_MODELS) {
+    try { ROCKS.scatter = buildScatter({ scene, TR, Q, groundQuery, rng, models: PROPS_MODELS, rockMat: boulderMatAO, metalMat: ARENA_MATS.metal }); }
+    catch (e) { console.warn('HOMOKFUTAM: ground clutter failed', e); }
+  }
   bakeWorldShadow(renderer, scene, WORLD_BOUNDS, Q.staticShadow);
+  try { buildHaze({ scene, TR, rangeWhere, arch: ROCKS.arch, Q }); } catch (e) { console.warn('HOMOKFUTAM: haze failed', e); }
   if (Q.post) {
     try {
       post = createPost(renderer, scene, camera, Q, SUN_DIR);
@@ -2648,7 +2876,7 @@ function boot(data) {
   requestAnimationFrame((t) => { lastT = t; frame(t); $('loading').hidden = true; });
 }
 // show the game once the surface textures are in (or after 10 s, whatever happens first)
-const texturesReady = Promise.race([SURF.ready, new Promise((r) => setTimeout(r, 10000))]);
+const texturesReady = Promise.race([Promise.all([SURF.ready, GROUND_READY, ROCKS_READY, ARENA_READY, PROPS_READY]), new Promise((r) => setTimeout(r, 15000))]);
 const hot = window.claude && window.claude.hot;
 if (hot && typeof hot.snapshot === 'function') { try { hot.snapshot(() => ({ laps, diff, muted: SND.muted })); } catch { /* ignore */ } }
 if (hot && typeof hot.ready === 'function') hot.ready((d) => texturesReady.then(() => boot(d)));

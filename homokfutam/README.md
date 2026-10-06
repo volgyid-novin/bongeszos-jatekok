@@ -95,15 +95,19 @@ Mi van a képen:
 
 - **Fény:** alacsonyan álló, aranyórás nap. A visszaverődések az égboltból számolódnak. Az egész pálya árnyéka betöltéskor egyszer elkészül, a kamera közelében pedig a podoknak és a részleteknek külön, éles árnyéka van. A felhők árnyéka végigvonul a homokon.
 - **Levegő:** magasságfüggő köd, ami a nap felé melegebb. A távoli hegyek és mezák ettől lesznek kékesek és párásak.
-- **Felületek:** valódi PBR-textúrák a Poly Havenről (CC0), WebP-be csomagolva (`assets/tex/`). A terep sűrűsége a pályától mért távolságtól függ. A homokon fodrozódás és a szél vitte homokcsíkok látszanak. Az ideális íven a pálya letaposott és kormos, a széleire befúj a homok, a podok pedig nyomot hagynak rajta, ami fél perc alatt kopik el.
+- **Talaj:** hét saját, Blenderben sütött felület (fodros homok, puha homok, sivatagi kavicsburkolat, repedezett agyag, letaposott pályahomok, csupasz homokkő, kőlapok), GPU-n tömörített KTX2-textúrákban (`assets/tex/`). A felületek a magasságuk szerint keverednek, így a kavicsok kibújnak a homokból. A mintázat nem ismétlődik láthatóan. Hogy hol mi van, azt a betöltéskor kiszámolt nagy léptékű térkép dönti el: a dűnék szél felőli oldalán fodrok, a csúszólejtőkön puha homok, a lapos mélyedésekben kavics és repedezett agyag, a sziklák körül kavicstörmelék és csupasz kő, mögöttük a szél árnyékában homoknyelv. Ugyanez a térkép adja a nagy léptékű árnyékolást is. A homok csillog a napfényben, a dűnék gerince súroló fényben felragyog.
+- **Dűnék:** a pályától távolabb a szél formálta, éles gerincű harántdűnék vannak (hosszú, lankás szél felőli oldal, rövid, meredek csúszólejtő), a gerincekről a szél homokfátylat fúj le. A pálya közelében a terep a régi, a fizika és a köridők nem változnak.
+- **Pálya:** letaposott, kavicsos homok, a széleire befúj a homok, a két oldalán a podok által feltolt homokpadka vezet át a dűnékbe. Az ideális íven a pálya sötétebb és kormos, néhol olajfolt és égésnyom maradt az előző futamokból, a kanyonban kibukkan a sziklaalap, az arénában kőlapok vannak. A podok nyoma fél perc alatt kopik el.
+- **Sziklák:** a sziklatűk, a buttek, a sziklaív, a kanyon sziklahídja és a kövek Blenderben, kódból készültek (`models/world/`): kemény és puha rétegek, nyakak, sapkakövek, függőleges barázdák és repedések, beégetett árnyékolással, több részletességi szinttel. A tűk lábánál és a kanyonfalak tövében lehullott kőtörmelék van. A sziklák felfelé néző peremein és a tövükben homok gyűlik, a meredek falakon sivatagi lakk (sötét csíkok) fut le.
 - **Energianyaláb:** a két hajtómű között fehéren izzó mag, körülötte bíbor fény, az oldalán cikázó, elágazó kisülések. Az energia lüktetve fut végig rajta, a végein az emitterek felvillannak és szikráznak. A nyaláb igazi fényt is vet: megvilágítja a hajtóműveket, a pilótafülkét és a homokot. Boostnál vastagabb és fényesebb, túlmelegedéskor narancsosra vált és akadozik, nagy ütközésnél elszakad, az emitterekből kisülések csapnak ki, aztán a nyaláb visszaugrik.
 - **Hajtóművek:** a lángcsóva térfogati (sugárkövetéssel számolt) láng, ezért hátulról is lángnak látszik, nem csak egy izzó foltnak. A fúvóka torka izzik, boostnál a láng magja kékesfehér, benne állóhullám-gyémántok. Boost indításakor tűzgyűrű és villanás jön, a végén a láng elköhögi magát és füstöt ereget. Túlmelegedéskor a hajtómű visszalő: tűzgömb, füstkarika, szikrák. A hő a fúvókától előre haladva vörösen izzítja a hajtómű burkolatát. Alacsonyan a homok felett a sugár V alakban felveri a homokot.
 - **Füst és tűz:** a por, a füst és a robbanások Blenderben szimulált (Mantaflow) animált képsorok, három irányból megvilágítva, így a nap felől világosak, az árnyékos oldalukon sötétebbek.
 - **Ütközések:** a falnál szikrázó súrlódás, kőtörmelék. Nagy ütközésnél tűzgömb, a nyaláb elszakad, a pod festett burkolatdarabjai és alkatrészei leszakadnak és füstölögve pattognak, a pod megrázkódik, és az egyik hajtóműve néhány másodpercig füstöl. Ez csak látvány: a fizikán nem változtat. A visszajátszásban és a többiek gépén is látszik.
 - **Egyéb:** a hajtóművek mögött remeg a levegő, a pod alatt fénylik a talaj, és boostnál lökéshullám-gyűrű indul.
 - **Kamera:** rugózó üldözőkamera, amely előrenéz a kanyarba és bedől. A rajt előtt bemutató megy (légi felvétel, végig a rajtrácson, majd ráereszkedés a podra). Célba éréskor körbeforduló, lassított felvétel jön, az eredményeknél pedig a futam végének visszajátszása megy TV-kamerákkal.
-- **Aréna:** integető és hullámzó közönség, lengő zászlók és molinók, állásjelző kivetítők, reflektortornyok, léghajó és kameradrónok. Célba éréskor tűzijáték és konfetti.
-- **Táj:** sorban felvillanó jelzőfények a pálya szélén, kanyarjelző táblák, távvezeték, romok, roncsok, a láthatáron hegyek és egy település. Ördögszekér, száraz bozót, keselyűk és porördögök teszik élővé.
+- **Aréna:** faragott homokkő lelátók fapadokkal, vakolt hátsó fal pártázattal, boltíves fülkékkel tagolt mellvéd, csíkos vászontetők a középső lelátók felett, kupolás kapubástyák és a rajtkapu (Blenderben modellezve, közös arénatextúrákkal). Integető és hullámzó közönség, lengő zászlók és molinók, állásjelző kivetítők, reflektortornyok, léghajó és kameradrónok. Célba éréskor tűzijáték és konfetti.
+- **Táj:** sorban felvillanó jelzőfények a pálya szélén, kanyarjelző táblák, távvezeték, romok, roncsok és egy település. A földön kavicsok, kövek, száraz cserjék, régen elpusztult állatok csontjai és lezuhant podok roncsdarabjai. Ördögszekér, száraz bozót, keselyűk és porördögök teszik élővé. A kanyonban és a sziklaív alatt por lebeg, ahol a napfény átvilágít rajta, fénynyalábok látszanak.
+- **Láthatár:** a távoli hegyláncokat Blender rendereli egy 360 fokos képsávba, a játék napállásával megvilágítva. A játék egy gyűrűre teszi a pálya köré, és ugyanaz a köd párásítja, mint minden mást.
 - **Hang:** minden szintetizált: motorok térhatással és Doppler-effektussal, visszhang a kanyonban és az ív alatt, közönség, zene, amely a futam izgalmával erősödik. Ha a böngészőben van magyar hang, a bemondó is megszólal.
 
 ## Felépítés
@@ -117,16 +121,25 @@ homokfutam/
   playerPod.js      a részletes pod: betöltés, podonkénti festés, mozgó részek
   gfx/quality.js    grafikai fokozatok, dinamikus felbontás
   gfx/atmosphere.js köd, ég, felhők, környezeti fény, az egész pálya árnyéka
-  gfx/surfaces.js   terep-, pálya- és kőanyagok (textúrák, triplanáris vetítés)
+  gfx/ground.js     talaj-, pálya- és sziklaanyagok: a KTX2-textúratömbök, a felületek keverése, csillogás,
+                    homok a sziklákon, nyomok a pályán
+  gfx/surfaces.js   triplanáris kőanyag a régi kőtextúrával (csak tartalék)
   gfx/post.js       utófeldolgozás (pmndrs/postprocessing + N8AO)
   gfx/particles.js  részecskék: por, füst, szikra, tűz, konfetti, szimulált füst- és tűzképsorok
   gfx/podfx.js      lángcsóva, fúvókaizzás, boost- és visszalövés-effektek, hőremegés, talajfény, lökéshullám, nyomok a pályán, törmelék
   gfx/beam.js       energianyaláb a hajtóművek között, és a fény, amit vet
   world/dressing.js közönség, zászlók, kivetítők, fények, táj és élővilág
+  world/macro.js    a betöltéskor sütött nagy léptékű talajtérkép (árnyékolás, gerincek, mélyedések, sziklák környéke)
+  world/rocks.js    a szikla- és arénamodellek betöltése, részletességi szintek
+  world/scatter.js  kavicsok, kövek, cserjék, csontok, roncsdarabok
+  world/horizon.js  a láthatár hegyláncai
+  world/haze.js     por és fénynyalábok a kanyonban és az ív alatt
   assets/           a részletes pod modellje és festésmaszkja, assets/tex/ a felületek textúrái,
-                    assets/fx/ a füst- és tűzképsorok és a törmelék modelljei
+                    assets/world/ a pálya modelljei és a láthatár, assets/fx/ a füst- és tűzképsorok
+                    és a törmelék modelljei
   models/pod/       Blender-szkriptek, ezekből készül a modell
   models/fx/        Blender-szkriptek a füst- és tűzképsorokhoz és a törmelékhez
+  models/world/     Blender-szkriptek a pálya textúráihoz, szikláihoz, arénájához, tárgyaihoz és a láthatárhoz
 ```
 
 A fontos számok a `main.js`-ben vannak:
@@ -158,6 +171,31 @@ A `bake_export.py` a `gltfpack` eszközzel (`npx`) tömöríti a modellt, ehhez 
 A festés színét a játék adja: a `pod_livery.png` piros csatornája a fő szín, a zöld csatornája a díszítőszín helye. Így a modell bármelyik rajtszínnel működik, többjátékos módban is. A kék csatorna a hőmaszk: ahol a fém felizzik, amikor a hajtóművek melegszenek (a fúvókában a legerősebb, előre haladva halványul). A nyaláb emitterének elektródája és tekercsei külön anyagot kapnak (`PodBeam`), ezeket a játék a nyalábbal együtt világítja.
 
 A mozgó részeket a `playerPod.js` mozgatja: a beömlő ventilátora a gázzal pörög, fékezéskor kinyílnak a légfékek, kanyarban kitérnek a hátsó lapok és bedől a pilóta, boostnál kitágul a fúvóka, a hajtómű izzása pedig a gázt és a hőt követi.
+
+## A pálya textúrái és modelljei
+
+Minden Blenderben, kódból készül, a forrás a `models/world/` mappa:
+
+- `build_textures.py`: a talaj, a sziklák és az aréna felületei. A domborzatot, a színt és az érdességet numpy rajzolja meg (ismétlődő, varratmentes mintákkal, a kavicsok valódi 3D kövek), a Cycles pedig ráégeti egy síkra: szín, érdesség, normál, árnyékolás, magasság. Az eredmény 1024 pixeles KTX2-textúratömb: a szín ETC1S, a normál UASTC tömörítésű (a KTX-Software `toktx` eszközével).
+- `build_rocks.py`: sziklatűk, buttek, a sziklaív, a kanyon sziklahídja, kövek és kőtörmelék-kupacok (`assets/world/rocks.glb`).
+- `build_arena.py`: a lelátók mellvédje, a vászontetők, a pártázat, a kapubástyák és a rajtkapu (`assets/world/arena.glb`).
+- `build_props.py`: kavicsok, kövek, cserjék, csontváz, csontok, roncsdarabok (`assets/world/props.glb`).
+- `build_panorama.py`: a láthatár hegyláncai (`assets/world/panorama.ktx2`).
+- `preview.py`: Cycles előnézet a modellekről.
+
+Újragenerálás a projekt gyökeréből:
+
+```bash
+blender -b --factory-startup --python homokfutam/models/world/build_textures.py
+blender -b --factory-startup --python homokfutam/models/world/build_rocks.py
+blender -b --factory-startup --python homokfutam/models/world/build_arena.py
+blender -b --factory-startup --python homokfutam/models/world/build_props.py
+blender -b --factory-startup --python homokfutam/models/world/build_panorama.py
+```
+
+A textúrákhoz kell a [KTX-Software](https://github.com/KhronosGroup/KTX-Software) (`toktx`), a modellek tömörítéséhez Node (`npx gltfpack`). A textúrák kb. 10–15 perc alatt sülnek (GPU-val), a `--only sand_ripple,gravel` csak a megadottakat süti újra, a `--repack 1` csak a KTX2-fájlokat készíti el újra a már megsütött anyagokból. A nyers sütések a `models/world/build/` mappába kerülnek.
+
+A sziklák elhelyezése és ütközői a `main.js`-ben vannak. Ha a modellek nem töltődnek be, a játék a régi, egyszerű formákkal fut.
 
 ## Füst, tűz és törmelék
 

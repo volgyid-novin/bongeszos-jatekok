@@ -6,22 +6,22 @@ export const PRESETS = {
   low: {
     name: 'low', pixelRatio: 1, minPixelRatio: 0.6, post: false, msaa: 0, ao: false, bloom: false, godrays: false,
     heat: false, smaa: false, shadow: 1024, shadowBox: 90, staticShadow: 2048, terrain: 0, particles: 0.5, crowd: 0.35,
-    dressing: 0.5, cloudShadows: true, flare: false, blur: false, dof: false, rivals: false,
+    dressing: 0.5, cloudShadows: true, flare: false, blur: false, dof: false, rivals: false, groundQ: 0,
   },
   medium: {
     name: 'medium', pixelRatio: 1.25, minPixelRatio: 0.7, post: true, msaa: 0, ao: false, bloom: true, godrays: false,
     heat: false, smaa: true, shadow: 2048, shadowBox: 110, staticShadow: 4096, terrain: 1, particles: 0.75, crowd: 0.6,
-    dressing: 0.8, cloudShadows: true, flare: true, blur: true, dof: false, rivals: true,
+    dressing: 0.8, cloudShadows: true, flare: true, blur: true, dof: false, rivals: true, groundQ: 1,
   },
   high: {
     name: 'high', pixelRatio: 1.75, minPixelRatio: 0.8, post: true, msaa: 4, ao: true, bloom: true, godrays: true,
     heat: true, smaa: false, shadow: 2048, shadowBox: 130, staticShadow: 4096, terrain: 2, particles: 1, crowd: 1,
-    dressing: 1, cloudShadows: true, flare: true, blur: true, dof: true, rivals: true,
+    dressing: 1, cloudShadows: true, flare: true, blur: true, dof: true, rivals: true, groundQ: 2,
   },
   ultra: {
     name: 'ultra', pixelRatio: 2, minPixelRatio: 1, post: true, msaa: 4, ao: true, bloom: true, godrays: true,
     heat: true, smaa: false, shadow: 4096, shadowBox: 150, staticShadow: 8192, terrain: 3, particles: 1.25, crowd: 1,
-    dressing: 1, cloudShadows: true, flare: true, blur: true, dof: true, rivals: true,
+    dressing: 1, cloudShadows: true, flare: true, blur: true, dof: true, rivals: true, groundQ: 2,
   },
 };
 export const ORDER = ['low', 'medium', 'high', 'ultra'];

@@ -4,10 +4,10 @@ import { atmoUniforms } from './atmosphere.js';
 // ============================================================
 //  Surface materials: PBR textures from Poly Haven (CC0), packed by hand:
 //  <name>_c.webp = albedo with AO baked in, <name>_n.webp = normal.xy + roughness in B.
-//  Terrain and track use planar projection, rocks and stone use triplanar.
+//  Triplanar stone for the built structures.
 // ============================================================
 const url = (f) => new URL(`../assets/tex/${f}.webp`, import.meta.url).href;
-const SETS = ['sand', 'track', 'cliff', 'boulder', 'blocks'];
+const SETS = ['blocks'];          // the ground and rocks moved to gfx/ground.js (KTX2 arrays)
 export const SURF = {};
 
 export function loadSurfaces(renderer) {
@@ -101,123 +101,5 @@ export function triplanarMaterial(set, { scale = 1 / 10, chroma = 0.5, contrast 
           normal = normalize( ( viewMatrix * vec4( nW, 0.0 ) ).xyz );
         }`,
     },
-  });
-}
-
-// ---------------------------------------------------------------------------
-//  Terrain: rippled sand at two scales (anti-tiling), packed sand along the track (aTrackK),
-//  slope darkening, slow drifting sand streaks, macro colour variation.
-// ---------------------------------------------------------------------------
-export const WIND_DIR = new THREE.Vector2(0.92, 0.39).normalize();
-export function terrainMaterial() {
-  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
-  const u = {
-    sC: { value: SURF.sand.c }, sN: { value: SURF.sand.n }, kC: { value: SURF.track.c }, kN: { value: SURF.track.n },
-    tWind: { value: WIND_DIR },
-  };
-  return patch(m, 'hf-terrain', u, {
-    pars: /* glsl */`uniform sampler2D sC, sN, kC, kN; uniform vec2 tWind; varying float vTrackK;`,
-    chunks: {
-      map_fragment: /* glsl */`
-        vec2 tp = vHfWorld.xz;
-        float camD = length( vHfWorld - cameraPosition );
-        vec2 uv1 = tp / 6.5, uv2 = mat2( 0.8, -0.6, 0.6, 0.8 ) * tp / 27.0;
-        vec4 c1 = texture2D( sC, uv1 ), c2 = texture2D( sC, uv2 );
-        vec4 n1 = texture2D( sN, uv1 ), n2 = texture2D( sN, uv2 );
-        vec4 k1 = texture2D( kC, tp / 9.0 ), kn = texture2D( kN, tp / 9.0 );
-        float mean = max( hfLum( textureLod( sC, vec2( 0.5 ), 12.0 ).rgb ), 0.02 );
-        float kMean = max( hfLum( textureLod( kC, vec2( 0.5 ), 12.0 ).rgb ), 0.02 );
-        float near = 1.0 - smoothstep( 60.0, 380.0, camD );
-        float det = mix( hfLum( c2.rgb ), hfLum( c1.rgb ), 0.35 + 0.4 * near ) / mean;
-        float sh = smoothstep( 0.15, 0.85, vTrackK );
-        det = mix( det, hfLum( k1.rgb ) / kMean, sh );
-        float mac = texture2D( hfCloudTex, tp / 1700.0 ).r;
-        float mac2 = texture2D( hfCloudTex, tp / 260.0 + 0.5 ).r;
-        // drifting sand streaks along the wind
-        vec2 wp = vec2( dot( tp, tWind ), dot( tp, vec2( -tWind.y, tWind.x ) ) );
-        float st = texture2D( hfCloudTex, vec2( wp.x * 0.0021 - hfTime * 0.006, wp.y * 0.017 ) ).r;
-        st *= texture2D( hfCloudTex, vec2( wp.x * 0.0009 - hfTime * 0.0025, wp.y * 0.004 ) + 0.3 ).r;
-        float drift = smoothstep( 0.32, 0.5, st ) * ( 1.0 - sh );
-        vec3 tint = mix( vec3( 1.0 ), vec3( 0.86, 0.8, 0.74 ), sh * 0.8 );
-        diffuseColor.rgb *= ( 0.35 + 0.65 * det ) * tint * ( 0.84 + 0.32 * mac ) * ( 0.94 + 0.12 * mac2 ) * ( 1.0 + drift * 0.13 );
-        float tR = mix( mix( n2.b, n1.b, 0.5 ), kn.b, sh );`,
-      roughnessmap_fragment: /* glsl */`float roughnessFactor = clamp( 0.72 + 0.32 * tR, 0.0, 1.0 );`,
-      normal_fragment_maps: /* glsl */`
-        {
-          vec3 wn = normalize( ( vec4( normal, 0.0 ) * viewMatrix ).xyz );
-          float k = 1.15 * ( 1.0 - smoothstep( 90.0, 900.0, camD ) * 0.75 );
-          vec3 a = hfUnpackN( n1, k * ( 0.35 + 0.65 * near ) ), b = hfUnpackN( n2, k * 0.8 ), c = hfUnpackN( kn, k );
-          vec3 t = normalize( vec3( a.xy + b.xy, a.z * b.z ) );
-          t = mix( t, c, sh );
-          vec3 nW = normalize( vec3( t.x + wn.x, abs( t.z ) * wn.y, t.y + wn.z ) );
-          normal = normalize( ( viewMatrix * vec4( nW, 0.0 ) ).xyz );
-        }`,
-    },
-  }, (sh) => {
-    sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aTrackK;\nvarying float vTrackK;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvTrackK = aTrackK;');
-  });
-}
-
-// ---------------------------------------------------------------------------
-//  Track: packed sand, a polished/darker racing line with scorch marks from the jets,
-//  loose sand drifting in from the edges, and the dynamic trail map (pods' scorch/grooves).
-//  aTr = (lateral metres, arc length metres, racing line lateral metres, half width)
-// ---------------------------------------------------------------------------
-export function trackMaterial(streakTex, trackLength) {
-  const m = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2 });
-  const u = {
-    kC: { value: SURF.track.c }, kN: { value: SURF.track.n }, sC: { value: SURF.sand.c }, sN: { value: SURF.sand.n },
-    kStreak: { value: streakTex }, kL: { value: trackLength },
-    kTrail: { value: null }, kTrailOn: { value: 0 },
-  };
-  return patch(m, 'hf-track', u, {
-    pars: /* glsl */`uniform sampler2D kC, kN, sC, sN, kStreak, kTrail; uniform float kL, kTrailOn; varying vec4 vTr;`,
-    chunks: {
-      map_fragment: /* glsl */`
-        float d = vTr.x, s = vTr.y, hw = vTr.w;
-        float camD = length( vHfWorld - cameraPosition );
-        vec2 tuv = vec2( d, s ) / 8.5, suv = vHfWorld.xz / 6.5;
-        vec4 kc = texture2D( kC, tuv ), kn = texture2D( kN, tuv );
-        vec4 sc = texture2D( sC, suv ), sn = texture2D( sN, suv );
-        float kMean = max( hfLum( textureLod( kC, vec2( 0.5 ), 12.0 ).rgb ), 0.02 ), sMean = max( hfLum( textureLod( sC, vec2( 0.5 ), 12.0 ).rgb ), 0.02 );
-        vec3 streak = texture2D( kStreak, vec2( d / ( hw * 2.5 ) + 0.5, s / 46.0 ) ).rgb;
-        float n1 = texture2D( hfCloudTex, vec2( d, s ) / vec2( 23.0, 61.0 ) ).r;
-        float n2 = texture2D( hfCloudTex, vec2( d, s ) / vec2( 9.0, 140.0 ) + 0.4 ).r;
-        // loose sand blown in from the edges
-        float edge = abs( d ) / hw;
-        float drift = smoothstep( 0.72, 1.02, edge + ( n1 - 0.5 ) * 0.55 );
-        drift = max( drift, smoothstep( 0.62, 0.75, n2 ) * smoothstep( 0.3, 0.8, edge ) * 0.8 );
-        // the racing line: packed hard, darker, with jet scorch
-        float ld = ( d - vTr.z ) / 5.5;
-        float groove = exp( - ld * ld ) * ( 1.0 - drift );
-        float scorch = smoothstep( 0.55, 0.78, texture2D( hfCloudTex, vec2( d / 6.0, s / 55.0 ) + 0.7 ).r ) * groove;
-        vec4 trail = kTrailOn > 0.5 ? min( texture2D( kTrail, vec2( d / ( hw * 2.6 ) + 0.5, s / kL ) ), vec4( 1.0 ) ) : vec4( 0.0 );
-        vec3 base = vec3( 0.47, 0.29, 0.15 ) * ( hfLum( kc.rgb ) / kMean ) * mix( vec3( 1.0 ), streak / vec3( 0.6, 0.4, 0.19 ), 0.35 );
-        vec3 sand = vec3( 0.68, 0.46, 0.26 ) * ( 0.4 + 0.6 * hfLum( sc.rgb ) / sMean );
-        vec3 col = mix( base, sand, drift );
-        col *= 1.0 - groove * 0.16 - scorch * 0.3;
-        col *= 1.0 - trail.r * 0.32;
-        col = mix( col, vec3( 0.16, 0.12, 0.1 ), trail.g * 0.55 );
-        col *= 1.0 - smoothstep( 0.92, 1.0, edge ) * 0.2 * ( 1.0 - drift );
-        diffuseColor.rgb *= col;
-        float tR = mix( kn.b, sn.b, drift );
-        float polish = groove * 0.22 + trail.r * 0.1;`,
-      roughnessmap_fragment: /* glsl */`float roughnessFactor = clamp( 0.7 + 0.32 * tR - polish, 0.0, 1.0 );`,
-      normal_fragment_maps: /* glsl */`
-        {
-          vec3 wn = normalize( ( vec4( normal, 0.0 ) * viewMatrix ).xyz );
-          float k = 1.0 - smoothstep( 80.0, 600.0, camD ) * 0.7;
-          vec3 t = normalize( mix( hfUnpackN( kn, k * ( 1.0 - groove * 0.5 ) ), hfUnpackN( sn, k * 1.2 ), drift ) );
-          // the track frame: lateral along d, forward along s; approximate with world xz (texture detail only)
-          vec3 nW = normalize( vec3( t.x + wn.x, abs( t.z ) * wn.y, t.y + wn.z ) );
-          normal = normalize( ( viewMatrix * vec4( nW, 0.0 ) ).xyz );
-        }`,
-    },
-  }, (sh) => {
-    sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 aTr;\nvarying vec4 vTr;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvTr = aTr;');
   });
 }
