@@ -82,7 +82,7 @@ A menüben a **GRAFIKA** sorban négy fokozat van. Az első indításkor a ját�
 
 | Fokozat | Mi van benne |
 |---|---|
-| ALACSONY | utófeldolgozás nélkül, kisebb árnyéktérkép, ritkább részletek és kevesebb néző, a riválisok az egyszerű podot kapják |
+| ALACSONY | utófeldolgozás nélkül, kisebb árnyéktérkép, ritkább részletek és kevesebb néző, a riválisok az egyszerű podot kapják, a sziklák és a tereptárgyak hamarabb váltanak egyszerűbb modellre, és csak a mozgó dolgok (podok, törmelék) vetnek éles árnyékot, a többi árnyéka a betöltéskor sült |
 | KÖZEPES | bloom, lencsefény, sebességelmosás, színkorrekció, SMAA |
 | MAGAS | plusz MSAA, árnyékolás a sarkokban (N8AO), fénysugarak, hőremegés, mélységélesség a menüben |
 | ULTRA | nagyobb árnyéktérképek, sűrűbb terep, több részecske |
@@ -128,6 +128,7 @@ homokfutam/
   gfx/particles.js  részecskék: por, füst, szikra, tűz, konfetti, szimulált füst- és tűzképsorok
   gfx/podfx.js      lángcsóva, fúvókaizzás, boost- és visszalövés-effektek, hőremegés, talajfény, lökéshullám, nyomok a pályán, törmelék
   gfx/beam.js       energianyaláb a hajtóművek között, és a fény, amit vet
+  gfx/fxbatch.js    a podok apró effektdarabjai (fúvókatorok, lángfények, a nyaláb végei, talajfény és -árnyék) egyetlen rajzolással, nem podonként
   world/dressing.js közönség, zászlók, kivetítők, fények, táj és élővilág
   world/macro.js    a betöltéskor sütött nagy léptékű talajtérkép (árnyékolás, gerincek, mélyedések, sziklák környéke)
   world/rocks.js    a szikla- és arénamodellek betöltése, részletességi szintek
@@ -151,7 +152,7 @@ A fontos számok a `main.js`-ben vannak:
 
 ## A részletes pod
 
-Minden pod ugyanaz a részletes, kopott modell (`assets/pod_player.glb`), mindegyik a saját rajtszínében. A modell egyszer töltődik be, a podok a geometriát és a textúrákat közösen használják, csak az anyaguk (festés, hőizzás, az emitter fénye) külön. ALACSONY fokozaton csak a te podod részletes, a riválisok az egyszerű podot kapják (`?gfx=rivals:1` bekapcsolja nekik is). Amíg a modell betöltődik, vagy ha nem sikerül betölteni, mindenki az egyszerű podon versenyez.
+Minden pod ugyanaz a részletes, kopott modell (`assets/pod_player.glb`), mindegyik a saját rajtszínében. A modell egyszer töltődik be, a podok a geometriát és a textúrákat közösen használják, csak az anyaguk (festés, hőizzás, az emitter fénye) külön. Betöltéskor a játék anyagonként egyetlen hálóba fűzi a részeit, a mozgó részek ebben csontként mozognak, így egy pod négy rajzolás (korábban kb. huszonnégy). ALACSONY fokozaton csak a te podod részletes, a riválisok az egyszerű podot kapják (`?gfx=rivals:1` bekapcsolja nekik is). Amíg a modell betöltődik, vagy ha nem sikerül betölteni, mindenki az egyszerű podon versenyez.
 
 A modell kódból készül Blenderben (5.2), a forrása a `models/pod/` mappa:
 

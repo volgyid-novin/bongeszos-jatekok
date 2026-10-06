@@ -41,7 +41,7 @@ const FRAG = /* glsl */`
 
 export function buildHaze({ scene, TR, rangeWhere, arch, Q }) {
   const mat = new THREE.ShaderMaterial({
-    vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true,
     uniforms: Object.assign({}, ATMO, { uK: { value: 0.16 * (Q.particles ?? 1) } }),
   });
   const geos = [];

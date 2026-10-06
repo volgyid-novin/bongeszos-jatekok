@@ -29,7 +29,7 @@ export function buildScatter({ scene, TR, Q, groundQuery, rng, models, rockMat, 
   const out = [];
   const field = (variants, items, mat, dist, opts = {}) => {
     if (!items.length || variants.some((v) => !v)) return;
-    out.push(new LodInstances(scene, variants.map((g) => [g]), mat, items, [dist], { cull: true, flag: 'scatter', noBake: true, ...opts }));
+    out.push(new LodInstances(scene, variants.map((g) => [g]), mat, items, [dist * (Q.lod ?? 1)], { cull: true, flag: 'scatter', noBake: true, ...opts }));
   };
 
   // pebbles and stones

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { atmoUniforms } from './gfx/atmosphere.js';
 
 // Detailed pod, used by every racer in its own livery. The model is generated in Blender by models/pod/*.py:
@@ -55,11 +56,90 @@ export async function loadPodModel(renderer) {
     m.envMapIntensity = 1.0;     // the scene environment (sky + sand, gfx/atmosphere.js)
     for (const t of [m.map, m.normalMap, m.roughnessMap]) if (t) t.anisotropy = aniso;
   });
+  mergeParts(src);
   return () => makePod(src, livery);
 }
 
+// float copy of a (possibly quantized, gltfpack) attribute
+function floatAttr(a) {
+  const n = a.count, k = a.itemSize, out = new Float32Array(n * k);
+  for (let i = 0; i < n; i++) for (let j = 0; j < k; j++) out[i * k + j] = a.getComponent(i, j);
+  return new THREE.BufferAttribute(out, k);
+}
+
+// One draw per material instead of one per part (16 textured parts plus glass, glow and beam,
+// about 24 draws and 18 shadow draws per pod). The parts of each material go into one skinned
+// mesh, every vertex bound with weight 1 to the node that carried it, so the engines and the
+// moving parts (fans, flaps, brakes, nozzles, pilot) still move with their nodes as before.
+function mergeParts(src) {
+  src.updateMatrixWorld(true);
+  const byMat = new Map();
+  src.traverse((o) => {
+    if (!o.isMesh) return;
+    if (!byMat.has(o.material)) byMat.set(o.material, []);
+    byMat.get(o.material).push(o);
+  });
+  const toSrc = new THREE.Matrix4().copy(src.matrixWorld).invert(), mtx = new THREE.Matrix4();
+  const bones = [], merged = [];
+  for (const [mat, meshes] of byMat) {
+    const names = Object.keys(meshes[0].geometry.attributes).sort().join();
+    if (meshes.some((m) => Object.keys(m.geometry.attributes).sort().join() !== names)) continue;   // keep these parts as they are
+    const geos = meshes.map((m) => {
+      let bi = bones.indexOf(m.parent);
+      if (bi < 0) bi = bones.push(m.parent) - 1;
+      const g = new THREE.BufferGeometry();
+      for (const [name, a] of Object.entries(m.geometry.attributes)) g.setAttribute(name, floatAttr(a));
+      const idx = m.geometry.index ? Array.from(m.geometry.index.array) : Array.from({ length: g.attributes.position.count }, (_, i) => i);
+      mtx.multiplyMatrices(toSrc, m.matrixWorld);
+      if (mtx.determinant() < 0) {          // mirrored part: keep the triangles facing out
+        for (let i = 0; i < idx.length; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; }
+        const tg = g.attributes.tangent;
+        if (tg) for (let i = 0; i < tg.count; i++) tg.setW(i, -tg.getW(i));
+      }
+      g.setIndex(idx);
+      g.applyMatrix4(mtx);
+      const n = g.attributes.position.count, si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
+      for (let i = 0; i < n; i++) { si[i * 4] = bi; sw[i * 4] = 1; }
+      g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+      g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+      return g;
+    });
+    const geo = mergeGeometries(geos);
+    if (geo) merged.push({ mat, meshes, geo });
+  }
+  const skeleton = new THREE.Skeleton(bones);          // bone inverses from the rest pose
+  for (const { mat, meshes, geo } of merged) {
+    for (const m of meshes) m.removeFromParent();
+    const sm = new THREE.SkinnedMesh(geo, mat);
+    sm.name = mat.name;
+    src.add(sm);
+    sm.updateMatrixWorld(true);
+    sm.bind(skeleton, sm.matrixWorld);
+    // the rest-pose bounds; the parts only move a little, so this stays good for culling and
+    // spares SkinnedMesh.computeBoundingSphere() (it skins every vertex on the CPU)
+    geo.computeBoundingSphere();
+    sm.boundingSphere = geo.boundingSphere.clone();
+    sm.boundingSphere.radius *= 1.1;
+  }
+}
+
+// src.clone(true) keeps the source's skeleton: rebind every copy to its own nodes
+function cloneRig(src) {
+  const copy = src.clone(true), map = new Map();
+  const walk = (a, b) => { map.set(a, b); a.children.forEach((c, i) => walk(c, b.children[i])); };
+  walk(src, copy);
+  const skeletons = new Map();
+  copy.traverse((o) => {
+    if (!o.isSkinnedMesh) return;
+    const s = o.skeleton;
+    if (!skeletons.has(s)) skeletons.set(s, new THREE.Skeleton(s.bones.map((b) => map.get(b)), s.boneInverses));
+    o.bind(skeletons.get(s), o.bindMatrix);
+  });
+  return copy;
+}
+
 function makePod(src, livery) {
-  const root = src.clone(true);
+  const root = cloneRig(src);
   const paint = new THREE.Color(), trim = new THREE.Color(), heat = { value: new THREE.Vector2() };
   const parts = [], mats = new Map();
   let glow = null, beamMat = null;
@@ -70,10 +150,13 @@ function makePod(src, livery) {
     if (!m) {
       m = o.material.clone();
       if (m.name.startsWith('PodAtlas')) patchLivery(m, livery, paint, trim, heat);
+      // transparent + double-sided is drawn in two passes, each flagging the material for a
+      // shader re-check; the canopy is thin enough that one pass looks the same
+      if (m.transparent && m.side === THREE.DoubleSide) m.forceSinglePass = true;
       mats.set(o.material, m);
     }
     o.material = m;
-    o.castShadow = m.name !== 'PodGlass' && !m.name.startsWith('PodBeam');
+    o.castShadow = m.name !== 'PodGlass' && !m.name.startsWith('PodBeam') && !m.name.startsWith('PodGlow');
     o.receiveShadow = true;
     if (m.name.startsWith('PodGlow')) glow = m;
     if (m.name.startsWith('PodBeam')) beamMat = m;

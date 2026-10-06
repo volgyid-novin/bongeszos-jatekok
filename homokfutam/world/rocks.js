@@ -65,6 +65,7 @@ export class LodInstances {
         im.count = mine.length;
         im.computeBoundingSphere();         // over every instance: stays valid whatever the LOD split
         im.count = 0;
+        im.visible = false;                 // _assign shows the levels that get instances
         im.castShadow = shadow; im.receiveShadow = true;
         im.userData[flag] = true;
         if (noBake) im.userData.noBake = true;
@@ -95,7 +96,8 @@ export class LodInstances {
       if (!changed) return;
       const n = new Array(L).fill(0);
       list.forEach((it, k) => { if (want[k] >= 0) lods[want[k]].setMatrixAt(n[want[k]]++, it.m); });
-      lods.forEach((m, l) => { m.count = n[l]; m.instanceMatrix.needsUpdate = true; });
+      // an empty level is hidden: an InstancedMesh with no instances still costs a draw (and a shadow draw)
+      lods.forEach((m, l) => { m.count = n[l]; m.visible = n[l] > 0; m.instanceMatrix.needsUpdate = true; });
     });
   }
 }

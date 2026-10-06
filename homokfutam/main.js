@@ -15,7 +15,8 @@ import { buildHaze } from './world/haze.js';
 import { createPost } from './gfx/post.js';
 import { Particles, loadFlipbooks } from './gfx/particles.js';
 import { createPodFx, createDebris, HeatLayer, createTrailMap } from './gfx/podfx.js';
-import { createBeam, createBeamLights } from './gfx/beam.js';
+import { createBeam, createBeamLights, createBeamFlares } from './gfx/beam.js';
+import { FxBatch, shown } from './gfx/fxbatch.js';
 import { buildDressing } from './world/dressing.js';
 import { createAudio } from './audio.js';
 
@@ -317,7 +318,9 @@ const SURF = loadSurfaces(renderer);
 const GROUND_READY = loadGround(renderer, Q);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(PALETTE.fog, 1, 2);      // only switches USE_FOG on; the real fog is ATMO's height fog
+// Only switches USE_FOG on: the real fog is ATMO's height fog and the scene's shaders ignore near/far.
+// N8AO does read them, to fade the AO out with distance (with 1..2 m it faded out all of it).
+scene.fog = new THREE.Fog(PALETTE.fog, 200, 2500);
 scene.background = PALETTE.fog.clone();
 const camera = new THREE.PerspectiveCamera(70, 1, 0.5, 9000);
 
@@ -393,7 +396,9 @@ function sweep(i0, i1, side, profile, colorFn, step = 1) {
   g.computeVertexNormals();
   return g;
 }
-const rockMat = rockMaterial(Q, ROCKL.cliff, { scale: 1 / 12, chroma: 0.35, contrast: 1.1, side: THREE.DoubleSide, rough: [0.62, 0.35], varnish: 1, foot: 3 });
+const CLIFF = { scale: 1 / 12, chroma: 0.35, contrast: 1.1, side: THREE.DoubleSide, rough: [0.62, 0.35], varnish: 1, foot: 3 };
+const rockMat = rockMaterial(Q, ROCKL.cliff, CLIFF);
+const rockMatI = rockMaterial(Q, ROCKL.cliff, CLIFF);      // instanced copies (fallback spires), see rockMatAOSolo
 const boulderMat = rockMaterial(Q, ROCKL.boulder, { scale: 1 / 6, chroma: 0.45, contrast: 1.05, rough: [0.6, 0.35], foot: 1.2 });
 function rangeWhere(arr, thr) {         // contiguous index range where arr > thr (handles wrap)
   let start = -1;
@@ -855,7 +860,11 @@ const mtx = (x, y, z, rx, ry, rz, sx, sy, sz) => new THREE.Matrix4().compose(_m4
 // (models/world/build_rocks.py): spires and boulders as instanced levels of detail, talus piles
 // at the feet of the spires, buttes on the horizon and the arch over the track.
 const ROCKS = { spires: [], boulders: [], talus: [], mesas: [], arch: null, lods: [], scatter: [], tick: 0 };
-const rockMatAO = rockMaterial(Q, ROCKL.cliff, { scale: 1 / 12, chroma: 0.35, contrast: 1.1, rough: [0.62, 0.35], varnish: 1, foot: 3, ao: true });
+const CLIFF_AO = { scale: 1 / 12, chroma: 0.35, contrast: 1.1, rough: [0.62, 0.35], varnish: 1, foot: 3, ao: true };
+const rockMatAO = rockMaterial(Q, ROCKL.cliff, CLIFF_AO);
+// the same surface for the single meshes (arch, bridge): a material drawn by both instanced and
+// plain meshes makes three.js switch shader programs at every switch between them
+const rockMatAOSolo = rockMaterial(Q, ROCKL.cliff, CLIFF_AO);
 const boulderMatAO = rockMaterial(Q, ROCKL.boulder, { scale: 1 / 6, chroma: 0.45, contrast: 1.05, rough: [0.6, 0.35], foot: 1.2, ao: true });
 const mesaMatAO = rockMaterial(Q, ROCKL.cliff, { scale: 1 / 40, chroma: 0.3, normal: 0.6, macro: 0.4, varnish: 1, foot: 14, ao: true });
 {
@@ -932,9 +941,9 @@ const mesaMatAO = rockMaterial(Q, ROCKL.cliff, { scale: 1 / 40, chroma: 0.3, nor
 
 function buildRockVisuals(models) {
   const lod = (prefix, n, levels) => Array.from({ length: n }, (_, k) => Array.from({ length: levels }, (_, l) => models.get(`${prefix}${k}_lod${l}`)));
-  ROCKS.lods.push(new LodInstances(scene, lod('spire', 8, 3), rockMatAO, ROCKS.spires, [380, 1400]));
-  ROCKS.lods.push(new LodInstances(scene, lod('boulder', 6, 2), boulderMatAO, ROCKS.boulders, [160]));
-  ROCKS.lods.push(new LodInstances(scene, lod('talus', 2, 2), boulderMatAO, ROCKS.talus, [180]));
+  ROCKS.lods.push(new LodInstances(scene, lod('spire', 8, 3), rockMatAO, ROCKS.spires, [380 * Q.lod, 1400 * Q.lod]));
+  ROCKS.lods.push(new LodInstances(scene, lod('boulder', 6, 2), boulderMatAO, ROCKS.boulders, [160 * Q.lod]));
+  ROCKS.lods.push(new LodInstances(scene, lod('talus', 2, 2), boulderMatAO, ROCKS.talus, [180 * Q.lod]));
   // buttes: one instanced mesh per shape, no detail levels (they are always kilometres away)
   for (let v = 0; v < 4; v++) {
     const mine = ROCKS.mesas.filter((it) => it.g % 4 === v);
@@ -947,7 +956,7 @@ function buildRockVisuals(models) {
   }
   const A = ROCKS.arch, arch = new THREE.LOD();
   [0, 1].forEach((l) => {
-    const m = new THREE.Mesh(models.get(`arch_lod${l}`), rockMatAO);
+    const m = new THREE.Mesh(models.get(`arch_lod${l}`), rockMatAOSolo);
     m.castShadow = m.receiveShadow = true;
     m.userData.rock = true;
     arch.addLevel(m, l ? 900 : 0);
@@ -960,7 +969,7 @@ function buildRockVisuals(models) {
     const b = CANYON_BRIDGE;
     b.geometry.dispose();
     b.geometry = models.get('bridge');
-    b.material = rockMatAO;
+    b.material = rockMatAOSolo;
     b.scale.set(b.userData.span / 76, 1, 1);
   }
 }
@@ -968,7 +977,7 @@ function buildRockVisuals(models) {
 // the old procedural shapes, if rocks.glb can't be loaded
 function buildRockFallback() {
   const rand = rng(77);
-  instanced(Array.from({ length: 8 }, (_, k) => spireGeometry(k * 1.7 + 0.3, (rand() - 0.5) * 0.25)), rockMat, ROCKS.spires);
+  instanced(Array.from({ length: 8 }, (_, k) => spireGeometry(k * 1.7 + 0.3, (rand() - 0.5) * 0.25)), rockMatI, ROCKS.spires);
   instanced([lumpGeometry(1), lumpGeometry(2.5), lumpGeometry(4.2)], boulderMat, ROCKS.boulders);
   const mesas = ROCKS.mesas.map((it, k) => {
     const g = weld(new THREE.CylinderGeometry(1, 1.25, 1, 56, 16));
@@ -1033,6 +1042,18 @@ buildHorizon(scene, renderer).then((h) => { HORIZON = h; for (const m of DRESS.m
 const metalDark = new THREE.MeshStandardMaterial({ color: '#2e2a27', metalness: 0.7, roughness: 0.45 });
 const metalLight = new THREE.MeshStandardMaterial({ color: '#9c968e', metalness: 0.8, roughness: 0.35 });
 const cableMat = new THREE.MeshStandardMaterial({ color: '#1d1a18', roughness: 0.6 });
+// one mesh per material for the meshes directly under a group (they never move on their own)
+function mergeChildren(group) {
+  const byMat = new Map();
+  for (const o of group.children) if (o.isMesh) { if (!byMat.has(o.material)) byMat.set(o.material, []); byMat.get(o.material).push(o); }
+  for (const [mat, list] of byMat) {
+    if (list.length < 2) continue;
+    const geo = mergeGeometries(list.map((o) => { o.updateMatrix(); return o.geometry.clone().applyMatrix4(o.matrix); }));
+    if (!geo) continue;
+    for (const o of list) group.remove(o);
+    group.add(new THREE.Mesh(geo, mat));
+  }
+}
 function buildEngine(paint, hot) {
   const e = new THREE.Group();
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.72, 5.2, 18), paint);
@@ -1056,11 +1077,42 @@ function buildEngine(paint, hot) {
   const fin = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.08, 1.6), metalDark);
   fin.position.set(0, 0, -1.9);
   e.add(fin);
+  mergeChildren(e);
   return e;
+}
+// the emitter flares of all beams, and the flame glows at all nozzles, one draw each (gfx/fxbatch.js)
+const BEAM_FLARES = createBeamFlares(scene);
+const FLAMES = new FxBatch(scene, new THREE.PlaneGeometry(1, 1), new THREE.ShaderMaterial({
+  uniforms: { map: { value: TEX.glow } },
+  vertexShader: /* glsl */`
+    attribute vec3 aCol;
+    varying vec2 vUv; varying vec3 vCol;
+    void main() {
+      vUv = uv; vCol = aCol;
+      vec4 mv = modelViewMatrix * instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
+      mv.xy += position.xy * vec2( length( instanceMatrix[ 0 ].xyz ), length( instanceMatrix[ 1 ].xyz ) );   // a camera-facing sprite
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D map;
+    varying vec2 vUv; varying vec3 vCol;
+    void main() {
+      vec4 t = texture2D( map, vUv );
+      gl_FragColor = vec4( vCol * t.rgb, t.a );
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+}), 24, { aCol: 3 });
+// after every racer's racerFx: upload the effect batches
+function endFxFrame() {
+  podFx.endFrame();
+  BEAM_FLARES.flush();
+  FLAMES.flush();
 }
 // energy beam (gfx/beam.js) between the emitter tips (body space, engines at rest)
 function addBeam(body, engines, tips) {
-  const beam = createBeam({ hdr: Q.post ? 1 : 0.45 });
+  const beam = createBeam({ hdr: Q.post ? 1 : 0.45, flares: BEAM_FLARES });
   body.add(beam.group);
   beam.bind(engines, tips);
   return beam;
@@ -1107,14 +1159,17 @@ function buildPod(color, accent) {
       new THREE.Vector3(s * 0.45, 0.1, -0.6), new THREE.Vector3(s * 1.2, -0.25, 1.3), new THREE.Vector3(s * 1.75, 0.05, 2.6));
     body.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 10, 0.06, 5), cableMat));
   }
+  mergeChildren(body);
   body.traverse((o) => { if (o.isMesh) o.castShadow = true; });
   const beam = addBeam(body, engines, [new THREE.Vector3(1.0, 0.15, 6.7), new THREE.Vector3(-1.0, 0.15, 6.7)]);
   root.userData = { body, engines, beam, hot, dynamic: true };
   return root;
 }
+// the flame glow at a nozzle: an anchor for the FLAMES batch (size = its scale)
 function addFlame(engine, pos) {
-  const flame = new THREE.Sprite(new THREE.SpriteMaterial({ map: TEX.glow, color: '#ffb066', blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
+  const flame = new THREE.Object3D();
   flame.position.copy(pos);
+  flame.userData.col = new THREE.Color('#ffb066');
   engine.add(flame); engine.userData.flame = flame;
 }
 
@@ -1620,7 +1675,7 @@ function racerFx(r, dt, t) {
     const f = e.userData.flame;
     const s = (r.overheat > 0 ? 1.0 : 1.3 + r.throttle * 1.5 + (r.boosting ? 2.4 : 0)) * (0.9 + Math.random() * 0.2) * (Q.post ? 0.5 : 1);
     f.scale.set(s, s, s);
-    f.material.color.copy(r.overheat > 0 ? FLAME_COL.over : r.boosting ? FLAME_COL.boost : FLAME_COL.idle);
+    f.userData.col.copy(r.overheat > 0 ? FLAME_COL.over : r.boosting ? FLAME_COL.boost : FLAME_COL.idle);
   });
   const camD = camera.position.distanceTo(m.position);
   ud.beam.update(r, dt, t + r.phase, camD, PX_SCALE);
@@ -1642,7 +1697,9 @@ function racerFx(r, dt, t) {
     animatePlayerPod(ud.pod, r, dt, POD_FX);
     ud.body.position.y = podLift(ud.pod, r, groundQuery, dt);
   }
-  podFx.update(r, dt, groundQuery, camera.position);
+  podFx.update(r, dt, groundQuery, camera.position);       // also brings the pod's world matrices up to date
+  ud.beam.pushFlares();
+  for (const e of ud.engines) { const f = e.userData.flame; if (shown(f)) FLAMES.push(f.matrixWorld, f.userData.col); }
   // boost kicks in: shockwave ring (the ignition flash and ring of fire come from podFx)
   if (r.boosting && !r.wasBoost) {
     podFx.shockwave(r);
@@ -2671,7 +2728,7 @@ function frame(now) {
     METAL.update(sdt, groundQuery);
     if (CINE.replay) stepReplay(sdt);
     else for (const r of racers) if (!r.gone) racerFx(r, sdt, simT);
-    podFx.endFrame();
+    endFxFrame();
     recordReplay(sdt);
     if (state === 'race' || state === 'finished') {
       for (const r of racers) if (!r.gone) TRAILS.stamp(r, groundQuery(r.x, r.z));
@@ -2826,6 +2883,7 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
         simT += dt; stepSim(dt); netSend(dt);
         if (k % 4 === 0) {
           if (CINE.replay) stepReplay(dt * 4); else for (const r of racers) if (!r.gone) racerFx(r, dt * 4, simT);
+          endFxFrame();
           recordReplay(dt * 4);
           if (state === 'race' || state === 'finished') { for (const r of racers) if (!r.gone) TRAILS.stamp(r, groundQuery(r.x, r.z)); TRAILS.render(dt * 4); }
           for (const p of POOLS) p.update(dt * 4);
@@ -2858,6 +2916,12 @@ function boot(data) {
     catch (e) { console.warn('HOMOKFUTAM: ground clutter failed', e); }
   }
   bakeWorldShadow(renderer, scene, WORLD_BOUNDS, Q.staticShadow);
+  // LOW: only the things that move (pods, debris) draw into the near shadow map every frame; the
+  // static world keeps just its baked shadow
+  if (Q.casters === false) {
+    const moves = (o) => { for (let p = o; p; p = p.parent) if (p.userData.dynamic) return true; return false; };
+    scene.traverse((o) => { if (o.isMesh && o.castShadow && !moves(o)) o.castShadow = false; });
+  }
   try { buildHaze({ scene, TR, rangeWhere, arch: ROCKS.arch, Q }); } catch (e) { console.warn('HOMOKFUTAM: haze failed', e); }
   if (Q.post) {
     try {

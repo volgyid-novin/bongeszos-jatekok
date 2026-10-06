@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { FxBatch, shown } from './fxbatch.js';
 
 // ============================================================
 //  Energy beam between the two engines. One instanced draw per pod; every strand is a
@@ -128,27 +129,29 @@ void main() {
   gl_FragColor = vec4( c * a * vA * on * uI * uFlicker, 1.0 );
 }`;
 
+// emitter flares of every pod in one draw (gfx/fxbatch.js): aFx = size, brightness, rotation
 const FLARE_V = /* glsl */`
-uniform float uSize;
+attribute vec3 aFx, aCol, aHot;
 varying vec2 vC;
+varying vec3 vFx, vCol, vHot;
 void main() {
   vC = position.xy * 2.0;
-  vec4 mv = modelViewMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
+  vFx = aFx; vCol = aCol; vHot = aHot;
+  vec4 mv = modelViewMatrix * instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
   mv.xyz += normalize( - mv.xyz ) * 0.6;        // pull towards the camera so the engine does not clip it
-  mv.xy += position.xy * uSize;
+  mv.xy += position.xy * aFx.x;
   gl_Position = projectionMatrix * mv;
 }`;
 const FLARE_F = /* glsl */`
-uniform vec3 uCol, uHot;
-uniform float uI, uRot;
 varying vec2 vC;
+varying vec3 vFx, vCol, vHot;
 void main() {
   float r = length( vC );
-  float ang = atan( vC.y, vC.x );
+  float ang = atan( vC.y, vC.x ), rot = vFx.z;
   float core = exp( - r * 14.0 ) * 3.0 + exp( - r * r * 9.0 ) * 0.5;
-  float rays = ( pow( abs( cos( ang * 2.0 + uRot ) ), 40.0 ) + 0.6 * pow( abs( cos( ang * 3.0 - uRot * 1.7 + 0.7 ) ), 60.0 ) ) * exp( - r * 3.2 );
-  vec3 c = mix( uCol, uHot, clamp( core * 0.4, 0.0, 1.0 ) ) * ( core + rays * 0.9 );
-  gl_FragColor = vec4( c * uI * smoothstep( 1.0, 0.6, r ), 1.0 );
+  float rays = ( pow( abs( cos( ang * 2.0 + rot ) ), 40.0 ) + 0.6 * pow( abs( cos( ang * 3.0 - rot * 1.7 + 0.7 ) ), 60.0 ) ) * exp( - r * 3.2 );
+  vec3 c = mix( vCol, vHot, clamp( core * 0.4, 0.0, 1.0 ) ) * ( core + rays * 0.9 );
+  gl_FragColor = vec4( c * vFx.y * smoothstep( 1.0, 0.6, r ), 1.0 );
 }`;
 
 let GEO = null;
@@ -170,6 +173,13 @@ function strandGeometry() {
 }
 const FLARE_GEO = new THREE.PlaneGeometry(1, 1);
 
+// the batch that draws the emitter flares of every beam (two per pod)
+export function createBeamFlares(scene, maxBeams = 12) {
+  return new FxBatch(scene, FLARE_GEO, new THREE.ShaderMaterial({
+    vertexShader: FLARE_V, fragmentShader: FLARE_F, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  }), maxBeams * 2, { aFx: 3, aCol: 3, aHot: 3 }, 5);
+}
+
 const damp = (a, b, k, dt) => a + (b - a) * (1 - Math.exp(-k * dt));
 
 // opts.hdr: brightness multiplier (lower without post-processing, where nothing tone maps it)
@@ -185,20 +195,17 @@ export function createBeam(opts = {}) {
   };
   const mesh = new THREE.Mesh(strandGeometry(), new THREE.ShaderMaterial({
     vertexShader: BEAM_V, fragmentShader: BEAM_F, uniforms: U,
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, forceSinglePass: true,
   }));
   mesh.frustumCulled = false;
   mesh.renderOrder = 5;
   // the strand geometry is shared by every pod, so the arc count is set right before each draw
   let count = STRANDS.length;
   mesh.onBeforeRender = () => { mesh.geometry.instanceCount = count; };
+  // emitter flares: anchors for the flare batch (opts.flares), drawn by pushFlares()
   const flares = [0, 1].map(() => {
-    const m = new THREE.Mesh(FLARE_GEO, new THREE.ShaderMaterial({
-      vertexShader: FLARE_V, fragmentShader: FLARE_F, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-      uniforms: { uSize: { value: 1 }, uCol: U.uCol, uHot: U.uHot, uI: { value: 0 }, uRot: { value: Math.random() * 6 } },
-    }));
-    m.frustumCulled = false;
-    m.renderOrder = 5;
+    const m = new THREE.Object3D();
+    m.userData.fx = new THREE.Vector3(1, 0, Math.random() * 6);     // size, brightness, rotation
     return m;
   });
   const group = new THREE.Group();
@@ -272,11 +279,17 @@ export function createBeam(opts = {}) {
       for (let k = 0; k < 2; k++) {
         const f = flares[k];
         f.position.copy(k ? U.uB.value : U.uA.value);
-        f.material.uniforms.uI.value = hdr * (S.on * flick * (0.55 + 0.35 * S.level) + S.flash[k] + (S.snapT > 0 ? 0.5 * Math.random() : 0));
-        f.material.uniforms.uSize.value = 0.9 + 0.5 * S.level + S.flash[k] * 1.5;
-        f.material.uniforms.uRot.value += dt * (2 + 6 * S.unstable);
+        const v = f.userData.fx;
+        v.y = hdr * (S.on * flick * (0.55 + 0.35 * S.level) + S.flash[k] + (S.snapT > 0 ? 0.5 * Math.random() : 0));
+        v.x = 0.9 + 0.5 * S.level + S.flash[k] * 1.5;
+        v.z += dt * (2 + 6 * S.unstable);
       }
       group.visible = camD < 600;
+    },
+    // once the pod's world matrices are final for this frame
+    pushFlares() {
+      if (!opts.flares) return;
+      for (const f of flares) if (shown(f)) opts.flares.push(f.matrixWorld, f.userData.fx, U.uCol.value, U.uHot.value);
     },
   };
 }

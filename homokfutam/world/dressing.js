@@ -110,6 +110,9 @@ export function buildDressing(ctx) {
   const _nc = { i: 0, d: 0 };
   const mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), P = new THREE.Vector3(), S = new THREE.Vector3(1, 1, 1);
   const metal = new THREE.MeshStandardMaterial({ color: '#3b342e', metalness: 0.75, roughness: 0.45 });
+  // the same for instanced meshes: sharing one material between instanced and plain meshes makes
+  // three.js switch shader programs every time the draw order alternates between them
+  const metalI = metal.clone();
   const metalLight = new THREE.MeshStandardMaterial({ color: '#8c857c', metalness: 0.8, roughness: 0.35 });
   const stoneMat = ctx.stoneMat || triplanarMaterial('blocks', { scale: 1 / 4, chroma: 0.25, vertexColors: false, color: '#d8c3a0', rough: [0.55, 0.45], macro: 0.15 });
   const out = { update: null, setStandings: null, cheer: 0, wave: 0 };
@@ -200,7 +203,7 @@ export function buildDressing(ctx) {
       scene.add(im);
     });
     // the hanging rods
-    const rods = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.08, 0.08, 3.2, 6).rotateZ(Math.PI / 2), metal, items.length);
+    const rods = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.08, 0.08, 3.2, 6).rotateZ(Math.PI / 2), metalI, items.length);
     items.forEach(([i, s], n) => {
       side(i, s, TR.hw[i] + 2.2, TR.py[i] + 14.25);
       mtx.compose(P, q.setFromEuler(e.set(0, TR.yaw[i], 0)), S.set(1, 1, 1));
@@ -429,7 +432,7 @@ export function buildDressing(ctx) {
     }
     const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6, side: THREE.DoubleSide });
     const im = new THREE.InstancedMesh(new THREE.PlaneGeometry(3.6, 1.8).translate(0, 2.2, 0), mat, boards.length);
-    const legs = new THREE.InstancedMesh(new THREE.BoxGeometry(0.15, 2.4, 0.15).translate(0, 1.2, 0), metal, boards.length * 2);
+    const legs = new THREE.InstancedMesh(new THREE.BoxGeometry(0.15, 2.4, 0.15).translate(0, 1.2, 0), metalI, boards.length * 2);
     boards.forEach(([i, dir], n) => {
       // outside of the turn: a left turn (k > 0) has its outside on the right (+d)
       const s = dir > 0 ? 1 : -1;
@@ -478,7 +481,7 @@ export function buildDressing(ctx) {
       towers.push(new THREE.Vector3(x, groundQuery(x, z) - 0.5, z));
     }
     const yaw = Math.atan2(a1.x - a0.x, a1.y - a0.y) + Math.PI / 2;
-    const im = new THREE.InstancedMesh(towerGeo, metal, towers.length);
+    const im = new THREE.InstancedMesh(towerGeo, metalI, towers.length);
     towers.forEach((p, k) => { mtx.compose(p, q.setFromEuler(e.set(0, yaw, 0)), S.set(1, 1, 1)); im.setMatrixAt(k, mtx); });
     im.castShadow = true;
     scene.add(im);
@@ -698,7 +701,7 @@ export function buildDressing(ctx) {
   const devils = [];
   {
     const mat = new THREE.ShaderMaterial({
-      transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: true,
+      transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, fog: true,
       uniforms: Object.assign({}, THREE.UniformsUtils.clone(THREE.UniformsLib.fog), ATMO, { uCol: { value: C('#d7b58a') } }),
       vertexShader: `varying vec2 vUv; varying vec3 vN, vV;
         #include <fog_pars_vertex>

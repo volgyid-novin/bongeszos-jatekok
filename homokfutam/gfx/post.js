@@ -145,14 +145,22 @@ class GradeEffect extends Effect {
 }
 
 export function createPost(renderer, scene, camera, Q, sunDir) {
-  const composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType, multisampling: Q.msaa });
+  // on high-density screens the pixels are small enough that 2x MSAA looks like 4x for half the cost
+  const msaa = Q.msaa && renderer.getPixelRatio() >= 1.4 ? Math.min(Q.msaa, 2) : Q.msaa;
+  const composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType, multisampling: msaa });
   composer.addPass(new RenderPass(scene, camera));
   const w = window.innerWidth, h = window.innerHeight;
 
   let ao = null;
   if (Q.ao) {
     ao = new N8AOPostPass(scene, camera, w, h);
-    Object.assign(ao.configuration, { aoRadius: 5, distanceFalloff: 1.2, intensity: 2.2, color: new THREE.Color('#2a1a10'), halfRes: Q.name !== 'ultra', depthAwareUpsampling: true });
+    // transparencyAware off: N8AO turns it on by itself when the scene has any transparent material
+    // (particles, plumes), and then re-renders every transparent object twice and walks the whole
+    // scene several times per frame. It also cut the AO out in a box around every volumetric plume
+    // (the plume shader writes alpha 1 over its whole box).
+    // The AO fades out with distance by scene.fog's near/far (main.js).
+    ao.autoDetectTransparency = false;
+    Object.assign(ao.configuration, { aoRadius: 5, distanceFalloff: 1.2, intensity: 2.2, color: new THREE.Color('#2a1a10'), halfRes: true, depthAwareUpsampling: true, transparencyAware: false });
     ao.setQualityMode(Q.name === 'ultra' ? 'High' : 'Medium');
     composer.addPass(ao);
   }

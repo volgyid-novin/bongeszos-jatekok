@@ -247,7 +247,7 @@ export class Particles {
       }, THREE.UniformsUtils.clone(THREE.UniformsLib.fog), ATMO),
       transparent: true, depthWrite: false, fog: true, premultipliedAlpha: fire,
       blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
-      side: THREE.DoubleSide,
+      side: THREE.DoubleSide, forceSinglePass: true,
     });
     this.mesh = new THREE.Mesh(g, this.mat);
     this.mesh.frustumCulled = false;

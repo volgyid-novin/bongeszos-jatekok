@@ -37,7 +37,7 @@ export function buildHorizon(scene, renderer) {
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     g.setIndex(index);
-    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide, color: new THREE.Color(0.92, 0.9, 0.88) });
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, color: new THREE.Color(0.92, 0.9, 0.88) });
     const ring = new THREE.Mesh(g, mat);
     ring.frustumCulled = false;
     ring.renderOrder = -0.5;

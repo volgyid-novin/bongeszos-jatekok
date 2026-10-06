@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ATMO } from './atmosphere.js';
+import { FxBatch } from './fxbatch.js';
 
 // ============================================================
 //  Pod effects: exhaust plumes (raymarched volume with shock diamonds on boost, or a cheap cone
@@ -74,19 +75,22 @@ function volumeGeometry() {
 const VOL_GEO = volumeGeometry();
 
 // --- nozzle throat: a disc in the exit plane, hot ring plus a core that turns blue-white on boost ---
+// every throat of every pod in one draw (gfx/fxbatch.js); vFx = brightness, boost, seed
 const THROAT_F = /* glsl */`
-uniform float uK, uBoost, uTime, uSeed;
+uniform float uTime;
 uniform vec3 uRing, uCore;
 varying vec2 vUv;
+varying vec3 vFx;
 void main() {
+  float k = vFx.x, boost = vFx.y, seed = vFx.z;
   vec2 c = ( vUv - 0.5 ) * 2.0;
   float r = length( c );
   if ( r > 1.0 ) discard;
   float ring = exp( - pow( ( r - 0.78 ) / 0.13, 2.0 ) );
-  float flick = 0.85 + 0.15 * sin( uTime * 63.0 + uSeed + atan( c.y, c.x ) * 3.0 );
+  float flick = 0.85 + 0.15 * sin( uTime * 63.0 + seed + atan( c.y, c.x ) * 3.0 );
   float core = exp( - r * r * 5.0 );
-  vec3 col = uRing * ring * 1.6 * flick + mix( uRing * 1.2, uCore * 2.2, uBoost ) * core + uRing * 0.35;
-  gl_FragColor = vec4( col * uK, 1.0 );
+  vec3 col = uRing * ring * 1.6 * flick + mix( uRing * 1.2, uCore * 2.2, boost ) * core + uRing * 0.35;
+  gl_FragColor = vec4( col * k, 1.0 );
 }`;
 const THROAT_GEO = new THREE.CircleGeometry(1, 28).rotateY(Math.PI);   // faces -z (backwards)
 
@@ -170,27 +174,32 @@ export class HeatLayer {
   }
 }
 
-// --- ground decals under each pod ---
+// --- ground decals under each pod (batched like the throats; vFx.x = strength, vFx.y = seed) ---
 const GLOW_F = /* glsl */`
-uniform float uK, uTime, uSeed;
+uniform float uTime;
 uniform vec3 uCol;
 varying vec2 vUv;
+varying vec3 vFx;
 void main() {
   vec2 c = ( vUv - 0.5 ) * vec2( 1.0, 1.4 );
   float r = length( c ) * 2.0;
   float pool = exp( - r * r * 3.0 );
-  float rings = pow( max( 0.5 + 0.5 * sin( r * 26.0 - uTime * 14.0 + uSeed ), 0.0 ), 6.0 ) * smoothstep( 1.0, 0.3, r ) * 0.35;
-  gl_FragColor = vec4( uCol * ( pool + rings ) * uK, 1.0 );
+  float rings = pow( max( 0.5 + 0.5 * sin( r * 26.0 - uTime * 14.0 + vFx.y ), 0.0 ), 6.0 ) * smoothstep( 1.0, 0.3, r ) * 0.35;
+  gl_FragColor = vec4( uCol * ( pool + rings ) * vFx.x, 1.0 );
 }`;
 const SHADOW_F = /* glsl */`
-uniform float uK;
 varying vec2 vUv;
+varying vec3 vFx;
 void main() {
   vec2 c = ( vUv - 0.5 ) * 2.0;
   float a = smoothstep( 1.0, 0.1, length( c * vec2( 1.0, 0.75 ) ) );
-  gl_FragColor = vec4( 0.0, 0.0, 0.0, a * a * uK );
+  gl_FragColor = vec4( 0.0, 0.0, 0.0, a * a * vFx.x );
 }`;
-const DECAL_V = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+// shared by the batched throats and decals: aFx = the per-instance values
+const BATCH_V = 'attribute vec3 aFx; varying vec2 vUv; varying vec3 vFx; void main(){ vUv = uv; vFx = aFx; gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0); }';
+const GLOW_GEO = new THREE.PlaneGeometry(9, 13).rotateX(-Math.PI / 2);
+const SHADOW_GEO = new THREE.PlaneGeometry(7, 12).rotateX(-Math.PI / 2);
+const PODS_MAX = 12;           // racers per batch: 6, with room to spare
 
 // opts.volume: raymarched plumes (else the cone); opts.steps: march steps; opts.hdr: brightness;
 // opts.emit: particle emitters { fire, smoke, blast, spark } (x, y, z, vx, vy, vz, life, params);
@@ -202,8 +211,20 @@ export function createPodFx(scene, heat, opts = {}) {
   const E = opts.emit || {}, event = opts.event || (() => {});
   const volume = !!opts.volume;
 
-  // fx live on the pod mesh (so replays and mesh swaps reuse them); the ground decals and heat
-  // quads live in other scenes, so pods that were not updated this frame get them hidden
+  // fx live on the pod mesh (so replays and mesh swaps reuse them); the heat quads live in another
+  // scene, so pods that were not updated this frame get them hidden. The throats and the ground
+  // decals of all pods are drawn by three batches, filled as each pod is updated.
+  const batch = (geo, frag, uniforms, cap, renderOrder, extra = {}) => new FxBatch(scene, geo, new THREE.ShaderMaterial({
+    vertexShader: BATCH_V, fragmentShader: frag, transparent: true, depthWrite: false, uniforms, ...extra,
+  }), cap, { aFx: 3 }, renderOrder);
+  const THROATS = batch(THROAT_GEO, THROAT_F, { uTime: ATMO.hfTime, uRing: { value: new THREE.Color('#ff8a3a') }, uCore: { value: new THREE.Color('#a8c8ff') } },
+    PODS_MAX * 2, 4, { blending: THREE.AdditiveBlending });
+  const GLOWS = batch(GLOW_GEO, GLOW_F, { uTime: ATMO.hfTime, uCol: { value: new THREE.Color('#d46bff') } }, PODS_MAX, 1,
+    { blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -4 });
+  const SHADOWS = batch(SHADOW_GEO, SHADOW_F, {}, PODS_MAX, 1, { polygonOffset: true, polygonOffsetFactor: -3 });
+  const decal = new THREE.Matrix4(), dpos = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
+  const fxv = [0, 0, 0], vals = (a, b = 0, c = 0) => { fxv[0] = a; fxv[1] = b; fxv[2] = c; return fxv; };
+
   const all = new Set();
   let frame = 0;
   function attach(r) {
@@ -220,7 +241,7 @@ export function createPodFx(scene, heat, opts = {}) {
         uniforms: Object.assign(common, { uIgn: { value: 0 }, uSput: { value: 0 }, uCore: { value: new THREE.Color('#b9d4ff') }, uScale: { value: new THREE.Vector3(1, 1, 1) } }),
       })
       : new THREE.ShaderMaterial({
-        vertexShader: PLUME_V, fragmentShader: PLUME_F, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+        vertexShader: PLUME_V, fragmentShader: PLUME_F, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, forceSinglePass: true,
         uniforms: Object.assign(common, { hfCloudTex: ATMO.hfCloudTex }),
       });
     const plumes = ud.engines.map((e) => {
@@ -231,34 +252,18 @@ export function createPodFx(scene, heat, opts = {}) {
       e.add(p);
       return p;
     });
-    // glowing nozzle throats, just inside the exit
+    // glowing nozzle throats, just inside the exit (anchors for the THROATS batch)
     const throats = ud.engines.map((e) => {
-      const m = new THREE.Mesh(THROAT_GEO, new THREE.ShaderMaterial({
-        vertexShader: DECAL_V, fragmentShader: THROAT_F, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-        uniforms: {
-          uK: { value: 0 }, uBoost: { value: 0 }, uTime: ATMO.hfTime, uSeed: { value: Math.random() * 6 },
-          uRing: { value: new THREE.Color('#ff8a3a') }, uCore: { value: new THREE.Color('#a8c8ff') },
-        },
-      }));
+      const m = new THREE.Object3D();
       m.position.copy(e.userData.flame.position).add(new THREE.Vector3(0, 0, 0.1));
       m.scale.setScalar(0.5);
-      m.renderOrder = 4;
+      m.userData.seed = Math.random() * 6;
       e.add(m);
       return m;
     });
-    const glow = new THREE.Mesh(new THREE.PlaneGeometry(9, 13), new THREE.ShaderMaterial({
-      vertexShader: DECAL_V, fragmentShader: GLOW_F, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-      uniforms: { uK: { value: 0 }, uTime: ATMO.hfTime, uSeed: { value: Math.random() * 6 }, uCol: { value: new THREE.Color('#d46bff') } },
-      polygonOffset: true, polygonOffsetFactor: -4,
-    }));
-    const shadow = new THREE.Mesh(new THREE.PlaneGeometry(7, 12), new THREE.ShaderMaterial({
-      vertexShader: DECAL_V, fragmentShader: SHADOW_F, transparent: true, depthWrite: false,
-      uniforms: { uK: { value: 0.4 } }, polygonOffset: true, polygonOffsetFactor: -3,
-    }));
-    for (const d of [glow, shadow]) { d.geometry.rotateX(-Math.PI / 2); d.userData.dynamic = true; d.renderOrder = 1; scene.add(d); }
     const heats = heat ? ud.engines.map(() => heat.quad(false)) : [];
     const fx = {
-      mat, plumes, throats, glow, shadow, heats, boost: 0, len: 0, ring: null, ringT: 0, frame: 0,
+      mat, plumes, throats, heats, boost: 0, len: 0, ring: null, ringT: 0, frame: 0, glowSeed: Math.random() * 6,
       ign: 0, sput: 0, wasBoost: false, bfT: 0.3, flash: [0, 0], hot: 0,
     };
     ud.fx = fx;
@@ -272,20 +277,20 @@ export function createPodFx(scene, heat, opts = {}) {
     if (!fx) return;
     for (const p of fx.plumes) p.removeFromParent();
     for (const p of fx.throats) p.removeFromParent();
-    scene.remove(fx.glow, fx.shadow);
     for (const h of fx.heats) h.removeFromParent();
     fx.ring?.removeFromParent();
     delete r.mesh.userData.fx;
     pods.delete(r);
     all.delete(fx);
   }
+  // after every pod's update: upload the batches; heat quads of pods not updated this frame go dark
   function endFrame() {
     for (const fx of all) {
       if (fx.frame === frame) continue;
-      fx.glow.visible = fx.shadow.visible = false;
       for (const h of fx.heats) h.material.uniforms.uK.value = 0;
       if (fx.ring) fx.ring.visible = false;
     }
+    THROATS.flush(); GLOWS.flush(); SHADOWS.flush();
     frame++;
   }
 
@@ -361,6 +366,9 @@ export function createPodFx(scene, heat, opts = {}) {
   function update(r, dt, groundQuery, camPos) {
     const fx = attach(r);
     fx.frame = frame;
+    // racerFx has posed the pod for this frame: bring its world matrices up to date before the
+    // batches copy them (a frame late, the throats would trail the pod by metres at full speed)
+    r.mesh.updateMatrixWorld(true);
     const vis = r.mesh.visible && !r.gone;
     const over = r.overheat > 0;
     const thr = over ? 0.15 : r.throttle;
@@ -405,10 +413,8 @@ export function createPodFx(scene, heat, opts = {}) {
     }
     if (volume) { fx.mat.side = inside ? THREE.BackSide : THREE.FrontSide; u.uScale.value.set(wid, wid, fx.len); }
     fx.throats.forEach((m, k) => {
-      const tu = m.material.uniforms;
-      tu.uK.value = (0.55 + thr * 0.6 + fx.boost * 0.9 + fx.ign * 1.5 + fx.flash[k] * 3) * (over ? 0.5 + 0.5 * Math.random() : 1) * (1 - sput * 0.7) * (opts.hdr ?? 1);
-      tu.uBoost.value = fx.boost;
-      m.visible = vis && camD < 320;
+      const bright = (0.55 + thr * 0.6 + fx.boost * 0.9 + fx.ign * 1.5 + fx.flash[k] * 3) * (over ? 0.5 + 0.5 * Math.random() : 1) * (1 - sput * 0.7) * (opts.hdr ?? 1);
+      if (vis && camD < 320) THROATS.push(m.matrixWorld, vals(bright, fx.boost, m.userData.seed));
     });
     // ground decals
     const gy = groundQuery(r.x, r.z);
@@ -421,14 +427,12 @@ export function createPodFx(scene, heat, opts = {}) {
     nrm.set(-(dx * sx + dl * sz), 1, -(dx * sz - dl * sx)).normalize();
     q.setFromUnitVectors(up, nrm);
     qy.setFromAxisAngle(up, r.yaw);
-    for (const d of [fx.glow, fx.shadow]) {
-      d.position.set(r.x, gy + 0.12, r.z);
-      d.quaternion.copy(q).multiply(qy);
-      d.visible = vis;
-    }
     const nearG = Math.max(0, 1 - Math.max(0, h - 1.2) / 5);
-    fx.glow.material.uniforms.uK.value = nearG * (0.12 + thr * 0.25 + fx.boost * 0.25) * (over ? 0.3 : 1);
-    fx.shadow.material.uniforms.uK.value = nearG * 0.42;
+    if (vis) {
+      decal.compose(dpos.set(r.x, gy + 0.12, r.z), q.multiply(qy), one);
+      GLOWS.push(decal, vals(nearG * (0.12 + thr * 0.25 + fx.boost * 0.25) * (over ? 0.3 : 1), fx.glowSeed));
+      SHADOWS.push(decal, vals(nearG * 0.42));
+    }
     // heat haze behind each engine
     fx.heats.forEach((hq, k) => {
       const e = r.mesh.userData.engines[k];
@@ -546,6 +550,7 @@ export function createDebris(scene, geometries, material, n = 80, opts = {}) {
       im.castShadow = true;
       im.userData.dynamic = true;
       im.count = 0;
+      im.visible = false;
       scene.add(im);
       return im;
     });
@@ -586,7 +591,10 @@ export function createDebris(scene, geometries, material, n = 80, opts = {}) {
         im.setColorAt(im.count, col.setRGB(C[i * 3], C[i * 3 + 1], C[i * 3 + 2]));
         im.count++;
       }
-      for (const im of meshes) if (im.count) { im.instanceMatrix.needsUpdate = true; im.instanceColor.needsUpdate = true; }
+      for (const im of meshes) {
+        im.visible = im.count > 0;          // an empty InstancedMesh still costs a draw (and a shadow draw)
+        if (im.count) { im.instanceMatrix.needsUpdate = true; im.instanceColor.needsUpdate = true; }
+      }
     },
   };
 }
