@@ -23,7 +23,7 @@ from mathutils import Matrix, Vector
 
 COLL = 'HF_Pod'
 MATS = ['PAINT', 'PAINT_HULL', 'TRIM', 'STEEL_DARK', 'STEEL_BARE', 'BRASS', 'RUBBER',
-        'LEATHER', 'CLOTH', 'SPINNER', 'GLASS', 'GLOW']
+        'LEATHER', 'CLOTH', 'SPINNER', 'GLASS', 'GLOW', 'BEAM']
 M = {n: i for i, n in enumerate(MATS)}
 ENGINE_POS = Vector((1.75, -5.4, 0.15))
 HULL_C, HULL_RY, HULL_SX, HULL_SZ = 2.2, 2.05, 1.05, 0.66
@@ -594,6 +594,11 @@ def build_materials():
             bsdf.inputs['Emission Color'].default_value = (1.0, 0.30, 0.06, 1)
             bsdf.inputs['Emission Strength'].default_value = 1.2
             continue
+        if name == 'BEAM':   # the energy-beam emitter: electrode and coils, driven by the game
+            bsdf.inputs['Base Color'].default_value = (0.05, 0.02, 0.05, 1)
+            bsdf.inputs['Emission Color'].default_value = (1.0, 0.18, 0.75, 1)
+            bsdf.inputs['Emission Strength'].default_value = 3.0
+            continue
         grp = nb.node('ShaderNodeGroup')
         grp.node_tree = ng
         grp.name = 'PodSurface'
@@ -657,11 +662,11 @@ def build_engine_static(bm):
             v = cyl(bm, 0.014, 0.010, 0.02, (0, 0, 0), (1, 0, 0), 6, B)
             bmesh.ops.transform(bm, matrix=radial(phi) @ Matrix.Translation((0.86, y, 0)), verts=v)
 
-    # dorsal / ventral hinge rails for the air-brakes, with hinge knuckles
-    for s in (1, -1):
-        box(bm, (0.10, 2.8, 0.22), (0, 0.25, s * 0.76), D)
-        for y in (-0.85, 0.35, 1.45):
-            cyl(bm, 0.035, 0.035, 0.18, (0, y, s * 0.885), (0, 1, 0), 10, B)
+    # dorsal hinge rail for the air-brakes, with hinge knuckles. Nothing hangs under the engines:
+    # the pod banks up to ~0.55 rad and anything below the shell would cut into the sand.
+    box(bm, (0.10, 2.8, 0.22), (0, 0.25, 0.76), D)
+    for y in (-0.85, 0.35, 1.45):
+        cyl(bm, 0.035, 0.035, 0.18, (0, y, 0.885), (0, 1, 0), 10, B)
 
     # access hatch on the outboard side (+x), with bolts
     hatch = [(0.69, -2.32), (0.728, -2.30), (0.728, -1.76), (0.69, -1.74), (0.69, -2.32)]
@@ -678,10 +683,15 @@ def build_engine_static(bm):
         bmesh.ops.transform(bm, matrix=radial(radians(58)) @ Matrix.Translation((0.755, y, 0))
                             @ Matrix.Rotation(radians(-30), 4, 'Z'), verts=v)
 
-    # beam emitter on the inboard side (-x); its tip is BeamAnchor
+    # beam emitter on the inboard side (-x); its tip is BeamAnchor. The electrode, the face of the
+    # brass collar and three coils around the neck are BEAM: the game lights them with the beam
+    emit_mtx = Matrix.Translation((0, -1.95, 0)) @ Matrix.Rotation(radians(90), 4, 'Z')
     emit = [(0.18, 0.64, D), (0.18, 0.73, D), (0.14, 0.75, D), (0.14, 0.77, BR), (0.165, 0.78, BR),
-            (0.165, 0.82, BR), (0.10, 0.83, D), (0.07, 0.86, B), (0.035, 0.93, B), (0.0, 0.95, B)]
-    lathe(bm, emit, segs=20, mtx=Matrix.Translation((0, -1.95, 0)) @ Matrix.Rotation(radians(90), 4, 'Z'))
+            (0.165, 0.82, 'BEAM'), (0.10, 0.83, D), (0.07, 0.86, 'BEAM'), (0.035, 0.93, 'BEAM'), (0.0, 0.95, 'BEAM')]
+    lathe(bm, emit, segs=20, mtx=emit_mtx)
+    for y0 in (0.66, 0.69, 0.72):
+        ring = [(0.192 + 0.014 * cos(a), y0 + 0.011 * sin(a), 'BEAM') for a in [2 * pi * k / 8 for k in range(8)]]
+        lathe(bm, ring + [ring[0]], segs=20, mtx=emit_mtx)
     for k in range(3):  # prongs around the electrode
         a = radians(90 + k * 120)
         tip = Vector((-0.90, -1.95 + 0.11 * cos(a), 0.11 * sin(a)))
@@ -755,16 +765,9 @@ def build_nozzle(bm):
         sweep(bm, [p0, p1], 0.018, 6, B)
 
 
-def leaf_shape(top):
-    s = 1 if top else -1
-    return [(-1.05, 0.0), (1.28, 0.0), (1.28, 0.52 * s), (1.12, 0.60 * s), (0.15, 0.60 * s)]
-
-
-def build_leaf(bm, top, side):
-    """Air-brake leaf in its hinge-pivot space. side = +1 sits on +x, -1 on -x."""
-    pts = leaf_shape(top)
-    if not top:
-        pts = list(reversed(pts))
+def build_leaf(bm, side):
+    """Dorsal air-brake leaf in its hinge-pivot space. side = +1 sits on +x, -1 on -x."""
+    pts = [(-1.05, 0.0), (1.28, 0.0), (1.28, 0.52), (1.12, 0.60), (0.15, 0.60)]
     x0 = 0.004 * side
     t = 0.034 * side
     prism(bm, pts, abs(t), lambda u, v, w: (x0 + w * side, u, v), P, mats=(P, T, P))
@@ -777,8 +780,7 @@ def build_leaf(bm, top, side):
             f.material_index = M[P]
     # stiffeners on the outer face
     for y in (-0.3, 0.55):
-        h = 0.30 if top else -0.30
-        box(bm, (0.02, 0.05, 0.5), (x0 + (abs(t) + 0.01) * side, y, h), D)
+        box(bm, (0.02, 0.05, 0.5), (x0 + (abs(t) + 0.01) * side, y, 0.30), D)
 
 
 def build_flap(bm):
@@ -812,16 +814,13 @@ def build_engine(parent, side_name='L'):
     build_flap(bm)
     mesh_obj(f'Flap_{side_name}_mesh', bm, flap, bevel=0.006)
 
-    # leaves: T/B = top/bottom, P/N = +x/-x. three.js rotation.z sign that opens each leaf outward.
-    for top in (True, False):
-        for side in (1, -1):
-            tag = ('T' if top else 'B') + ('P' if side > 0 else 'N')
-            sign = (-1.0 if top else 1.0) * side
-            piv = empty(f'Brake_{side_name}_{tag}', eng, (0, 0.35, 0.87 if top else -0.87),
-                        anim='brake', axis='z', sign=sign, max=0.75)
-            bm = bmesh.new()
-            build_leaf(bm, top, side)
-            mesh_obj(f'Brake_{side_name}_{tag}_mesh', bm, piv, bevel=0.006)
+    # split dorsal air-brake: P/N = leaf on +x/-x; sign = three.js rotation.z that opens it outward
+    for side in (1, -1):
+        tag = 'P' if side > 0 else 'N'
+        piv = empty(f'Brake_{side_name}_{tag}', eng, (0, 0.35, 0.87), anim='brake', axis='z', sign=-float(side), max=0.75)
+        bm = bmesh.new()
+        build_leaf(bm, side)
+        mesh_obj(f'Brake_{side_name}_{tag}_mesh', bm, piv, bevel=0.006)
 
     empty(f'BeamAnchor_{side_name}', eng, (-0.93, -1.95, 0))
     empty(f'FlameAnchor_{side_name}', eng, (0, 3.5, 0))

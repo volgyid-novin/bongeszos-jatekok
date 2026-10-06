@@ -3,4 +3,6 @@ dist
 *.log
 .claude/
 homokfutam/models/pod/build/
+homokfutam/models/fx/build/
 __pycache__/
+waveletNoiseTile.bin

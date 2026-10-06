@@ -6,7 +6,8 @@ Output (homokfutam/assets/):
   pod_player.glb    meshes, pivots (extras = moving-part settings), materials PodAtlas / PodGlass / PodGlow;
                     meshopt-compressed with gltfpack when Node (npx) is available
   pod_livery.png    R = primary paint mask, G = accent mask; the game multiplies the base colour
-                    by the livery colours through these
+                    by the livery colours through these. B = heat mask: how readily the metal glows
+                    when the engines run hot (1 in the nozzle, fading forward along the shell)
 The baked .blend and raw bake images go to models/pod/build/ (not committed).
 """
 import math
@@ -26,7 +27,7 @@ import build_pod  # noqa: E402
 
 ASSETS = os.path.normpath(os.path.join(HERE, '..', '..', 'assets'))
 BUILD = os.path.join(HERE, 'build')
-NO_BAKE = ('GLASS', 'GLOW')
+NO_BAKE = ('GLASS', 'GLOW', 'BEAM')
 
 
 def args():
@@ -124,6 +125,19 @@ class BakeRig:
             tex.image = img
             nt.nodes.active = tex
 
+    def show_heat(self):
+        """Emit the heat mask: engine-local position (left engine; the right one is mirrored
+        after baking and shares its UVs) ramps from the nozzle forward, inner nozzle faces are hot."""
+        for name, (nt, tex, em, out, bsdf, grp) in self.nodes.items():
+            surf = out.inputs['Surface']
+            for l in list(surf.links):
+                nt.links.remove(l)
+            for l in list(em.inputs['Color'].links):
+                nt.links.remove(l)
+            heat = nt.nodes.get('HeatMask') or heat_nodes(nt)
+            nt.links.new(heat.outputs[0], em.inputs['Color'])
+            nt.links.new(em.outputs[0], surf)
+
     def show(self, channel):
         """channel = a PodSurface output name, or None for the normal BSDF."""
         for name, (nt, tex, em, out, bsdf, grp) in self.nodes.items():
@@ -137,6 +151,55 @@ class BakeRig:
             else:
                 nt.links.new(grp.outputs[channel], em.inputs['Color'])
                 nt.links.new(em.outputs[0], surf)
+
+
+def heat_nodes(nt):
+    n = lambda t: nt.nodes.new(t)  # noqa: E731
+
+    def math(op, a, b=None):
+        m = n('ShaderNodeMath')
+        m.operation = op
+        for i, v in enumerate((a, b)):
+            if v is None:
+                continue
+            if isinstance(v, (int, float)):
+                m.inputs[i].default_value = v
+            else:
+                nt.links.new(v, m.inputs[i])
+        return m.outputs[0]
+
+    def ramp(v, lo, hi):
+        m = n('ShaderNodeMapRange')
+        m.interpolation_type = 'SMOOTHSTEP'
+        nt.links.new(v, m.inputs['Value'])
+        m.inputs['From Min'].default_value = lo
+        m.inputs['From Max'].default_value = hi
+        return m.outputs['Result']
+
+    geo = n('ShaderNodeNewGeometry')
+    rel = n('ShaderNodeVectorMath')
+    rel.operation = 'SUBTRACT'
+    nt.links.new(geo.outputs['Position'], rel.inputs[0])
+    rel.inputs[1].default_value = tuple(build_pod.ENGINE_POS)
+    sep = n('ShaderNodeSeparateXYZ')
+    nt.links.new(rel.outputs[0], sep.inputs[0])
+    x, y, z = sep.outputs['X'], sep.outputs['Y'], sep.outputs['Z']
+    radial = math('SQRT', math('ADD', math('MULTIPLY', x, x), math('MULTIPLY', z, z)))
+    # along the engine (+y runs to the nozzle, which ends at 3.54) and only on the engine itself
+    on_engine = math('MULTIPLY', ramp(radial, 1.05, 0.9), ramp(y, 3.75, 3.6))
+    shell = math('MULTIPLY', ramp(y, 1.25, 3.3), on_engine)
+    # faces looking into the jet axis inside the nozzle
+    nsep = n('ShaderNodeSeparateXYZ')
+    nt.links.new(geo.outputs['Normal'], nsep.inputs[0])
+    inward = math('DIVIDE', math('ADD', math('MULTIPLY', nsep.outputs['X'], x), math('MULTIPLY', nsep.outputs['Z'], z)),
+                  math('MAXIMUM', radial, 1e-3))
+    inner = math('MULTIPLY', math('MULTIPLY', ramp(inward, -0.1, -0.5), ramp(y, 2.55, 2.9)), math('MULTIPLY', on_engine, ramp(radial, 0.95, 0.8)))
+    mask = n('ShaderNodeMath')
+    mask.operation = 'MAXIMUM'
+    mask.name = 'HeatMask'
+    nt.links.new(shell, mask.inputs[0])
+    nt.links.new(inner, mask.inputs[1])
+    return mask
 
 
 def bake(objs, typ, samples):
@@ -212,12 +275,19 @@ def export_materials(img_color, img_orm, img_normal):
     b.inputs['Base Color'].default_value = (0, 0, 0, 1)
     b.inputs['Emission Color'].default_value = (1.0, 0.30, 0.06, 1)
     b.inputs['Emission Strength'].default_value = 1.0
-    return atlas, glass, glow
+
+    beam = bpy.data.materials.new('PodBeam')
+    beam.use_backface_culling = True
+    b = next(n for n in beam.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
+    b.inputs['Base Color'].default_value = (0.05, 0.02, 0.05, 1)
+    b.inputs['Emission Color'].default_value = (1.0, 0.18, 0.75, 1)
+    b.inputs['Emission Strength'].default_value = 1.0
+    return atlas, glass, glow, beam
 
 
-def reassign(objs, atlas, glass, glow):
-    """Collapse the 12 procedural slots into PodAtlas / PodGlass / PodGlow."""
-    remap = np.array([1 if n == 'GLASS' else 2 if n == 'GLOW' else 0 for n in build_pod.MATS], np.int32)
+def reassign(objs, atlas, glass, glow, beam):
+    """Collapse the procedural slots into PodAtlas / PodGlass / PodGlow / PodBeam."""
+    remap = np.array([{'GLASS': 1, 'GLOW': 2, 'BEAM': 3}.get(n, 0) for n in build_pod.MATS], np.int32)
     for ob in objs:
         if ob.type != 'MESH':
             continue
@@ -226,10 +296,11 @@ def reassign(objs, atlas, glass, glow):
         me.polygons.foreach_get('material_index', idx)
         used = sorted(set(remap[idx].tolist()))
         compact = {u: i for i, u in enumerate(used)}
-        me.polygons.foreach_set('material_index', np.array([compact[u] for u in remap[idx]], np.int32))
+        # replace the slots first: clearing them resets every face's material index to 0
         me.materials.clear()
         for u in used:
-            me.materials.append((atlas, glass, glow)[u])
+            me.materials.append((atlas, glass, glow, beam)[u])
+        me.polygons.foreach_set('material_index', np.array([compact[u] for u in remap[idx]], np.int32))
 
 
 def compress(src, dst):
@@ -297,6 +368,10 @@ def main():
         rig.target(imgs[key])
         rig.show(channel)
         bake(bake_objs, 'EMIT', opt['samples'])
+    imgs['maskh'] = new_image('bake_maskh', size, False)
+    rig.target(imgs['maskh'])
+    rig.show_heat()
+    bake(bake_objs, 'EMIT', opt['samples'])
     rig.show(None)
     imgs['normal'] = new_image('bake_normal', size, False)
     rig.target(imgs['normal'])
@@ -313,18 +388,18 @@ def main():
     o[:, 1] = rough[:, 0]
     o[:, 2] = metal[:, 0]
     orm.pixels.foreach_set(o.ravel())
-    mp, mt = pixels(imgs['maskp']), pixels(imgs['maskt'])
+    mp, mt, mh = pixels(imgs['maskp']), pixels(imgs['maskt']), pixels(imgs['maskh'])
     liv = new_image('pod_livery_full', size, False)
     l = np.zeros_like(mp)
-    l[:, 0], l[:, 1], l[:, 3] = mp[:, 0], mt[:, 0], 1.0
+    l[:, 0], l[:, 1], l[:, 2], l[:, 3] = mp[:, 0], mt[:, 0], mh[:, 0], 1.0
     liv.pixels.foreach_set(l.ravel())
     liv.scale(size // 2, size // 2)
     save(liv, os.path.join(ASSETS, 'pod_livery.png'))
     for key, img in list(imgs.items()) + [('orm', orm)]:
         save(img, os.path.join(BUILD, f'{img.name}.png'))
 
-    atlas, glass, glow = export_materials(imgs['color'], orm, imgs['normal'])
-    reassign(pod_objects(), atlas, glass, glow)
+    atlas, glass, glow, beam = export_materials(imgs['color'], orm, imgs['normal'])
+    reassign(pod_objects(), atlas, glass, glow, beam)
 
     raw = os.path.join(BUILD, 'pod_raw.glb')
     out = os.path.join(ASSETS, 'pod_player.glb')

@@ -194,6 +194,31 @@ input.txt.err { border-color: var(--bad); }
   .screen { background: rgba(20,14,9,.7); align-items: flex-start; }
 }
 @media (prefers-reduced-motion: reduce) { #heatFill.over { animation: none; } }
+
+/* ---------- Cinematics: letterbox, title and name cards, photo mode ---------- */
+#cine { position: fixed; inset: 0; pointer-events: none; }
+.bar { position: absolute; left: 0; right: 0; height: 11vh; background: #000; transition: transform .6s cubic-bezier(.2,.8,.2,1); }
+.bar.top { top: 0; transform: translateY(-100%); }
+.bar.bot { bottom: 0; transform: translateY(100%); }
+#cine.on .bar { transform: none; }
+#titleCard { position: absolute; left: max(16px, 6vw); top: 18vh; opacity: 0; transition: opacity .8s; }
+#titleCard.on { opacity: 1; }
+#titleCard h2 { margin: 0; font-family: var(--font-display); font-weight: 800; font-size: clamp(48px, 9vw, 96px); line-height: .85; text-shadow: 0 4px 30px rgba(0,0,0,.5); }
+#titleCard h2 span { color: var(--flame); }
+#titleCard p { margin: 10px 0 0; font-family: var(--font-display); font-weight: 600; font-size: 18px; letter-spacing: .22em; color: var(--sand); text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+#nameCard { position: absolute; left: max(16px, 6vw); bottom: calc(11vh + 26px); display: flex; align-items: center; gap: 14px; opacity: 0; transform: translateX(-20px); transition: opacity .35s, transform .35s; }
+#nameCard.on { opacity: 1; transform: none; }
+#nameCard .no { font-family: var(--font-display); font-weight: 800; font-size: 46px; color: var(--sand-dim); }
+#nameCard .sw { width: 6px; height: 46px; border-radius: 2px; }
+#nameCard .nm { font-family: var(--font-display); font-weight: 800; font-size: 40px; letter-spacing: .04em; text-shadow: 0 2px 14px rgba(0,0,0,.6); }
+#nameCard .nm small { display: block; font-size: 14px; font-weight: 600; letter-spacing: .2em; color: var(--sand-dim); }
+#skipHint { position: absolute; right: max(16px, 4vw); bottom: calc(11vh + 26px); font-family: var(--font-display); font-weight: 600; font-size: 14px; letter-spacing: .18em; color: var(--sand-dim); opacity: 0; transition: opacity .4s; }
+#cine.on.intro #skipHint { opacity: .85; }
+#replayTag { position: absolute; right: max(16px, 4vw); top: calc(16px + env(safe-area-inset-top, 0px)); font-family: var(--font-display); font-weight: 800; font-size: 20px; letter-spacing: .2em; color: var(--flame); display: flex; align-items: center; gap: 8px; }
+#replayTag::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--bad); animation: blink 1s steps(2) infinite; }
+#photoHelp { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); padding: 10px 16px; border-radius: 6px; background: var(--glass); font-size: 13px; color: var(--sand-dim); display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 32px); box-sizing: border-box; }
+#photoHelp kbd { font-family: var(--font-display); font-weight: 700; color: var(--sand); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; margin-right: 6px; }
+.gfx-note { font-size: 12.5px; color: var(--sand-dim); margin: 0; }
 </style>
 </head>
 <body>
@@ -255,6 +280,16 @@ input.txt.err { border-color: var(--bad); }
         <button id="diff2" data-v="2" aria-pressed="false">PROFI</button>
       </div>
     </div>
+    <div class="opt">
+      <span class="lbl">Grafika</span>
+      <div class="seg" id="gfxSeg">
+        <button data-v="0" aria-pressed="false">ALACSONY</button>
+        <button data-v="1" aria-pressed="false">KÖZEPES</button>
+        <button data-v="2" aria-pressed="false">MAGAS</button>
+        <button data-v="3" aria-pressed="false">ULTRA</button>
+      </div>
+      <p class="gfx-note" id="gfxNote" hidden>A váltás újratölti az oldalt.</p>
+    </div>
     <button class="cta" id="startBtn"><span>RAJT EGYEDÜL</span><span aria-hidden="true">→</span></button>
     <div class="record" id="recordTxt"></div>
     <div class="mp">
@@ -275,6 +310,7 @@ input.txt.err { border-color: var(--bad); }
       <kbd>R</kbd><span>vissza a pályára</span>
       <kbd>Esc / P</kbd><span>szünet</span>
       <kbd>M</kbd><span>hang ki/be</span>
+      <kbd>N</kbd><span>zene ki/be</span>
     </div>
   </div>
 </section>
@@ -318,6 +354,7 @@ input.txt.err { border-color: var(--bad); }
     <div class="btns">
       <button class="cta" id="resumeBtn"><span>FOLYTATÁS</span><span aria-hidden="true">→</span></button>
       <button class="ghost" id="restartBtn">ÚJRAINDÍTÁS</button>
+      <button class="ghost" id="photoBtn">FOTÓ MÓD</button>
       <button class="ghost" id="menuBtn">FŐMENÜ</button>
     </div>
   </div>
@@ -334,6 +371,18 @@ input.txt.err { border-color: var(--bad); }
     </div>
   </div>
 </section>
+
+<div id="cine">
+  <div class="bar top"></div><div class="bar bot"></div>
+  <div id="titleCard"><h2>HOMOK<span>FUTAM</span></h2><p id="titleSub"></p></div>
+  <div id="nameCard"><span class="no" id="ncNo"></span><span class="sw" id="ncSw"></span><span class="nm" id="ncName"></span></div>
+  <div id="skipHint">UGRÁS: BÁRMELYIK GOMB</div>
+  <div id="replayTag" hidden>VISSZAJÁTSZÁS</div>
+</div>
+<div id="photoHelp" hidden>
+  <span><kbd>EGÉR</kbd>forgatás</span><span><kbd>GÖRGŐ</kbd>közelítés</span><span><kbd>Q / E</kbd>magasság</span>
+  <span><kbd>F</kbd>élességállítás</span><span><kbd>H</kbd>súgó elrejtése</span><span><kbd>ENTER</kbd>kép mentése</span><span><kbd>ESC</kbd>vissza</span>
+</div>
 
 <div id="loading">PÁLYA ÉPÍTÉSE…</div>
 
