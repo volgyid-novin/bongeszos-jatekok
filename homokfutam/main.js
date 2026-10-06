@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { RaceRoom, selfId } from './net.js';
+import { loadPlayerPod, setPodLivery, animatePlayerPod } from './playerPod.js';
 
 // ============================================================
 //  Utilities
@@ -837,9 +838,7 @@ function buildPod(color, accent) {
     const e = buildEngine(paint);
     e.position.set(s * 1.75, 0.15, 5.4);
     body.add(e); engines.push(e);
-    const flame = new THREE.Sprite(new THREE.SpriteMaterial({ map: TEX.glow, color: '#ffb066', blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
-    flame.position.set(0, 0, -3.5);
-    e.add(flame); e.userData.flame = flame;
+    addFlame(e, new THREE.Vector3(0, 0, -3.5));
   }
   // cockpit tub
   const tub = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12), paint);
@@ -870,8 +869,13 @@ function buildPod(color, accent) {
   const bolt = buildBolt();
   body.add(bolt);
   body.traverse((o) => { if (o.isMesh && o !== bolt) o.castShadow = true; });
-  root.userData = { body, engines, bolt };
+  root.userData = { body, engines, bolt, beamX0: 1.0, beamX1: -1.0, beamZ: 6.7 };
   return root;
+}
+function addFlame(engine, pos) {
+  const flame = new THREE.Sprite(new THREE.SpriteMaterial({ map: TEX.glow, color: '#ffb066', blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
+  flame.position.copy(pos);
+  engine.add(flame); engine.userData.flame = flame;
 }
 
 // ============================================================
@@ -939,7 +943,7 @@ const racers = ROSTER.map((d, n) => {
   const mesh = buildPod(d.color, d.accent);
   scene.add(mesh);
   return {
-    ...d, n, mesh, player: n === 0,
+    ...d, n, mesh, baseMesh: mesh, player: n === 0,
     // ctl: 'local' = this player, 'bot' = AI simulated here, 'net' = driven by network states
     ctl: n === 0 ? 'local' : 'bot', owner: n === 0 ? 'me' : null, grid: SOLO_GRID[n], gone: false, left: false, net: null,
     x: 0, y: 0, z: 0, yaw: 0, vx: 0, vz: 0, vy: 0, fwd: 0, lat: 0,
@@ -949,6 +953,42 @@ const racers = ROSTER.map((d, n) => {
   };
 });
 let player = racers[0];
+
+// ============================================================
+//  Detailed player pod: models/pod/*.py -> assets/pod_player.glb
+// ============================================================
+// Loads in the background; until then, or if it fails, the player drives the simple pod.
+// It goes on whichever racer this player controls and keeps buildPod()'s userData contract,
+// so racerFx() drives it the same way and also animates its moving parts.
+let detailPod = null;
+function wrapDetailedPod(pod) {
+  pod.engines.forEach((e, k) => addFlame(e, pod.flames[k]));
+  const bolt = buildBolt();
+  pod.body.add(bolt);
+  pod.root.userData = {
+    body: pod.body, engines: pod.engines, bolt, pod,
+    beamX0: pod.beam[0].x, beamX1: pod.beam[1].x, beamZ: (pod.beam[0].z + pod.beam[1].z) / 2,
+  };
+  return pod.root;
+}
+function swapMesh(r, m) {
+  if (r.mesh === m) return;
+  m.visible = r.mesh.visible;
+  m.position.copy(r.mesh.position);
+  m.rotation.copy(r.mesh.rotation);
+  scene.remove(r.mesh);
+  r.mesh = m;
+  scene.add(m);
+}
+function attachDetailPod() {
+  if (!detailPod || !player) return;
+  for (const r of racers) if (r.mesh === detailPod && r !== player) swapMesh(r, r.baseMesh);
+  setPodLivery(detailPod.userData.pod, player.color, player.accent);
+  swapMesh(player, detailPod);
+}
+loadPlayerPod(renderer)
+  .then((pod) => { detailPod = wrapDetailedPod(pod); attachDetailPod(); })
+  .catch((e) => console.warn('HOMOKFUTAM: detailed pod failed to load, using the simple one', e));
 const _tp = { x: 0, y: 0, z: 0, yaw: 0, i: 0 };
 
 function placeOnGrid(r, slot) {
@@ -1308,7 +1348,8 @@ function racerFx(r, dt, t) {
     f.material.color.set(r.overheat > 0 ? '#ff5a2a' : r.boosting ? '#d9e8ff' : '#ffb066');
   });
   const camD = camera.position.distanceTo(m.position);
-  if (camD < 260) updateBolt(ud.bolt, 1.0, -1.0, by, 6.7, t + r.phase, r.boosting ? 2.2 : 1);
+  if (camD < 260) updateBolt(ud.bolt, ud.beamX0, ud.beamX1, by, ud.beamZ, t + r.phase, r.boosting ? 2.2 : 1);
+  if (ud.pod) animatePlayerPod(ud.pod, r, dt);
   ud.bolt.material.opacity = r.overheat > 0 ? 0.35 : 1;
   ud.bolt.visible = camD < 600;
   // dust behind the pod
@@ -1681,6 +1722,7 @@ function assignSolo() {
     r.mesh.visible = true;
   });
   player = racers[0];
+  attachDetailPod();
 }
 function assignMP(cfg) {
   const order = [0, 1, 2, 3, 4, 5], rand = rng(cfg.seed);
@@ -1693,6 +1735,7 @@ function assignMP(cfg) {
     r.mesh.visible = true;
   });
   player = racers.find((r) => r.player);
+  attachDetailPod();
 }
 
 function enterRoom(code) {

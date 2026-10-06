@@ -2,3 +2,5 @@ node_modules
 dist
 *.log
 .claude/
+homokfutam/models/pod/build/
+__pycache__/

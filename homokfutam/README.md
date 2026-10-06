@@ -76,9 +76,12 @@ Kontrollerrel is megy: bal kar a kormány, RT a gáz, LT a fék, X vagy RB a boo
 
 ```
 homokfutam/
-  index.html   menük, HUD, stílus
-  main.js      pálya, podok, fizika, botok, verseny, hang, többjátékos logika
-  net.js       P2P szoba (Trystero), üzenettípusok
+  index.html    menük, HUD, stílus
+  main.js       pálya, podok, fizika, botok, verseny, hang, többjátékos logika
+  net.js        P2P szoba (Trystero), üzenettípusok
+  playerPod.js  a játékos részletes podja: betöltés, festés, mozgó részek
+  assets/       a részletes pod modellje és festésmaszkja
+  models/pod/   Blender-szkriptek, ezekből készül a modell
 ```
 
 A fontos számok a `main.js`-ben vannak:
@@ -87,3 +90,26 @@ A fontos számok a `main.js`-ben vannak:
 - `TOP`: végsebesség (m/s)
 - `SKILL`: a botok tempója nehézségi szintenként
 - `A_LAT`: mennyire gyorsan veszik be a kanyarokat a botok
+
+## A játékos részletes podja
+
+A saját podod egy részletes, kopott modell (`assets/pod_player.glb`). A botok a régi, egyszerű podot használják. Amíg a modell betöltődik, vagy ha nem sikerül betölteni, a te podod is az egyszerű marad.
+
+A modell kódból készül Blenderben (5.2), a forrása a `models/pod/` mappa:
+
+- `build_pod.py`: felépíti a podot (geometria, mozgó részek, kopott anyagok)
+- `bake_export.py`: textúrákba égeti a koszt, a kopást és a kormot, majd kiírja az `assets/pod_player.glb` és az `assets/pod_livery.png` fájlt
+- `preview.py`: Cycles előnézeti képek a játék kameráinak nézetéből
+
+Újragenerálás a projekt gyökeréből:
+
+```bash
+blender -b --factory-startup --python homokfutam/models/pod/bake_export.py
+blender -b --factory-startup --python homokfutam/models/pod/preview.py -- out chase hero --glb homokfutam/models/pod/build/pod_raw.glb
+```
+
+A `bake_export.py` a `gltfpack` eszközzel (`npx`) tömöríti a modellt, ehhez Node kell. Node nélkül a tömörítetlen fájl kerül az `assets/` mappába.
+
+A festés színét a játék adja: a `pod_livery.png` piros csatornája a fő szín, a zöld csatornája a díszítőszín helye. Így a modell bármelyik rajtszínnel működik, többjátékos módban is.
+
+A mozgó részeket a `playerPod.js` mozgatja: a beömlő ventilátora a gázzal pörög, fékezéskor kinyílnak a légfékek, kanyarban kitérnek a hátsó lapok és bedől a pilóta, boostnál kitágul a fúvóka, a hajtómű izzása pedig a gázt és a hőt követi.
