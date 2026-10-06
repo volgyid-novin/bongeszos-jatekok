@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hadúr</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Grenze+Gotisch:wght@600;800&family=Grenze:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: full-bleed 3D battlefield; in game a StarCraft-style command bar along the bottom (minimap | selection | orders)
+   and a resource strip top-right; menus are one left-aligned leather panel over the live map. Single dark theme on purpose. */
+:root {
+  --ink: #13110d;
+  --leather: #261d15;
+  --leather-hi: #35291d;
+  --iron: #4a443b;
+  --parch: #eadcb8;
+  --parch-dim: #a99a78;
+  --brass: #d6a847;
+  --brass-hi: #f0c868;
+  --line: rgba(214, 168, 71, 0.22);
+  --good: #8fd66a;
+  --bad: #e5533c;
+  --team0: #5b93ff;
+  --team1: #ff5f4a;
+  --font-display: "Grenze Gotisch", "Old English Text MT", Georgia, serif;
+  --font-body: "Grenze", "Palatino Linotype", Georgia, serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; overflow: hidden; background: var(--ink); color: var(--parch);
+  font-family: var(--font-body); font-size: 16px;
+  -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+}
+canvas#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+canvas#overlay { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+button { font: inherit; color: inherit; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--brass-hi); outline-offset: 2px; }
+.num { font-variant-numeric: tabular-nums lining-nums; }
+
+/* ---------- top strip ---------- */
+#topbar {
+  position: fixed; top: env(safe-area-inset-top, 0px); right: 0; display: flex; align-items: stretch; gap: 0;
+  background: linear-gradient(180deg, var(--leather-hi), var(--leather)); border-left: 1px solid var(--line); border-bottom: 2px solid var(--brass);
+  border-bottom-left-radius: 10px; box-shadow: 0 6px 18px rgba(0,0,0,.45);
+}
+.res { display: flex; align-items: center; gap: 8px; padding: 6px 16px; border-right: 1px solid var(--line); font-weight: 700; font-size: 19px; min-width: 70px; }
+.res i { width: 16px; height: 16px; border-radius: 3px; display: inline-block; flex: none; }
+.res .ig { background: radial-gradient(circle at 35% 30%, #fff3b0, #e9b52c 55%, #9a6a10); border-radius: 50%; }
+.res .iw { background: linear-gradient(90deg, #6d4526 0 30%, #a6763f 30% 70%, #6d4526 70%); }
+.res .if { background: radial-gradient(circle at 40% 35%, #ffd0a0, #c9603a 60%, #7a2e18); border-radius: 50% 50% 45% 45%; }
+.res.warn b { color: var(--bad); }
+#clock { font-size: 15px; color: var(--parch-dim); }
+#menuBtn {
+  border: 0; background: transparent; padding: 6px 16px; cursor: pointer; font-weight: 700; letter-spacing: .08em; font-size: 15px; color: var(--brass-hi);
+}
+#menuBtn:hover { background: rgba(214,168,71,.12); }
+#versus {
+  position: fixed; top: calc(8px + env(safe-area-inset-top, 0px)); left: 12px; font-size: 15px; font-weight: 600;
+  padding: 4px 12px; border-radius: 6px; background: rgba(19,17,13,.6); display: flex; gap: 8px; align-items: center;
+}
+#versus .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+#versus .vs { color: var(--parch-dim); font-weight: 500; }
+
+/* ---------- command bar ---------- */
+#bar {
+  position: fixed; left: 0; right: 0; bottom: 0; height: calc(176px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px); box-sizing: border-box;
+  display: grid; grid-template-columns: 196px minmax(0, 1fr) 268px; gap: 14px; padding-inline: 12px; align-items: center;
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,.012) 0 2px, transparent 2px 7px),
+    linear-gradient(180deg, var(--leather-hi), var(--leather) 40%, #1c150f);
+  border-top: 3px solid var(--brass); box-shadow: 0 -8px 24px rgba(0,0,0,.5);
+}
+#bar::before { content: ""; position: absolute; left: 0; right: 0; top: 3px; height: 1px; background: rgba(0,0,0,.6); }
+.mm-wrap { width: 176px; height: 176px; margin-top: -26px; padding: 6px; box-sizing: content-box; background: var(--iron); border: 2px solid var(--brass); border-radius: 6px; align-self: start; }
+#minimap { width: 176px; height: 176px; display: block; cursor: crosshair; image-rendering: pixelated; }
+
+#info { height: 150px; display: flex; gap: 14px; align-items: center; min-width: 0; padding: 0 8px; border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
+.portrait { width: 104px; height: 104px; flex: none; border-radius: 6px; border: 2px solid var(--iron); background: radial-gradient(circle at 50% 35%, #3c3226, #17120d); display: grid; place-items: center; overflow: hidden; }
+.portrait img { width: 100%; height: 100%; object-fit: contain; }
+.idet { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.iname { font-family: var(--font-display); font-weight: 800; font-size: 28px; line-height: 1; color: var(--brass-hi); }
+.iowner { font-size: 14px; color: var(--parch-dim); }
+.hpbar { height: 10px; border-radius: 3px; background: rgba(0,0,0,.5); overflow: hidden; border: 1px solid rgba(0,0,0,.6); max-width: 280px; }
+.hpbar div { height: 100%; background: var(--good); }
+.hptxt { font-size: 14px; color: var(--parch-dim); }
+.stats { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 15px; }
+.stats span { color: var(--parch-dim); }
+.stats b { color: var(--parch); font-weight: 700; }
+.queue { display: flex; gap: 6px; align-items: center; }
+.qitem { width: 42px; height: 42px; border-radius: 4px; border: 1px solid var(--iron); background: #1a140f; position: relative; overflow: hidden; cursor: pointer; }
+.qitem img { width: 100%; height: 100%; }
+.qitem .qp { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--brass-hi); }
+.qitem.first { width: 52px; height: 52px; border-color: var(--brass); }
+.prog { height: 8px; border-radius: 3px; background: rgba(0,0,0,.5); overflow: hidden; max-width: 280px; }
+.prog div { height: 100%; background: var(--brass); }
+.multi { display: grid; grid-template-columns: repeat(auto-fill, 46px); gap: 5px; align-content: center; width: 100%; max-height: 150px; overflow: hidden; }
+.mcell { width: 46px; height: 46px; border-radius: 4px; border: 1px solid var(--iron); background: #1a140f; position: relative; cursor: pointer; overflow: hidden; }
+.mcell img { width: 100%; height: 100%; }
+.mcell .mh { position: absolute; left: 2px; right: 2px; bottom: 2px; height: 4px; background: rgba(0,0,0,.6); }
+.mcell .mh div { height: 100%; }
+.mcell:hover { border-color: var(--brass); }
+.hint { color: var(--parch-dim); font-size: 15px; line-height: 1.45; max-width: 46ch; }
+.hint kbd { font-family: var(--font-body); font-weight: 700; color: var(--parch); border: 1px solid var(--iron); border-radius: 3px; padding: 0 5px; }
+
+#cmds { display: grid; grid-template-columns: repeat(4, 60px); grid-template-rows: repeat(3, 48px); gap: 6px; justify-content: end; }
+.cmd {
+  position: relative; border: 1px solid var(--iron); border-radius: 5px; padding: 0; cursor: pointer;
+  background: linear-gradient(180deg, #3a2f23, #211a13); display: grid; place-items: center; overflow: hidden;
+}
+.cmd:hover:not(:disabled) { border-color: var(--brass-hi); background: linear-gradient(180deg, #4a3c2c, #2a2118); }
+.cmd:active:not(:disabled) { transform: translateY(1px); }
+.cmd img { width: 46px; height: 46px; object-fit: contain; pointer-events: none; }
+.cmd svg { width: 28px; height: 28px; pointer-events: none; }
+.cmd .hk { position: absolute; left: 3px; top: 1px; font-size: 12px; font-weight: 700; color: var(--brass-hi); text-shadow: 0 1px 2px #000; }
+.cmd:disabled { cursor: default; filter: grayscale(.9) brightness(.55); }
+.cmd.on { border-color: var(--good); box-shadow: inset 0 0 0 1px var(--good); }
+.cmd.empty { visibility: hidden; }
+.cmd .lvl { position: absolute; right: 3px; bottom: 1px; font-size: 12px; font-weight: 700; color: var(--parch); text-shadow: 0 1px 2px #000; }
+
+#tip {
+  position: fixed; right: 12px; bottom: calc(190px + env(safe-area-inset-bottom, 0px)); width: 300px; padding: 12px 14px; border-radius: 6px;
+  background: rgba(24,18,13,.96); border: 1px solid var(--brass); box-shadow: 0 8px 22px rgba(0,0,0,.5); pointer-events: none;
+  display: flex; flex-direction: column; gap: 6px; font-size: 15px;
+}
+#tip h4 { margin: 0; font-size: 19px; font-weight: 700; color: var(--brass-hi); display: flex; justify-content: space-between; gap: 8px; }
+#tip h4 kbd { font-family: var(--font-body); font-size: 13px; color: var(--parch); border: 1px solid var(--iron); border-radius: 3px; padding: 0 6px; align-self: center; }
+#tip p { margin: 0; color: var(--parch-dim); line-height: 1.4; }
+#tip .cost { display: flex; gap: 14px; font-weight: 700; }
+#tip .cost .no { color: var(--bad); }
+#tip .req { color: var(--bad); }
+
+#msgs { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(200px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; }
+#msgs div { font-size: 19px; font-weight: 700; padding: 3px 14px; border-radius: 4px; background: rgba(19,17,13,.72); text-shadow: 0 1px 2px #000; transition: opacity .4s; white-space: nowrap; }
+#msgs div.bad { color: #ffb19f; }
+#msgs div.good { color: #c9f2a8; }
+#msgs div.alert { color: #fff; background: rgba(150,30,20,.8); }
+#wait { position: fixed; left: 50%; top: 34%; transform: translateX(-50%); padding: 14px 26px; border-radius: 8px; background: rgba(19,17,13,.85); border: 1px solid var(--brass); font-size: 20px; font-weight: 600; }
+#desync { position: fixed; left: 50%; top: 60px; transform: translateX(-50%); padding: 6px 16px; border-radius: 6px; background: rgba(150,30,20,.85); font-size: 15px; }
+
+/* ---------- menus ---------- */
+.screen {
+  position: fixed; inset: 0; display: flex; align-items: flex-start;
+  padding-inline: max(16px, 6vw); padding-block: 24px;
+  background: linear-gradient(90deg, rgba(19,15,10,.9) 0%, rgba(19,15,10,.62) 42%, rgba(19,15,10,.05) 78%);
+  overflow-y: auto;
+}
+.panel { width: min(460px, 100%); display: flex; flex-direction: column; gap: 20px; margin-block: auto; }
+.brand { font-family: var(--font-display); font-weight: 800; font-size: clamp(76px, 15vw, 132px); line-height: .78; margin: 0; letter-spacing: .01em; color: var(--parch); text-shadow: 0 4px 24px rgba(0,0,0,.6); }
+.brand span { color: var(--brass-hi); }
+.tag { margin: 0; color: var(--parch-dim); font-size: 17px; line-height: 1.45; max-width: 40ch; }
+.lbl { font-size: 13px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--parch-dim); }
+.opt { display: flex; flex-direction: column; gap: 8px; }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: transparent; padding: 10px 6px; cursor: pointer; font-weight: 700; font-size: 17px; letter-spacing: .04em; color: var(--parch-dim); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--parch); color: var(--ink); }
+.seg button:disabled { cursor: default; }
+.race-seg button { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 6px; }
+.race-seg img { width: 40px; height: 40px; }
+.cta {
+  border: 0; border-radius: 6px; padding: 15px 20px; cursor: pointer; background: var(--brass); color: var(--ink);
+  font-weight: 700; font-size: 22px; letter-spacing: .08em; display: flex; justify-content: space-between; align-items: center;
+  box-shadow: inset 0 -3px 0 rgba(0,0,0,.25);
+}
+.cta:hover { background: var(--brass-hi); }
+.cta.on { background: var(--parch); }
+.ghost { border: 1px solid var(--line); border-radius: 6px; padding: 11px 16px; cursor: pointer; background: transparent; font-weight: 700; font-size: 17px; letter-spacing: .06em; text-align: left; }
+.ghost:hover { background: rgba(234,220,184,.08); }
+.ghost.hot { border-color: var(--brass-hi); color: var(--brass-hi); }
+.btns { display: flex; flex-direction: column; gap: 10px; }
+input.txt {
+  font-family: var(--font-body); font-weight: 600; font-size: 18px; color: var(--parch); letter-spacing: .03em;
+  background: rgba(234,220,184,.06); border: 1px solid var(--line); border-radius: 6px; padding: 9px 12px; min-width: 0; width: 100%; box-sizing: border-box;
+  -webkit-user-select: text; user-select: text;
+}
+input.txt::placeholder { color: var(--parch-dim); opacity: .6; }
+input.txt.err { border-color: var(--bad); }
+.mp { display: flex; flex-direction: column; gap: 10px; padding-top: 18px; border-top: 1px solid var(--line); }
+.mp-row { display: grid; grid-template-columns: 1fr 90px auto; gap: 8px; }
+.mp-row .ghost { text-align: center; }
+#codeInput { text-transform: uppercase; text-align: center; letter-spacing: .2em; }
+.note { margin: 0; font-size: 15px; color: var(--brass-hi); }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; font-size: 15px; color: var(--parch-dim); }
+.keys kbd { font-family: var(--font-body); font-weight: 700; font-size: 14px; color: var(--parch); border: 1px solid var(--line); border-radius: 4px; padding: 0 7px; justify-self: start; white-space: nowrap; }
+.room-code { font-family: var(--font-display); font-weight: 800; font-size: clamp(72px, 15vw, 116px); line-height: .8; letter-spacing: .06em; color: var(--brass-hi); }
+.invite { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.invite code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; color: var(--parch-dim); overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; }
+.players { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.players li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--line); font-size: 17px; }
+.players li em { font-style: normal; color: var(--parch-dim); font-size: 14px; margin-left: 6px; }
+.players li b { font-weight: 700; letter-spacing: .06em; color: var(--parch-dim); white-space: nowrap; font-size: 15px; }
+.players li b.ok { color: var(--good); }
+.players .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; margin-right: 8px; }
+.room-status { margin: 0; color: var(--parch-dim); font-size: 16px; line-height: 1.45; min-height: 1.45em; }
+.res-head { font-family: var(--font-display); font-weight: 800; font-size: clamp(76px, 15vw, 120px); line-height: .8; margin: 0; }
+.res-head.win { color: var(--brass-hi); }
+.res-head.lose { color: var(--bad); }
+.res-sub { margin: 0; color: var(--parch-dim); font-size: 17px; }
+table.restab { width: 100%; border-collapse: collapse; font-size: 16px; }
+table.restab th { text-align: right; font-weight: 700; padding: 6px 4px; border-bottom: 1px solid var(--line); font-size: 15px; }
+table.restab th:first-child { text-align: left; color: var(--parch-dim); font-weight: 500; }
+table.restab td { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: right; font-weight: 700; }
+table.restab td:first-child { text-align: left; color: var(--parch-dim); font-weight: 500; }
+#loading { position: fixed; inset: 0; display: grid; place-items: center; background: var(--ink); font-family: var(--font-display); font-size: 40px; color: var(--parch-dim); }
+#err { color: var(--bad); max-width: 40ch; text-align: center; font-family: var(--font-body); font-size: 17px; }
+.touchnote { margin: 0; font-size: 15px; color: var(--bad); }
+
+@media (max-width: 980px) {
+  #bar { grid-template-columns: 136px minmax(0, 1fr) 214px; gap: 8px; height: calc(140px + env(safe-area-inset-bottom, 0px)); }
+  .mm-wrap { width: 124px; height: 124px; margin-top: -10px; padding: 4px; }
+  #minimap { width: 124px; height: 124px; }
+  #cmds { grid-template-columns: repeat(4, 48px); grid-template-rows: repeat(3, 40px); gap: 5px; }
+  .cmd img { width: 38px; height: 38px; }
+  .portrait { width: 72px; height: 72px; }
+  .iname { font-size: 22px; }
+  #info { height: 124px; }
+  .res { padding: 5px 10px; font-size: 16px; min-width: 0; }
+  #tip, #msgs { bottom: calc(152px + env(safe-area-inset-bottom, 0px)); }
+}
+@media (max-width: 640px) {
+  .screen { background: rgba(19,15,10,.82); }
+  #bar { grid-template-columns: 0 minmax(0, 1fr) 214px; }
+  .mm-wrap { display: none; }
+  .stats { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { #msgs div { transition: none; } }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<canvas id="overlay"></canvas>
+
+<div id="hud" hidden>
+  <div id="versus"></div>
+  <div id="topbar">
+    <div class="res" title="Arany"><i class="ig"></i><b id="rGold" class="num">0</b></div>
+    <div class="res" title="Fa"><i class="iw"></i><b id="rWood" class="num">0</b></div>
+    <div class="res" id="rFoodBox" title="Élelem: egységek / eltartható"><i class="if"></i><b id="rFood" class="num">0/0</b></div>
+    <div class="res" title="Játékidő"><span id="clock" class="num">0:00</span></div>
+    <button id="menuBtn">MENÜ <span style="opacity:.6">F10</span></button>
+  </div>
+  <div id="msgs"></div>
+  <div id="wait" hidden>Várakozás az ellenfélre…</div>
+  <div id="desync" hidden>Szinkronhiba: a két gépen eltért a játék állása.</div>
+  <div id="bar">
+    <div class="mm-wrap"><canvas id="minimap" width="192" height="192"></canvas></div>
+    <div id="info"></div>
+    <div id="cmds"></div>
+  </div>
+  <div id="tip" hidden></div>
+</div>
+
+<section id="menu" class="screen" hidden>
+  <div class="panel">
+    <h1 class="brand">Had<span>úr</span></h1>
+    <p class="tag">Emberek és orkok harca. Bányássz aranyat, vágj fát, építsd fel a falut, aztán küldd a sereget az ellenfél bázisára.</p>
+    <div class="opt">
+      <label class="lbl" for="nameInput">Neved</label>
+      <input class="txt" id="nameInput" maxlength="16" placeholder="Játékos" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="opt">
+      <span class="lbl">Néped</span>
+      <div class="seg race-seg" id="raceSeg">
+        <button data-v="human" aria-pressed="true"><img id="raceImgH" alt="">EMBEREK</button>
+        <button data-v="orc" aria-pressed="false"><img id="raceImgO" alt="">ORKOK</button>
+      </div>
+    </div>
+    <div class="opt">
+      <span class="lbl">Gép ellen</span>
+      <div class="seg" id="diffSeg">
+        <button data-v="0" aria-pressed="false">KÖNNYŰ</button>
+        <button data-v="1" aria-pressed="true">NORMÁL</button>
+        <button data-v="2" aria-pressed="false">NEHÉZ</button>
+      </div>
+    </div>
+    <button class="cta" id="soloBtn"><span>CSATA A GÉP ELLEN</span><span aria-hidden="true">⚔</span></button>
+    <p class="touchnote" id="touchNote" hidden>A játékhoz egér és billentyűzet kell.</p>
+    <div class="mp">
+      <span class="lbl">Egy barátod ellen · 1v1</span>
+      <p id="inviteNote" class="note" hidden></p>
+      <div class="mp-row">
+        <button class="ghost" id="createBtn">ÚJ SZOBA</button>
+        <input class="txt" id="codeInput" maxlength="4" placeholder="KÓD" autocomplete="off" spellcheck="false" aria-label="Szobakód">
+        <button class="ghost" id="joinBtn">BELÉPÉS</button>
+      </div>
+    </div>
+    <div class="keys">
+      <kbd>Bal klikk / húzás</kbd><span>kijelölés (dupla klikk: az összes ilyen)</span>
+      <kbd>Jobb klikk</kbd><span>mozgás, támadás, gyűjtés, gyülekezőpont</span>
+      <kbd>Q W E R · A S D F · Z X C V</kbd><span>a parancsgombok</span>
+      <kbd>Ctrl + 1–9</kbd><span>csapat mentése, 1–9 előhívás</span>
+      <kbd>Nyilak / képernyő széle</kbd><span>kamera, görgő: zoom</span>
+      <kbd>Szóköz</kbd><span>ugrás a legutóbbi támadáshoz</span>
+    </div>
+  </div>
+</section>
+
+<section id="room" class="screen" hidden>
+  <div class="panel">
+    <div class="opt">
+      <span class="lbl">Szobakód</span>
+      <div class="room-code" id="roomCode">----</div>
+    </div>
+    <div class="invite">
+      <code id="inviteLink"></code>
+      <button class="ghost" id="copyBtn">LINK MÁSOLÁSA</button>
+    </div>
+    <ul class="players" id="playerList"></ul>
+    <div class="opt">
+      <span class="lbl">Néped</span>
+      <div class="seg race-seg" id="roomRaceSeg">
+        <button data-v="human" aria-pressed="true"><img id="raceImgH2" alt="">EMBEREK</button>
+        <button data-v="orc" aria-pressed="false"><img id="raceImgO2" alt="">ORKOK</button>
+      </div>
+    </div>
+    <p class="room-status" id="roomStatus"></p>
+    <button class="cta" id="readyBtn"><span id="readyTxt">KÉSZ VAGYOK</span><span aria-hidden="true">✓</span></button>
+    <button class="ghost" id="leaveBtn">KILÉPÉS A SZOBÁBÓL</button>
+  </div>
+</section>
+
+<section id="pause" class="screen" hidden>
+  <div class="panel">
+    <h2 class="brand" id="pauseHead">Szünet</h2>
+    <p class="tag" id="pauseNote"></p>
+    <div class="btns">
+      <button class="cta" id="resumeBtn"><span>FOLYTATÁS</span><span aria-hidden="true">→</span></button>
+      <button class="ghost" id="soundBtn">HANG: BE</button>
+      <button class="ghost" id="ggBtn">FELADOM</button>
+      <button class="ghost" id="quitBtn">KILÉPÉS A FŐMENÜBE</button>
+    </div>
+  </div>
+</section>
+
+<section id="result" class="screen" hidden>
+  <div class="panel">
+    <h2 class="res-head" id="resHead">Győzelem</h2>
+    <p class="res-sub" id="resSub"></p>
+    <table class="restab num" id="resTable"></table>
+    <div class="btns">
+      <button class="cta" id="againBtn"><span id="againTxt">ÚJ CSATA</span><span aria-hidden="true">→</span></button>
+      <button class="ghost" id="resMenuBtn">FŐMENÜ</button>
+    </div>
+  </div>
+</section>
+
+<div id="loading">Hadúr</div>
+
+<script type="module" src="./main.js"></script>
+<script>
+  window.addEventListener('error', function (e) {
+    var el = document.getElementById('loading');
+    if (el && !el.hidden) el.innerHTML = '<div id="err">A játék nem tudott elindulni: ' + (e.message || 'ismeretlen hiba') + '<br>Kell hozzá WebGL-t támogató böngésző.</div>';
+  });
+</script>
+</body>
+</html>

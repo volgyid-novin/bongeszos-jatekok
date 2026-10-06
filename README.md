@@ -4,12 +4,16 @@
 
 Játékszerver nincs: a két böngésző közvetlenül kapcsolódik egymáshoz (WebRTC, Trystero/Nostr).
 
-A projektben van egy második játék is: **HOMOKFUTAM**, 3D podverseny 2–6 játékosnak a `/homokfutam/` címen. Leírás: [homokfutam/README.md](homokfutam/README.md).
+A projektben van még két játék:
+
+- **HOMOKFUTAM**: 3D podverseny 2–6 játékosnak a `/homokfutam/` címen. Leírás: [homokfutam/README.md](homokfutam/README.md).
+- **HADÚR**: valós idejű stratégia, emberek az orkok ellen, 1v1 (vagy a gép ellen) a `/hadur/` címen. Leírás: [hadur/README.md](hadur/README.md).
 
 **Játék online, telepítés nélkül:**
 
 - BLOCKSHOT: https://volgyid-novin.github.io/bongeszos-jatekok/
 - HOMOKFUTAM: https://volgyid-novin.github.io/bongeszos-jatekok/homokfutam/
+- HADÚR: https://volgyid-novin.github.io/bongeszos-jatekok/hadur/
 
 Az oldalt a GitHub Pages szolgálja ki. Minden `main` ágra feltöltött változás után a `.github/workflows/pages.yml` újrabuildeli és kiteszi, pár perc alatt.
 

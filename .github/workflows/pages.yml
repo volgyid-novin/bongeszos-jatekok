@@ -1,6 +1,7 @@
-# Builds both games and publishes them to GitHub Pages on every push to main.
+# Builds all three games and publishes them to GitHub Pages on every push to main.
 # BLOCKSHOT: https://volgyid-novin.github.io/bongeszos-jatekok/
 # HOMOKFUTAM: https://volgyid-novin.github.io/bongeszos-jatekok/homokfutam/
+# HADÚR: https://volgyid-novin.github.io/bongeszos-jatekok/hadur/
 name: Pages
 
 on:
