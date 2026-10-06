@@ -52,7 +52,7 @@ export const GU = {
   gTile: { value: TILE.slice() },
   gAxis: { value: [] },
   // colour trim per layer (ripple, soft, gravel, hardpan, packed, slickrock, paving)
-  gTint: { value: [[1, 1, 1], [1, 1, 1], [1, 1, 1], [0.86, 0.82, 0.78], [1, 1, 1], [1, 1, 1], [1, 1, 1]].map((c) => new THREE.Vector3(...c)) },
+  gTint: { value: [[1, 1, 1], [1, 1, 1], [1.12, 1.08, 1.04], [0.9, 0.82, 0.72], [1, 1, 1], [1, 1, 1], [1, 1, 1]].map((c) => new THREE.Vector3(...c)) },
 };
 // v axis of each layer in world xz (u = v rotated a quarter turn). Wind layers line their
 // ripples up across the wind, the rest get different angles so their repeats never line up.
@@ -208,7 +208,7 @@ void gDesertWeights( vec2 xz, vec3 N, float tD, vec4 mac, vec4 mac2, out float w
   float gv = ( mac.b * flat_ * 1.25 + mac.a * 1.1 + mac2.g * 0.9 ) * ( 0.55 + 0.9 * n1 ) - 0.3;
   w[ 2 ] = clamp( gv, 0.0, 1.0 ) * ( 1.0 - near * 0.7 ) * ( 1.0 - mac2.r * 0.8 );
   // cracked clay in the lowest, flattest basins
-  w[ 3 ] = smoothstep( 0.5, 0.8, mac.b * ( 0.6 + 0.8 * n2 ) ) * flat_ * ( 1.0 - near ) * ( 1.0 - mac2.r );
+  w[ 3 ] = smoothstep( 0.42, 0.92, mac.b * ( 0.6 + 0.8 * n2 ) ) * flat_ * ( 1.0 - near ) * ( 1.0 - mac2.r );
   // bare bedrock right at the rocks
   w[ 5 ] = smoothstep( 0.45, 0.85, mac2.b * ( 0.65 + 0.7 * n2 ) );
   float other = w[ 1 ] + w[ 2 ] + w[ 3 ] + w[ 5 ];
@@ -349,6 +349,22 @@ export function terrainMaterial(Q) {
         float rnd = texture2D( hfCloudTex, xz / 61.0 ).r;
         GSurf gS = gBlend( w, xz, rnd, vec2( 1.0, 0.0 ), vec2( 0.0, 1.0 ), xz, 1.0 );
         diffuseColor.rgb = gS.alb * gDesertTint( xz, mac );
+        // larger wind ripples where the texture's own have blurred away (from ~30 m): the ripple layer
+        // again at 7x the size, broken up by noise so its repeat does not show
+        {
+          vec2 dxzM = dFdx( xz ), dyzM = dFdy( xz );
+          float midK = smoothstep( 25.0, 110.0, camD ) * ( 1.0 - smoothstep( 500.0, 1400.0, camD ) ) * ( w[ 0 ] + w[ 1 ] * 0.6 ) * ( 0.35 + rnd );
+          if ( midK > 0.01 ) {
+            vec2 b = gAxis[ 0 ], a = vec2( - b.y, b.x );
+            float inv = 1.0 / ( gTile[ 0 ] * 7.0 );
+            vec2 p = vec2( dot( xz, a ), dot( xz, b ) ) * inv + rnd * 0.37;
+            vec2 gx = vec2( dot( dxzM, a ), dot( dxzM, b ) ) * inv, gy = vec2( dot( dyzM, a ), dot( dyzM, b ) ) * inv;
+            vec4 mc = textureGrad( gC, vec3( p, 0.0 ), gx, gy ), mn = textureGrad( gN, vec3( p, 0.0 ), gx, gy );
+            vec2 t = mn.xy * 2.0 - 1.0;
+            gS.nd += ( t.x * a + t.y * b ) * midK;
+            diffuseColor.rgb *= 1.0 + ( mc.a - 0.5 ) * 0.18 * midK;
+          }
+        }
         float gAO = mix( 1.0, gS.ao, 0.85 ) * mac.r;
         diffuseColor.rgb *= mix( 1.0, gS.ao, 0.35 );
         float gNK = 1.25 * ( 1.0 - smoothstep( 120.0, 1100.0, camD ) * 0.7 );
@@ -407,7 +423,7 @@ export function trackMaterial(Q, trackLength) {
         w[ 0 ] = drift * 0.2 * smoothstep( 0.2, 0.7, n1 );
         // outside the edge: the berm of pushed-up sand, then the open desert
         float out_ = smoothstep( 0.0, 1.2, e );
-        float far_ = smoothstep( 2.5, 6.5, e );
+        float far_ = smoothstep( 2.5, 6.5, e - ( n3 - 0.5 ) * 3.5 );         // the berm's width wanders
         for ( int i = 0; i < ${NL}; i ++ ) {
           float berm = i == 1 ? 0.85 : i == 2 ? 0.15 * smoothstep( 0.45, 0.7, n2 ) : 0.0;
           w[ i ] = mix( w[ i ], mix( berm, tw[ i ], far_ ), out_ );
@@ -426,7 +442,7 @@ export function trackMaterial(Q, trackLength) {
         vec4 trail = kTrailOn > 0.5 ? min( texture2D( kTrail, vec2( d / ( hw * 2.6 ) + 0.5, s / kL ) ), vec4( 1.0 ) ) : vec4( 0.0 );
         col *= 1.0 - groove * 0.14 - scorch * 0.32;
         col *= 1.0 - trail.r * 0.3;
-        col = mix( col, vec3( 0.14, 0.11, 0.09 ), trail.g * 0.55 );
+        col = mix( col, vec3( 0.14, 0.11, 0.09 ), trail.g * 0.4 );
         // marks left by earlier races: oil stains (dark, glossy) and scorch blasts (sooty, with a
         // paler burnt ring), one per hashed cell at most, irregular through the noise
         float oil = 0.0, burn = 0.0;
@@ -435,12 +451,12 @@ export function trackMaterial(Q, trackLength) {
           for ( int oy = -1; oy <= 1; oy ++ ) for ( int ox = -1; ox <= 1; ox ++ ) {
             vec2 c = ci + vec2( ox, oy );
             vec4 h = gHash4( c );
-            if ( h.w > 0.2 ) continue;
+            if ( h.w > 0.12 ) continue;
             vec2 rel = vec2( d, s ) - ( c + 0.2 + h.xy * 0.6 ) * cellSz;
-            float an = h.z * 6.2832, ca = cos( an ), sa = sin( an );
+            float an = ( h.z - 0.5 ) * 0.5, ca = cos( an ), sa = sin( an );          // streaks along the track
             rel = mat2( ca, -sa, sa, ca ) * rel;
             float sz = mix( 1.1, 3.2, fract( h.z * 7.31 ) );
-            rel /= sz * vec2( 1.0, mix( 1.4, 3.4, fract( h.x * 13.1 ) ) );
+            rel /= sz * vec2( 0.8, mix( 2.5, 7.0, fract( h.x * 13.1 ) ) );
             float nn = texture2D( hfCloudTex, rel * 0.3 + h.xy * 7.0 ).r * 0.65 + texture2D( hfCloudTex, rel * 1.1 + h.yx * 3.0 ).r * 0.35;
             float r = length( rel ) + ( nn - 0.5 ) * 1.5;
             float m = smoothstep( 1.0, 0.55, r ) * ( 0.55 + 0.45 * smoothstep( 0.3, 0.7, nn ) );
@@ -450,8 +466,8 @@ export function trackMaterial(Q, trackLength) {
           float keep = ( 1.0 - drift ) * ( 1.0 - out_ ) * ( 1.0 - arena * 0.6 );
           oil *= keep; burn *= keep;
         }
-        col *= 1.0 - oil * 0.5;
-        col = mix( col, vec3( 0.075, 0.06, 0.05 ), clamp( burn, 0.0, 1.0 ) * 0.62 );
+        col *= 1.0 - oil * 0.35;
+        col = mix( col, vec3( 0.075, 0.06, 0.05 ), clamp( burn, 0.0, 1.0 ) * 0.45 );
         col *= 1.0 + clamp( -burn, 0.0, 1.0 ) * 0.25;
         // packed sand is darker where it meets the loose edge (shadowed lip)
         col *= 1.0 - smoothstep( 0.9, 1.0, edge ) * ( 1.0 - smoothstep( 1.0, 1.15, edge ) ) * 0.15;
