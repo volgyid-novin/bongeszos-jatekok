@@ -10,7 +10,7 @@ import { sunAt } from './particles.js';
 import { ss, oneMinus } from './common.js';
 
 // ============================================================
-//  World dressing materials for WebGPURenderer: crowd sprites, cloth sway, chase lamps, dust devils
+//  World dressing materials for WebGPURenderer: crowd sprites, cloth sway, dust devils
 //  (world/dressing.js), canyon haze (world/haze.js), the arena's interior-mapped openings and the
 //  nozzle flame glows (main.js). GLSL versions and notes next to their originals.
 // ============================================================
@@ -80,19 +80,6 @@ class ClothMaterial extends THREE.MeshStandardNodeMaterial {
 export function clothNodeMaterial(params, U) {
   const m = new ClothMaterial(params);
   m.cloth = U;
-  return m;
-}
-
-// --- sequenced chase lights along the open sections (iPos: lamp position + metres along the track) ---
-export function chaseLampMaterial(U) {
-  const m = new THREE.MeshBasicNodeMaterial({ fog: false });
-  const iPos = attribute('iPos', 'vec4');
-  m.positionNode = positionLocal.add(iPos.xyz);
-  m.colorNode = Fn(() => {
-    const ph = fract(iPos.w.div(60).sub(U.uTime.mul(1.6)));
-    return vec3(1, 0.45, 0.12).mul(pow(smoothstep(0.86, 1, ph), 2).add(0.12)).mul(U.uK);
-  })();
-  m.uniforms = U;
   return m;
 }
 

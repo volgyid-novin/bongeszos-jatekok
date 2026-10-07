@@ -1255,7 +1255,7 @@ const ROCKS_READY = Promise.all([loadRockModels(), Q.geo && loadRockModels(new U
 });
 
 // ============================================================
-//  Dressing: crowd, flags, screens, chase lights, power line, ruins, life (world/dressing.js)
+//  Dressing: crowd, flags, screens, power line, ruins, life (world/dressing.js)
 // ============================================================
 let HORIZON = null;
 const DRESS = buildDressing({ scene, TR, Q, groundQuery, nearestCoarse, rangeWhere, rng, fbm, vnoise, triplanarMaterial, mergeGeometries,

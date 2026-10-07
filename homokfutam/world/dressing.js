@@ -6,7 +6,7 @@ import { GPU, U, T, N } from '../gfx/backend.js';
 // ============================================================
 //  World dressing: everything that makes the place feel inhabited.
 //  Arena: crowd (with stadium waves), cloth banners, flags, standings screens, floodlights,
-//  a blimp and camera drones. Track side: sequenced chase lights, corner chevrons, a power
+//  a blimp and camera drones. Track side: corner chevrons, a power
 //  line, ruins, wrecks. Far away: mountain ridges and a settlement. Life: scrub, tumbleweeds,
 //  vultures and dust devils.
 //  ctx = { scene, TR, Q, groundQuery, nearestCoarse, rangeWhere, rng, fbm, vnoise, triplanarMaterial, mergeGeometries }
@@ -391,44 +391,6 @@ export function buildDressing(ctx) {
   };
 
   // ---------------- track side ----------------
-  // sequenced chase lights on short posts along the open sections
-  {
-    const list = [];
-    for (let k = 0; k < TR.N; k += 5) {
-      const i = TR.idx(k);
-      if (TR.arena[i] > 0.05 || TR.canyon[i] > 0.05) continue;
-      for (const s of [-1, 1]) list.push([i, s]);
-    }
-    const postGeo = new THREE.CylinderGeometry(0.18, 0.26, 1.4, 6).translate(0, 0.7, 0);
-    const posts = new THREE.InstancedMesh(postGeo, new THREE.MeshStandardMaterial({ color: '#2b2622', roughness: 0.6, metalness: 0.4 }), list.length);
-    const lampGeo = new THREE.InstancedBufferGeometry();
-    const sph = new THREE.SphereGeometry(0.26, 10, 6);
-    lampGeo.index = sph.index; lampGeo.attributes.position = sph.attributes.position;
-    const lp = new Float32Array(list.length * 4);
-    list.forEach(([i, s], n) => {
-      const o = TR.hw[i] + 1.6;
-      side(i, s, o, TR.py[i]);
-      const gy = Math.max(TR.py[i], groundQuery(P.x, P.z)) - 0.05;
-      mtx.makeTranslation(P.x, gy, P.z);
-      posts.setMatrixAt(n, mtx);
-      lp.set([P.x, gy + 1.55, P.z, TR.s[i]], n * 4);
-    });
-    lampGeo.setAttribute('iPos', new THREE.InstancedBufferAttribute(lp, 4));
-    lampGeo.instanceCount = list.length;
-    const lampMat = GPU ? N.chaseLampMaterial({ uTime: ATMO.hfTime, uK: U(Q.post ? 7 : 1.5) }) : new THREE.ShaderMaterial({
-      uniforms: { uTime: ATMO.hfTime, uK: { value: Q.post ? 7 : 1.5 } },
-      vertexShader: `attribute vec4 iPos; uniform float uTime; varying float vI;
-        void main(){ float ph = fract( iPos.w / 60.0 - uTime * 1.6 ); vI = 0.12 + pow( smoothstep( 0.86, 1.0, ph ), 2.0 ) * 1.0;
-          gl_Position = projectionMatrix * viewMatrix * vec4( position + iPos.xyz, 1.0 ); }`,
-      fragmentShader: `uniform float uK; varying float vI; void main(){ gl_FragColor = vec4( vec3( 1.0, 0.45, 0.12 ) * vI * uK, 1.0 ); }`,
-    });
-    const lamps = new THREE.Mesh(lampGeo, lampMat);
-    lamps.frustumCulled = false;
-    lamps.userData.noBake = true;
-    posts.castShadow = true;
-    scene.add(posts, lamps);
-  }
-
   // chevron boards on the outside of the sharpest corners
   {
     const tex = canvasTexture(256, 128, (g) => {
