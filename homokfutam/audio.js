@@ -5,7 +5,9 @@
 //   state: 'loading'|'menu'|'room'|'countdown'|'race'|'finished'|'results'|'paused',
 //   live: boolean,          // engines audible (countdown/race/finished/results)
 //   listener: { x, y, z, fx, fy, fz, ux, uy, uz },  // camera pos, forward, up (world, metres)
-//   player: { x, y, z, vx, vy, vz, fwd, throttle, brake, boosting, overheat, heat, off, scrape },
+//   player: { x, y, z, vx, vy, vz, fwd, throttle, brake, boosting, overheat, heat, off, scrape,
+//             slide, slip, edge, draft },   // slide 0..1, slip: slide angle (rad), edge: the strip before the sand 0..1,
+//                                           // draft: slipstream 0..1
 //   others: [ { id, x, y, z, vx, vy, vz, fwd, throttle, boosting } ],  // up to 5, id 0..5
 //   env: { canyon, arena, arch },   // 0..1 how much the listener is in each space
 //   crowd: 0..1,            // crowd excitement
@@ -40,7 +42,7 @@ export function createAudio() {
   const A = { muted: false, musicOn: true };
   let ctx = null, dead = false, N = null, noise = null, huVoice = null;
   let state = 'loading', started = false, nextT = 0, step = 0, si = 0.2, mixT = 0;
-  let gust = 0, gustT = 0, gustGoal = 0, swell = 0, crowdRef = 0, cheerCd = 0, boostT = 0, prevBrake = 0, sputUntil = 0, sputT = 0;
+  let gust = 0, gustT = 0, gustGoal = 0, swell = 0, crowdRef = 0, cheerCd = 0, boostT = 0, prevBrake = 0, sputUntil = 0, sputT = 0, alarmT = 0;
   const voices = new Map(), passCd = new Map();
   let frame = 0;
 
@@ -153,6 +155,16 @@ export function createAudio() {
       nsrc().connect(filt('bandpass', f, q)).connect(lg).connect(N.crowdG);
     }
     N.crowdG.connect(N.amb);
+    // the warning strip before the sand: a low buzz chopped at a rate that follows the speed, like a rumble strip
+    N.rmAm = gain(0.5); N.rmG = gain(0);
+    nsrc().connect(filt('bandpass', 130, 1.4)).connect(N.rmAm).connect(N.rmG).connect(N.amb);
+    osc('square', 46).connect(filt('lowpass', 240, 0.8)).connect(gain(0.35)).connect(N.rmAm);
+    N.rmLfo = osc('square', 14); N.rmLfo.connect(gain(0.5)).connect(N.rmAm.gain);
+    // a slide: sand hissing off the side of the pod, with a gritty low end
+    N.slG = gain(0);
+    nsrc().connect(filt('bandpass', 1500, 0.7)).connect(N.slG);
+    nsrc().connect(filt('lowpass', 380, 0.9)).connect(gain(0.6)).connect(N.slG);
+    N.slG.connect(N.amb);
 
     // music: pad (always), drums / bass / lead buses faded by intensity
     N.padF = filt('lowpass', 500, 1.2); N.padG = gain(0.5);
@@ -329,6 +341,18 @@ export function createAudio() {
     set(N.wO.frequency, (700 + sp * 5 + boostT * 260) * pm, t, 0.1);
     if (live && prevBrake <= 0.5 && p.brake > 0.5 && sp > 30) sfx('brake', sp / 120);
     prevBrake = p.brake;
+    // boosting into the red zone: an alarm that beeps faster as the heat nears the overheat
+    if (live && p.boosting && p.heat > 80 && !A.muted) {
+      alarmT -= dt;
+      if (alarmT <= 0) {
+        alarmT = 0.34 - 0.26 * clamp((p.heat - 80) / 20, 0, 1);
+        blip({ type: 'square', f: [1250, 1250], dur: 0.055, vol: 0.045 });
+      }
+    } else alarmT = 0;
+    // the strip before the sand, and a slide
+    set(N.rmG.gain, live ? clamp(p.edge || 0, 0, 1) * clamp(sp / 30, 0, 1) * 0.5 : 0, t, 0.04);
+    set(N.rmLfo.frequency, 8 + sp * 0.16, t, 0.1);
+    set(N.slG.gain, live ? (p.slide || 0) * clamp(((p.slip || 0) - 0.06) / 0.25, 0, 1) * clamp(sp / 60, 0, 1) * 0.16 : 0, t, 0.06);
 
     // other pods with doppler
     const l = v.listener;
@@ -357,7 +381,8 @@ export function createAudio() {
       gust += (gustGoal - gust) * Math.min(1, dt * 0.7);
     }
     const amb = state !== 'loading';
-    set(N.windG.gain, amb ? (live ? Math.min(0.32, sp / 520) : 0.03) + 0.03 + gust * ((v.gust !== undefined ? 0.08 : 0.05) + sp * 0.0004) : 0, t, 0.15);
+    // (in another pod's slipstream the rush of air drops away)
+    set(N.windG.gain, amb ? ((live ? Math.min(0.32, sp / 520) : 0.03) * (1 - 0.45 * (p.draft || 0)) + 0.03 + gust * ((v.gust !== undefined ? 0.08 : 0.05) + sp * 0.0004)) : 0, t, 0.15);
     set(N.windF.frequency, 400 + sp * 9 + gust * 250, t, 0.15);
     set(N.scG.gain, live ? clamp(p.scrape, 0, 1) * 0.22 : 0, t, 0.03);
 

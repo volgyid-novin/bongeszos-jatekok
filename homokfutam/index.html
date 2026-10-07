@@ -64,6 +64,13 @@ button:focus-visible { outline: 2px solid var(--flame); outline-offset: 3px; }
 .heat-track { height: 6px; border-radius: 3px; background: rgba(242,228,201,.18); overflow: hidden; }
 #heatFill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--arc), var(--flame)); border-radius: 3px; transition: background .2s; }
 #heatFill.over { background: var(--bad); animation: blink .35s steps(2) infinite; }
+/* boosting past 80: the red zone (the hotter, the harder the boost, the nearer the overheat) */
+#heatFill.warn { background: linear-gradient(90deg, var(--flame), var(--bad)); animation: blink .5s steps(2) infinite; }
+/* a slide cools the engines */
+#heatFill.cool { background: linear-gradient(90deg, #8fd0ff, var(--arc)); }
+.speed-unit { position: relative; }
+#draftTag { position: absolute; left: calc(100% + 12px); top: 50%; transform: translateY(-50%); white-space: nowrap; font-size: 11px; letter-spacing: .16em; color: #9fd6ff; opacity: 0; transition: opacity .25s; }
+#draftTag.on { opacity: 1; }
 #boostTag { font-family: var(--font-display); font-weight: 700; font-size: 12px; letter-spacing: .14em; color: var(--arc); min-width: 52px; text-align: right; }
 #boostTag.off { color: var(--bad); }
 @keyframes blink { 50% { opacity: .35; } }
@@ -106,6 +113,7 @@ button:focus-visible { outline: 2px solid var(--flame); outline-offset: 3px; }
 #tLeft { left: 18px; } #tRight { left: 104px; }
 #tBoost { right: 18px; width: 86px; height: 86px; color: var(--arc); }
 #tBrake { right: 116px; }
+#tSlide { right: 24px; bottom: calc(122px + env(safe-area-inset-bottom, 0px)); font-size: 13px; }
 body.touch #minimap { bottom: auto; top: calc(130px + env(safe-area-inset-top, 0px)); left: 12px; width: 120px; height: 120px; }
 
 /* ---------- Panels ---------- */
@@ -200,7 +208,7 @@ input.txt.err { border-color: var(--bad); }
   #center { font-size: 84px; }
   .screen { background: rgba(20,14,9,.7); align-items: flex-start; }
 }
-@media (prefers-reduced-motion: reduce) { #heatFill.over { animation: none; } }
+@media (prefers-reduced-motion: reduce) { #heatFill.over, #heatFill.warn { animation: none; } }
 
 /* ---------- Cinematics: letterbox, title and name cards, photo mode ---------- */
 #cine { position: fixed; inset: 0; pointer-events: none; }
@@ -246,7 +254,7 @@ input.txt.err { border-color: var(--bad); }
   <canvas id="minimap" width="340" height="340"></canvas>
   <div class="hud-speed">
     <div id="speedVal" class="num">0</div>
-    <div class="speed-unit">KM/H</div>
+    <div class="speed-unit">KM/H<span id="draftTag">SZÉLÁRNYÉK</span></div>
     <div class="heat">
       <span class="lbl">Hő</span>
       <div class="heat-track"><div id="heatFill"></div></div>
@@ -262,6 +270,7 @@ input.txt.err { border-color: var(--bad); }
   <button class="tbtn" id="tRight" aria-label="Jobbra">▶</button>
   <button class="tbtn" id="tBrake" aria-label="Fék">FÉK</button>
   <button class="tbtn" id="tBoost" aria-label="Boost">BOOST</button>
+  <button class="tbtn" id="tSlide" aria-label="Csúsztatás">DRIFT</button>
 </div>
 
 <section id="menu" class="screen" hidden>
@@ -338,7 +347,8 @@ input.txt.err { border-color: var(--bad); }
       <kbd>W / ↑</kbd><span>gáz</span>
       <kbd>S / ↓</kbd><span>fék</span>
       <kbd>A D / ← →</kbd><span>kormányzás</span>
-      <kbd>Shift / Space</kbd><span>boost (melegíti a hajtóműveket)</span>
+      <kbd>Shift</kbd><span>boost (melegíti a hajtóműveket)</span>
+      <kbd>Space</kbd><span>csúsztatás: élesebb kanyar, hűti a hajtóműveket</span>
       <kbd>C</kbd><span>kamera</span>
       <kbd>R</kbd><span>vissza a pályára</span>
       <kbd>Esc / P</kbd><span>szünet</span>

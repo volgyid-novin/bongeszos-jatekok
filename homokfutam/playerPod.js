@@ -113,6 +113,10 @@ function floatAttr(a) {
 // about 24 draws and 18 shadow draws per pod). The parts of each material go into one skinned
 // mesh, every vertex bound with weight 1 to the node that carried it, so the engines and the
 // moving parts (fans, flaps, brakes, nozzles, pilot) still move with their nodes as before.
+// The cockpit swings on its cables behind the engines (main.js racerFx turns the Cockpit group made in makePod): the
+// cables' vertices are bound to the cockpit at its end and to the engine at the other, blended along the cable, so the
+// cables bend instead of tearing.
+const CABLE_Z = [0.2, 3.1];       // body-space z: all cockpit at the first, all engine at the second
 function mergeParts(src) {
   src.updateMatrixWorld(true);
   const byMat = new Map();
@@ -123,6 +127,10 @@ function mergeParts(src) {
   });
   const toSrc = new THREE.Matrix4().copy(src.matrixWorld).invert(), mtx = new THREE.Matrix4();
   const bones = [], merged = [];
+  const boneOf = (o) => { let i = bones.indexOf(o); if (i < 0) i = bones.push(o) - 1; return i; };
+  const named = (n) => src.getObjectByName(n);
+  const cable = named('Body_static') && named('Engine_L_static') && named('Engine_R_static')
+    ? { c: boneOf(named('Body_static')), l: boneOf(named('Engine_L_static')), r: boneOf(named('Engine_R_static')) } : null;
   for (const [mat, meshes] of byMat) {
     const names = Object.keys(meshes[0].geometry.attributes).sort().join();
     if (meshes.some((m) => Object.keys(m.geometry.attributes).sort().join() !== names)) continue;   // keep these parts as they are
@@ -141,7 +149,14 @@ function mergeParts(src) {
       g.setIndex(idx);
       g.applyMatrix4(mtx);
       const n = g.attributes.position.count, si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
-      for (let i = 0; i < n; i++) { si[i * 4] = bi; sw[i * 4] = 1; }
+      if (cable && m.parent.name === 'Body_cables') {
+        const P = g.attributes.position;
+        for (let i = 0; i < n; i++) {
+          const u = Math.min(1, Math.max(0, (P.getZ(i) - CABLE_Z[0]) / (CABLE_Z[1] - CABLE_Z[0]))), w = u * u * (3 - 2 * u);
+          si[i * 4] = cable.c; sw[i * 4] = 1 - w;
+          si[i * 4 + 1] = P.getX(i) > 0 ? cable.l : cable.r; sw[i * 4 + 1] = w;
+        }
+      } else for (let i = 0; i < n; i++) { si[i * 4] = bi; sw[i * 4] = 1; }
       g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
       g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
       return g;
@@ -157,11 +172,11 @@ function mergeParts(src) {
     src.add(sm);
     sm.updateMatrixWorld(true);
     sm.bind(skeleton, sm.matrixWorld);
-    // the rest-pose bounds; the parts only move a little, so this stays good for culling and
-    // spares SkinnedMesh.computeBoundingSphere() (it skins every vertex on the CPU)
+    // the rest-pose bounds; the parts only move a little (the cockpit's swing is the most, ~1 m at its tail), so
+    // this stays good for culling and spares SkinnedMesh.computeBoundingSphere() (it skins every vertex on the CPU)
     geo.computeBoundingSphere();
     sm.boundingSphere = geo.boundingSphere.clone();
-    sm.boundingSphere.radius *= 1.1;
+    sm.boundingSphere.radius *= 1.25;
   }
 }
 
@@ -219,11 +234,17 @@ function makePod(src, livery) {
   });
   const node = (n) => root.getObjectByName(n);
   const engines = [node('Engine_L'), node('Engine_R')];
+  // the cockpit (hull, canopy, pennant, pilot) in one group under the body, so it can swing on its cables; the group
+  // sits at the origin, so the bones keep their rest pose
+  const cockpit = new THREE.Group();
+  cockpit.name = 'Cockpit';
+  node('Body').add(cockpit);
+  for (const n of ['Body_static', 'Body_glass', 'Body_pennant', 'Pilot']) { const o = node(n); if (o) cockpit.add(o); }
   // energy beam endpoints in body space (the engines have no rotation in the model)
   const beam = ['BeamAnchor_L', 'BeamAnchor_R'].map((n, k) => node(n).position.clone().add(engines[k].position));
   const flames = ['FlameAnchor_L', 'FlameAnchor_R'].map((n) => node(n).position.clone());
   return {
-    root, body: node('Body'), engines, beam, flames, parts, glow, beamMat, paint, trim, heat, gloss, env, mats: [...mats.values()], envBase: null,
+    root, body: node('Body'), engines, cockpit, beam, flames, parts, glow, beamMat, paint, trim, heat, gloss, env, mats: [...mats.values()], envBase: null,
     smooth: { brake: 0, steer: 0, boost: 0, thr: 0 }, lift: 0,
   };
 }

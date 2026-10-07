@@ -37,7 +37,11 @@ function n11(x) { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f); r
 const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 export function gust(x, z, t) {
-  if (!GUST_ON) return 0;
+  return GUST_ON ? gustField(x, z, t) : 0;
+}
+// the field itself, also with the graphics off: the gusts push the pods (main.js, physics), and the physics must not
+// depend on the graphics preset
+export function gustField(x, z, t) {
   const a = x * WIND_DIR.x + z * WIND_DIR.y, c = z * WIND_DIR.x - x * WIND_DIR.y;
   let g = 0;
   GUST.FRONTS.forEach(([P, w, amp, ph], k) => {

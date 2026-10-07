@@ -11,7 +11,7 @@ import { installAtmosphere, ATMO, SUN_DIR, PALETTE, skyMaterial, cloudTexture, b
 import { loadSurfaces, triplanarMaterial } from './gfx/surfaces.js';
 import { collectStatic } from './gfx/bvhscene.js';
 import { loadGround, terrainMaterial, trackMaterial, rockMaterial, groundDebug, ROCK as ROCKL, ARENA, WIND_DIR } from './gfx/ground.js';
-import { GUST_ON, gust, WAKE_ON, updateWake, setWake } from './gfx/wind.js';
+import { GUST_ON, gust, gustField, WAKE_ON, updateWake, setWake } from './gfx/wind.js';
 import { LENS } from './gfx/screen.js';
 import { bakeMacro } from './world/macro.js';
 import { loadRockModels, LodInstances } from './world/rocks.js';
@@ -1454,6 +1454,8 @@ function buildPod(color, accent) {
     addFlame(e, new THREE.Vector3(0, 0, -3.5));
   }
   // cockpit tub
+  const cockpit = new THREE.Group();   // swings on its cables behind the engines (racerFx)
+  body.add(cockpit);
   const tub = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12), paint);
   tub.scale.set(1.05, 0.62, 2.0);
   tub.position.set(0, 0, -2.2);
@@ -1470,19 +1472,20 @@ function buildPod(color, accent) {
   for (const s of [-1, 1]) {
     const wing = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.08, 1.4), paint);
     wing.position.set(s * 1.25, -0.08, -3.0); wing.rotation.z = s * 0.25;
-    body.add(wing);
+    cockpit.add(wing);
   }
-  body.add(tub, nose, seat, head, goggles, stripe);
+  cockpit.add(tub, nose, seat, head, goggles, stripe);
   // steering cables from cockpit to engines
   for (const s of [1, -1]) {
     const curve = new THREE.QuadraticBezierCurve3(
       new THREE.Vector3(s * 0.45, 0.1, -0.6), new THREE.Vector3(s * 1.2, -0.25, 1.3), new THREE.Vector3(s * 1.75, 0.05, 2.6));
     body.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 10, 0.06, 5), cableMat));
   }
+  mergeChildren(cockpit);
   mergeChildren(body);
   body.traverse((o) => { if (o.isMesh) o.castShadow = true; });
   const beam = addBeam(body, engines, [new THREE.Vector3(1.0, 0.15, 6.7), new THREE.Vector3(-1.0, 0.15, 6.7)]);
-  root.userData = { body, engines, beam, hot, dynamic: true };
+  root.userData = { body, engines, beam, hot, cockpit, dynamic: true };
   return root;
 }
 // the flame glow at a nozzle: an anchor for the FLAMES batch (size = its scale)
@@ -1560,7 +1563,7 @@ const ROSTER = [
   { name: 'Bilu Fenn', color: '#7a4fc0', accent: '#d9d2c4' },
 ];
 const SOLO_GRID = [4, 0, 1, 2, 3, 5];   // grid slot per livery in a solo race
-const SKILL = [0.86, 0.93, 0.985];
+const SKILL = [0.846, 0.923, 0.976];
 const HOVER = 1.55, POD_R = 3.0;
 const racers = ROSTER.map((d, n) => {
   const mesh = buildPod(d.color, d.accent);
@@ -1571,6 +1574,7 @@ const racers = ROSTER.map((d, n) => {
     ctl: n === 0 ? 'local' : 'bot', owner: n === 0 ? 'me' : null, grid: SOLO_GRID[n], gone: false, left: false, net: null,
     x: 0, y: 0, z: 0, yaw: 0, vx: 0, vz: 0, vy: 0, fwd: 0, lat: 0,
     steer: 0, throttle: 0, brake: 0, boostIn: false, boosting: false, heat: 0, overheat: 0,
+    yawRate: 0, slideIn: false, slide: 0, slip: 0, cooling: 0, draft: 0, gust: 0, edge: 0, wallCD: 0, swing: 0, swingV: 0,
     loc: { i: 0 }, lap: -1, prog: 0, maxLap: 0, lapStart: 0, lapTimes: [], finished: false, finishTime: 0,
     roll: 0, pitch: 0, off: 0, wrong: 0, skill: 1, aiOff: 0, aiOffT: 0, aiBoost: false, phase: n * 1.37,
   };
@@ -1654,7 +1658,7 @@ let podFactory = null;
 function wrapDetailedPod(pod) {
   pod.engines.forEach((e, k) => addFlame(e, pod.flames[k]));
   const beam = addBeam(pod.body, pod.engines, pod.beam);
-  pod.root.userData = { body: pod.body, engines: pod.engines, beam, pod, dynamic: true };
+  pod.root.userData = { body: pod.body, engines: pod.engines, beam, pod, cockpit: pod.cockpit, dynamic: true };
   return pod.root;
 }
 function swapMesh(r, m) {
@@ -1687,7 +1691,8 @@ function placeOnGrid(r, slot) {
   const row = Math.floor(slot / 2), col = slot % 2 ? 1 : -1;
   trackPoint(TR.L - 16 - row * 16, col * 7 + (row % 2 ? 1.5 : -1.5) * col, _tp);
   Object.assign(r, { x: _tp.x, z: _tp.z, y: _tp.y + HOVER, yaw: _tp.yaw, vx: 0, vz: 0, vy: 0, fwd: 0, lat: 0, steer: 0,
-    heat: 0, overheat: 0, boosting: false, lap: -1, maxLap: 0, lapTimes: [], finished: false, finishTime: 0, wrong: 0, off: 0 });
+    heat: 0, overheat: 0, boosting: false, lap: -1, maxLap: 0, lapTimes: [], finished: false, finishTime: 0, wrong: 0, off: 0,
+    yawRate: 0, slideIn: false, slide: 0, slip: 0, draft: 0, wallCD: 0 });
   r.loc.i = _tp.i;
   locate(r.x, r.z, r.loc, true);
   r.prog = r.loc.s - TR.L;
@@ -1695,51 +1700,159 @@ function placeOnGrid(r, slot) {
 }
 function respawn(r) {
   trackPoint(r.loc.s - 12, 0, _tp);
-  Object.assign(r, { x: _tp.x, z: _tp.z, y: _tp.y + HOVER + 2, yaw: _tp.yaw, vx: 0, vz: 0, vy: 0, fwd: 0, lat: 0, heat: Math.min(r.heat, 60) });
+  Object.assign(r, { x: _tp.x, z: _tp.z, y: _tp.y + HOVER + 2, yaw: _tp.yaw, vx: 0, vz: 0, vy: 0, fwd: 0, lat: 0, heat: Math.min(r.heat, 60), yawRate: 0, slide: 0, slip: 0 });
   r.loc.i = _tp.i;
 }
 
+// Handling. The stick asks for a yaw rate (r.yawRate follows it within a few hundredths of a second: any more lag and
+// keyboard steering starts to weave). The sideways grip follows the slide angle like a tyre: it grows to a peak at
+// 5-9° and gives way past it to a lower sliding grip, so near the limit the nose points a few degrees into the corner,
+// and a slide that goes too far has to be caught by easing off. With the slide key (r.slideIn) the stick sets the
+// slide angle instead (full lock: slideAngle) and the nose swings round to hold it: the slide grip and the angled
+// thrust pull the pod round a tighter line while the sideways speed scrubs speed off. Coming out of a slide, part of
+// the sideways speed comes back as forward speed, and while it slides, the engines, off-axis in the airflow, cool down.
+const HANDLING = {
+  steerA: 70,              // m/s²: the turn full lock asks for above ~115 km/h (yaw rate steerA / v)
+  yawMax: 2.2,             // rad/s: the yaw rate full lock asks for at low speed
+  yawK: 45,                // 1/s: how fast the yaw rate follows the stick
+  peak: 74,                // m/s²: the most sideways grip, reached at linA and held to peakA (rad)
+  linA: 0.087, peakA: 0.157,
+  lost: 54, lostA: 0.42,   // past the peak the grip falls to `lost` at lostA (24°)
+  slide: 100, slideA: 0.454, // the grip in a slide, growing to `slide` at slideA (26°)
+  slideAngle: 0.42,        // rad: the slide angle full lock holds (24°)
+  slideK: 7,               // 1/s: how fast the nose swings to it
+  sling: 0.45,             // on a slide's exit: the share of the sideways speed taken back that returns as forward speed
+  cool: 26,                // heat/s a slide takes off the engines on top of the normal cooling
+  sand: 0.95,              // grip and steering on the sand
+  sandDrag: [15, 0.15],    // m/s² + per m/s: the drag just past the edge (a quarter of the speed per second at full speed)...
+  deepDrag: [10, 0.15],    // ...and added further out (hw + 5 to hw + 18 m)
+  sandTop: 0.75,           // the share of top speed the engines can still push to on the sand (and again deep out)
+  keyRise: 7, keyFall: 12, // 1/s: how fast the keyboard steering comes on and lets go
+};
+function gripAt(a, slide) {
+  const H = HANDLING;
+  const g = a < H.linA ? H.peak * a / H.linA : a < H.peakA ? H.peak : lerp(H.peak, H.lost, smooth(H.peakA, H.lostA, a));
+  return lerp(g, H.slide * Math.min(1, a / H.slideA), slide);
+}
+// Gusts (gfx/wind.js) push the pods out in the open: sideways, a little along, and the nose turns into the wind.
+// The canyon and the arena are sheltered. ?wind=0 turns the push off (testing).
+const WIND_PUSH = !/[?&]wind=0\b/.test(location.search);
+const GUST_A = 12, GUST_YAW = 2.5;   // m/s² sideways, rad/s² on the nose (a full gust turns it ~3°/s against the steering)
+// Slipstream: in the wake of a pod 6-55 m ahead and within a few metres sideways the air drag drops (top speed +6 %).
+const DRAFT_V = 0.06;
+// Hits on walls (the arena, the canyon) and rocks: a glancing hit turns the nose along the obstacle and costs a few per
+// cent, a square one a lot; one penalty per contact (r.wallCD), only a light scrape while the pod slides along.
+const HIT_WALL = { base: 0.02, loss: 0.45, rest: 0.15, restSq: 0.3 }, HIT_ROCK = { base: 0.06, loss: 0.6, rest: 0.25, restSq: 0.4 };
+// n: unit normal pointing at the obstacle, vn > 0: the speed into it; (hx, hz): the contact point for the effects
+function impact(r, nx, nz, vn, k, hx, hz, dt, rock) {
+  const v = Math.hypot(r.vx, r.vz) || 1, phi = Math.asin(Math.min(1, vn / v));    // 0: grazing, PI/2: square on
+  const fresh = !(r.wallCD > 0);
+  r.wallCD = 0.3;
+  const keep = fresh ? 1 - (k.base + k.loss * (phi / (Math.PI / 2)) ** 1.3) : Math.exp(-0.12 * dt);
+  const tvx = (r.vx - nx * vn) * keep, tvz = (r.vz - nz * vn) * keep;
+  const rest = lerp(k.rest, k.restSq, smooth(0.3, 0.9, phi));
+  r.vx = tvx - nx * vn * rest; r.vz = tvz - nz * vn * rest;
+  // the nose pointing into the obstacle turns to the travel direction (2° away from it), over ~0.1 s
+  const fx = Math.sin(r.yaw), fz = Math.cos(r.yaw);
+  if (fx * nx + fz * nz > 0 && fx * tvx + fz * tvz > 0) {
+    const tl = Math.hypot(tvx, tvz) || 1;
+    const turn = wrapAngle(Math.atan2(tvx / tl - nx * 0.035, tvz / tl - nz * 0.035) - r.yaw) * (1 - smooth(0.5, 1.1, phi));
+    r.yaw += turn * 0.5;
+    r.yawRate = turn * 0.5 * HANDLING.yawK;
+  } else r.yawRate *= 0.3;
+  if (fresh && vn > 4) hitFx(r, hx, hz, rock ? vn * 1.6 : vn, true);
+}
+
 function physics(r, dt, t) {
+  const H = HANDLING;
   const loc = locate(r.x, r.z, r.loc);
   const ad = Math.abs(loc.d);
-  const off = smooth(loc.hw - 1, loc.hw + 4, ad);
+  const off = smooth(loc.hw - 1, loc.hw + 4, ad), deep = smooth(loc.hw + 5, loc.hw + 18, ad);
+  const walled = loc.arena > 0.3 || loc.canyon > 0.3;
   r.off = off;
+  r.edge = walled ? 0 : smooth(loc.hw - 3.5, loc.hw - 0.3, ad);       // the warning strip before the sand
   const fx = Math.sin(r.yaw), fz = Math.cos(r.yaw);
+  if (r.wallCD > 0) r.wallCD -= dt;
 
-  // boost and heat
+  // boost and heat; the hotter the engines, the harder the boost pushes
   const wantBoost = r.boostIn && r.overheat <= 0 && r.throttle > 0.4 && r.fwd > 25;
   r.boosting = wantBoost;
+  const sliding = r.slide > 0.5 && !wantBoost ? smooth(0.12, 0.3, r.slip || 0) : 0;
+  r.cooling = sliding;
   if (wantBoost) { r.heat += 24 * dt; if (r.heat >= 100) { r.heat = 100; r.overheat = 3.2; r.boosting = false; if (r.player) onOverheat(); } }
-  else r.heat = Math.max(0, r.heat - (r.overheat > 0 ? 26 : 15) * dt);
+  else r.heat = Math.max(0, r.heat - ((r.overheat > 0 ? 26 : 15) + H.cool * sliding) * dt);
   if (r.overheat > 0) r.overheat -= dt;
+  const h = r.heat / 100;
 
-  const vmax = TOP * r.topMul * (r.boosting ? 1.3 : 1) * (r.overheat > 0 ? 0.8 : 1) * lerp(1, 0.5, off);
+  // slipstream
+  let dr = 0;
+  for (const o of racers) {
+    if (o === r || o.gone) continue;
+    const gap = o.prog - r.prog, dl = Math.abs(o.loc.d - loc.d);
+    if (gap < 6 || gap > 55 || dl > 5) continue;
+    dr = Math.max(dr, (1 - smooth(25, 55, gap)) * (1 - smooth(2.5, 5, dl)) * clamp(o.fwd / 60, 0, 1));
+  }
+  r.draft = damp(r.draft || 0, dr, dr > (r.draft || 0) ? 2.5 : 4, dt);
+
+  // along the heading: thrust up to the engines' top speed (vCap); on the sand the thrust gives out lower and a drag
+  // slows the pod: just past the edge about a quarter of its speed per second at full speed, so a mistake costs but is
+  // not a wall, and deeper out twice that, so running wide does not carry the pod far into the desert
+  const vCap = TOP * r.topMul * (r.boosting ? 1.24 + 0.12 * h : 1) * (r.overheat > 0 ? 0.8 : 1) * (1 + DRAFT_V * r.draft);
+  const vDrive = vCap * lerp(1, H.sandTop, off) * lerp(1, H.sandTop, deep);
   let fwd = r.vx * fx + r.vz * fz;
   let lat = r.vx * -fz + r.vz * fx;
   let a = 0;
-  if (fwd < vmax) a += (r.boosting ? 62 : 44) * r.throttle * (1 - (fwd / vmax) ** 2);
-  else a -= 20 + (fwd - vmax) * 0.6;
+  if (fwd < vDrive) a += (r.boosting ? 56 + 16 * h : 44) * r.throttle * (1 - (fwd / vDrive) ** 2);
+  else if (fwd > vCap) a -= 20 + (fwd - vCap) * 0.6;
   if (r.brake > 0) a -= (fwd > 1 ? 72 : 14) * r.brake;
-  if (r.throttle < 0.05 && r.brake <= 0) a -= 5 + fwd * 0.035;
-  a -= fwd * 0.55 * off;
+  if (r.throttle < 0.05 && r.brake <= 0) a -= 5 + fwd * 0.035 * (1 - 0.5 * r.draft);
+  a -= Math.sign(fwd) * Math.min(Math.abs(fwd) / dt, off * (H.sandDrag[0] + H.sandDrag[1] * Math.abs(fwd)) + deep * (H.deepDrag[0] + H.deepDrag[1] * Math.abs(fwd)));
   fwd = Math.max(-16, fwd + a * dt);
 
-  // steering: yaw-rate limited by lateral grip
-  const sp = Math.abs(fwd);
-  const omax = Math.min(2.2, 70 / Math.max(sp, 1)) * Math.min(1, sp / 6);
-  r.yaw += r.steer * omax * Math.sign(fwd || 1) * dt;
+  // the slide: only at speed
+  r.slide = damp(r.slide || 0, r.slideIn && fwd > 20 ? 1 : 0, r.slideIn ? 10 : 5, dt);
+  const sk = lerp(1, H.sand, off);
+
+  // steering: gripping, the stick asks for a yaw rate; sliding, for a slide angle, held by turning the nose with the
+  // path (beta: + = the nose left of the travel direction)
+  const sp = Math.abs(fwd), dir = Math.sign(fwd || 1);
+  const omax = Math.min(H.yawMax, H.steerA * sk / Math.max(sp, 1)) * Math.max(0.35, Math.min(1, sp / 6));
+  let wT = r.steer * omax * dir;
+  if (r.slide > 0.01) {
+    const beta = Math.atan2(lat, Math.max(sp, 4));
+    const wPath = Math.sign(beta) * gripAt(Math.abs(beta), 1) * sk * Math.cos(beta) / Math.max(sp, 10);
+    const wSlide = clamp(wPath + H.slideK * (r.steer * H.slideAngle * dir - beta), -H.yawMax * 1.3, H.yawMax * 1.3);
+    wT = lerp(wT, wSlide, r.slide);
+  }
+  r.yawRate = (r.yawRate || 0) + (wT - (r.yawRate || 0)) * (1 - Math.exp(-H.yawK * dt));
+
+  // gusts in the open: sideways, a little along, and the nose turns into the wind
+  let gk = 0;
+  if (WIND_PUSH) gk = gustField(r.x, r.z, ATMO.hfTime.value) * (1 - loc.canyon) * (1 - 0.85 * loc.arena);
+  r.gust = gk;
+  const cross = gk > 0 ? WIND_DIR.x * -fz + WIND_DIR.y * fx : 0, along = gk > 0 ? WIND_DIR.x * fx + WIND_DIR.y * fz : 0;
+  r.yawRate += GUST_YAW * gk * cross * dt;
+
+  r.yaw += r.yawRate * dt;
   const nfx = Math.sin(r.yaw), nfz = Math.cos(r.yaw);
-  // velocity re-expressed on the new heading: lateral part slides out
+  // velocity re-expressed on the new heading; the grip takes the sideways part back by the tyre curve
   const vx = fx * fwd - fz * lat, vz = fz * fwd + fx * lat;
   fwd = vx * nfx + vz * nfz;
-  lat = (vx * -nfz + vz * nfx) * Math.exp(-lerp(6.5, 2.2, off) * dt);
+  lat = vx * -nfz + vz * nfx;
+  const slip = Math.atan2(Math.abs(lat), Math.max(Math.abs(fwd), 4));
+  const take = Math.min(Math.abs(lat), gripAt(slip, r.slide) * sk * dt);
+  lat -= Math.sign(lat) * take;
+  // coming out of a slide (the key let go, the slide easing off) part of it comes back as forward speed
+  if (!r.slideIn && r.slide > 0.05 && fwd > 0 && fwd < vCap) fwd = Math.min(vCap, fwd + take * H.sling);
+  fwd += GUST_A * gk * along * 0.2 * dt;
+  lat += GUST_A * gk * cross * dt;
+  r.slip = slip;
   r.vx = nfx * fwd - nfz * lat;
   r.vz = nfz * fwd + nfx * lat;
   r.fwd = fwd; r.lat = lat;
   r.x += r.vx * dt; r.z += r.vz * dt;
 
   // walls in the arena and canyon
-  const walled = loc.arena > 0.3 || loc.canyon > 0.3;
   const lim = loc.hw - 1.6;
   locate(r.x, r.z, loc);
   if (walled && Math.abs(loc.d) > lim) {
@@ -1748,12 +1861,7 @@ function physics(r, dt, t) {
     r.x -= nx * pen; r.z -= nz * pen;
     r.scrape = Math.max(r.scrape || 0, Math.min(1, Math.abs(r.fwd) / 70)); r.scrapeX = r.x + nx * 2.5; r.scrapeZ = r.z + nz * 2.5;
     const vn = r.vx * nx + r.vz * nz;
-    if (vn > 0) {
-      r.vx -= nx * vn * 1.35; r.vz -= nz * vn * 1.35;
-      const loss = 1 - Math.min(0.4, vn / 90);
-      r.vx *= loss; r.vz *= loss;
-      if (vn > 4) hitFx(r, r.x + nx * 2.5, r.z + nz * 2.5, vn, true);
-    }
+    if (vn > 0) impact(r, nx, nz, vn, HIT_WALL, r.x + nx * 2.5, r.z + nz * 2.5, dt, false);
   }
   // rocks, towers
   if (Math.abs(loc.d) > loc.hw + 3) {
@@ -1764,11 +1872,7 @@ function physics(r, dt, t) {
       const d = Math.sqrt(d2) || 1, nx = dx / d, nz = dz / d;
       r.x = c.x + nx * rr; r.z = c.z + nz * rr;
       const vn = r.vx * nx + r.vz * nz;
-      if (vn < 0) {
-        r.vx -= nx * vn * 1.4; r.vz -= nz * vn * 1.4;
-        r.vx *= 0.55; r.vz *= 0.55;
-        if (-vn > 4) hitFx(r, r.x - nx * POD_R, r.z - nz * POD_R, -vn * 1.6, true);
-      }
+      if (vn < 0) impact(r, -nx, -nz, -vn, HIT_ROCK, r.x - nx * POD_R, r.z - nz * POD_R, dt, true);
     }
     if (Math.abs(loc.d) > loc.hw + 150) { respawn(r); if (r.player) toast('VISSZA A PÁLYÁRA'); }
   }
@@ -1781,7 +1885,7 @@ function physics(r, dt, t) {
   r.y += r.vy * dt;
   if (r.y < gy + 0.6) { r.y = gy + 0.6; r.vy = Math.max(0, r.vy); }
   r.pitch = damp(r.pitch, -Math.atan2(ga - gb, 10), 8, dt);
-  if (off > 0.5 && ga - gb > 1.5) { r.vx *= 1 - 0.5 * dt; r.vz *= 1 - 0.5 * dt; }
+  if (off > 0.5 && ga - gb > 1.5) { r.vx *= 1 - 0.3 * dt; r.vz *= 1 - 0.3 * dt; }
 
   // lap counting
   const s = r.loc.s, prevS = r.prevS ?? s;
@@ -1790,8 +1894,8 @@ function physics(r, dt, t) {
   r.prevS = s;
   r.prog = r.lap * TR.L + s;
   // wrong-way detection
-  const along = r.vx * loc.tx + r.vz * loc.tz;
-  r.wrong = along < -6 ? r.wrong + dt : Math.max(0, r.wrong - dt * 2);
+  const alongT = r.vx * loc.tx + r.vz * loc.tz;
+  r.wrong = alongT < -6 ? r.wrong + dt : Math.max(0, r.wrong - dt * 2);
 }
 
 function separate() {
@@ -1821,6 +1925,8 @@ function separate() {
 // ============================================================
 //  AI driver
 // ============================================================
+// every other bot slides into the corners it comes at too fast (and brakes only when far too fast)
+const aiSlider = (r) => r.n % 2 === 1;
 function driveAI(r, dt, raceT) {
   const loc = r.loc;
   r.aiOffT -= dt;
@@ -1853,7 +1959,9 @@ function driveAI(r, dt, raceT) {
   vt *= r.skill * band * (r.off > 0.5 ? 0.6 : 1);
   vt = Math.min(vt, TOP * 1.28);
   r.throttle = r.fwd < vt ? 1 : 0.2;
-  r.brake = r.fwd > vt + 5 ? clamp((r.fwd - vt) / 25, 0, 1) : 0;
+  // (a slider slides where the others brake)
+  r.slideIn = aiSlider(r) && r.fwd > 40 && r.fwd > vt + 4 && Math.abs(err) > 0.035 && r.off < 0.5;
+  r.brake = r.fwd > vt + (r.slideIn ? 18 : 5) ? clamp((r.fwd - vt) / 25, 0, 1) : 0;
   // boost on long fast stretches
   if (!r.aiBoost && r.heat < 30 && vt > TOP * 1.05 && Math.abs(err) < 0.08 && Math.random() < dt * 0.8) r.aiBoost = true;
   if (r.aiBoost && (r.heat > 72 + r.n * 2 || vt < TOP)) r.aiBoost = false;
@@ -1885,7 +1993,8 @@ function updateAudio(dt, live) {
   const src = (r) => (CINE.replay ? CINE.replay.proxies[r.n] : r);
   const p = src(player), P = AV.player;
   Object.assign(P, { x: p.x, y: p.y, z: p.z, vx: p.vx, vy: p.vy || 0, vz: p.vz, fwd: p.fwd, throttle: p.throttle, brake: p.brake || 0,
-    boosting: !!p.boosting, overheat: p.overheat || 0, heat: p.heat || 0, off: p.off || 0, scrape: player.scrape || 0 });
+    boosting: !!p.boosting, overheat: p.overheat || 0, heat: p.heat || 0, off: p.off || 0, scrape: player.scrape || 0,
+    slide: p.slide || 0, slip: Math.atan2(Math.abs(p.lat || 0), Math.max(4, Math.abs(p.fwd))), edge: CINE.replay ? 0 : player.edge || 0, draft: CINE.replay ? 0 : player.draft || 0 });
   AV.others = racers.filter((r) => r !== player && !r.gone).map((r) => { const o = src(r); return { id: r.n, x: o.x, y: o.y, z: o.z, vx: o.vx, vy: 0, vz: o.vz, fwd: o.fwd, throttle: o.throttle, boosting: !!o.boosting }; });
   nearestCoarse(camera.position.x, camera.position.z, _anc);
   const near = _anc.i >= 0 ? 1 - smooth(TR.hw[_anc.i] + 20, TR.hw[_anc.i] + 120, _anc.d) : 0;
@@ -1909,7 +2018,7 @@ function updateAudio(dt, live) {
 // ============================================================
 const keys = new Set();
 const GAME_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyW', 'KeyA', 'KeyS', 'KeyD']);
-const touchState = { left: false, right: false, brake: false, boost: false };
+const touchState = { left: false, right: false, brake: false, boost: false, slide: false };
 let touchMode = false;
 const onPress = {};   // filled by the UI section: code -> handler
 window.addEventListener('keydown', (e) => {
@@ -1922,7 +2031,7 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
-for (const [id, k] of [['tLeft', 'left'], ['tRight', 'right'], ['tBrake', 'brake'], ['tBoost', 'boost']]) {
+for (const [id, k] of [['tLeft', 'left'], ['tRight', 'right'], ['tBrake', 'brake'], ['tBoost', 'boost'], ['tSlide', 'slide']]) {
   const el = document.getElementById(id);
   const set = (v) => (e) => { e.preventDefault(); touchState[k] = v; el.classList.toggle('on', v); if (v) initAudio(); };
   el.addEventListener('pointerdown', set(true));
@@ -1934,29 +2043,48 @@ function readInput() {
   let throttle = k('KeyW', 'ArrowUp') ? 1 : 0;
   let brake = k('KeyS', 'ArrowDown') ? 1 : 0;
   let steer = (k('KeyA', 'ArrowLeft') ? 1 : 0) - (k('KeyD', 'ArrowRight') ? 1 : 0);
-  let boost = k('ShiftLeft', 'ShiftRight', 'Space');
+  let boost = k('ShiftLeft', 'ShiftRight');
+  let slide = k('Space');
   let analog = false;
   if (touchMode) {
     throttle = touchState.brake ? 0 : 1; brake = touchState.brake ? 1 : 0;
     steer += (touchState.left ? 1 : 0) - (touchState.right ? 1 : 0);
     boost = boost || touchState.boost;
+    slide = slide || touchState.slide;
   }
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   for (const gp of pads) {
     if (!gp) continue;
-    const ax = gp.axes[0] || 0;
-    if (Math.abs(ax) > 0.12) { steer = -ax; analog = true; }
+    HAPTIC.pad = gp.index;
+    // a response curve past the dead zone: fine corrections at speed, full lock still at the stop
+    const ax = gp.axes[0] || 0, DZ = 0.12;
+    if (Math.abs(ax) > DZ) { steer = -Math.sign(ax) * ((Math.abs(ax) - DZ) / (1 - DZ)) ** 1.5; analog = true; }
     const rt = gp.buttons[7]?.value || 0, lt = gp.buttons[6]?.value || 0;
     if (rt > 0.05 || gp.buttons[0]?.pressed) throttle = Math.max(throttle, gp.buttons[0]?.pressed ? 1 : rt);
     if (lt > 0.05) brake = Math.max(brake, lt);
     if (gp.buttons[2]?.pressed || gp.buttons[5]?.pressed) boost = true;
+    if (gp.buttons[4]?.pressed || gp.buttons[1]?.pressed) slide = true;
     const pressed = gp.buttons.map((b) => b.pressed);
     if (pressed[9] && !padPrev[9]) onPress.Escape?.();
     if (pressed[3] && !padPrev[3]) onPress.KeyC?.();
     padPrev = pressed;
     break;
   }
-  return { throttle, brake, steer: clamp(steer, -1, 1), boost, analog };
+  return { throttle, brake, steer: clamp(steer, -1, 1), boost, slide, analog };
+}
+// gamepad rumble: the warning strip before the sand, the sand, a slide, the boost, and pulses for hits
+const HAPTIC = { pad: -1, t: 0, pulse: 0 };
+function haptics(dt) {
+  HAPTIC.pulse = Math.max(0, HAPTIC.pulse - dt * 4);
+  if ((HAPTIC.t -= dt) > 0 || HAPTIC.pad < 0) return;
+  HAPTIC.t = 0.09;
+  const act = navigator.getGamepads?.()[HAPTIC.pad]?.vibrationActuator;
+  if (!act?.playEffect) return;
+  const p = player, live = state === 'race' && !MP.menuOpen && !p.finished, sp = clamp(Math.abs(p.fwd) / 150, 0, 1);
+  const strong = live ? Math.min(1, HAPTIC.pulse + p.off * 0.45 * sp + (p.boosting ? 0.1 : 0)) : 0;
+  const weak = live ? Math.min(1, HAPTIC.pulse * 0.5 + p.edge * 0.5 * sp + p.slide * 0.25 * smooth(0.1, 0.4, p.slip) + (p.boosting ? 0.15 : 0)) : 0;
+  if (strong < 0.02 && weak < 0.02) return;
+  act.playEffect('dual-rumble', { duration: 120, strongMagnitude: strong, weakMagnitude: weak }).catch(() => {});
 }
 
 // ============================================================
@@ -1975,7 +2103,7 @@ function crashFx(r, x, z, power, replay = false) {
   ud.beam?.snap();
   const d = Math.hypot(x - player.x, z - player.z);
   if (d < 160) { sfx('crash', Math.min(1, power / 70) * (1 - d / 160)); sfx('zap', 0.8 * (1 - d / 160)); }
-  if (r === player) { FX.flash = Math.max(FX.flash, 0.45); shake = Math.max(shake, 1); }
+  if (r === player) { FX.flash = Math.max(FX.flash, 0.45); shake = Math.max(shake, 1); HAPTIC.pulse = 1; }
   if (camera.position.distanceTo(r.mesh.position) > 300) return;
   const y = r.y, R = () => Math.random() - 0.5;
   for (let k = 0; k < 3; k++) {
@@ -2022,6 +2150,7 @@ function hitFx(r, x, z, power, rock = false) {
     const k = clamp(power / 45, 0.1, 1) * (1 - d / 70);
     shake = Math.max(shake, k);
     if (r === player && power > 25) FX.flash = Math.max(FX.flash, Math.min(0.35, power / 160));
+    if (r === player) HAPTIC.pulse = Math.max(HAPTIC.pulse, clamp(power / 40, 0.3, 1));
     sfx('hit', k);
   }
 }
@@ -2046,6 +2175,7 @@ function beamLights() {
   BEAM_LIGHTS.update(BEAM_LIST);
   BEAM_LIST.length = 0;
 }
+const SWING_PIVOT = 3.0;     // body-space z the cockpit swings about: where its cables meet the engines
 const FLAME_COL = { idle: new THREE.Color('#ffb066').multiplyScalar(2.2), boost: new THREE.Color('#cfe2ff').multiplyScalar(3.5), over: new THREE.Color('#ff5a2a').multiplyScalar(2) };
 const POD_FX = { hot: 0, flash: 0, beam: 0, beamCol: new THREE.Color() };
 function racerFx(r, dt, t) {
@@ -2053,8 +2183,23 @@ function racerFx(r, dt, t) {
   m.position.set(r.x, r.y, r.z);
   m.rotation.y = r.yaw;
   const sp = Math.abs(r.fwd);
-  r.roll = damp(r.roll, r.steer * 0.42 * clamp(sp / 50, 0, 1) + r.lat * 0.012, 6, dt);
+  // the slide angle as seen (network pods and the replay do not carry r.slip)
+  const slipV = Math.atan2(Math.abs(r.lat || 0), Math.max(4, sp)), slideV = r.slide || 0;
+  r.roll = damp(r.roll, r.steer * 0.42 * clamp(sp / 50, 0, 1) + clamp((r.lat || 0) * 0.012, -0.15, 0.15) + slideV * 0.1 * Math.sign(r.steer), 6, dt);
   ud.body.rotation.set(r.pitch, 0, -r.roll);
+  // the cockpit hangs on its cables behind the engines: it swings out in a turn (and overshoots a little coming out
+  // of it), and the outer engine leads with both engines toed into the turn. Visual only.
+  const yr = dt > 0 ? wrapAngle(r.yaw - (r.fxYaw ?? r.yaw)) / dt : 0;
+  r.fxYaw = r.yaw;
+  r.fxYr = damp(r.fxYr || 0, clamp(yr, -3, 3), 12, dt);
+  const latAcc = r.fwd * r.fxYr;                         // m/s², + = turning left
+  r.swingV = (r.swingV || 0) + ((clamp(latAcc / 600, -0.14, 0.14) - (r.swing || 0)) * 70 - (r.swingV || 0) * 8) * dt;
+  r.swing = clamp((r.swing || 0) + r.swingV * dt, -0.2, 0.2);
+  if (ud.cockpit) {
+    ud.cockpit.rotation.y = r.swing;
+    ud.cockpit.position.set(-SWING_PIVOT * Math.sin(r.swing), 0, SWING_PIVOT * (1 - Math.cos(r.swing)));
+  }
+  const lead = clamp(latAcc / 80, -1, 1);
   if (r.shudder > 0) {
     // after a crash the body shakes itself out
     r.shudder = Math.max(0, r.shudder - dt * 1.3);
@@ -2068,6 +2213,9 @@ function racerFx(r, dt, t) {
     const y = 0.15 + Math.sin(t * 6.3 + k * 2.1 + r.phase) * 0.07;
     e.position.y = y; by += y / 2;
     e.rotation.z = Math.sin(t * 4.1 + k + r.phase) * 0.05;
+    if (e.userData.z0 === undefined) e.userData.z0 = e.position.z;
+    e.position.z = e.userData.z0 + 0.3 * lead * (e.position.x < 0 ? 1 : -1);    // the right engine (x < 0) leads a left turn
+    e.rotation.y = lead * 0.05;
     const f = e.userData.flame;
     const s = (r.overheat > 0 ? 1.0 : 1.3 + r.throttle * 1.5 + (r.boosting ? 2.4 : 0)) * (0.9 + Math.random() * 0.2) * (Q.post ? 0.5 : 1);
     f.scale.set(s, s, s);
@@ -2102,7 +2250,7 @@ function racerFx(r, dt, t) {
   // boost kicks in: shockwave ring (the ignition flash and ring of fire come from podFx)
   if (r.boosting && !r.wasBoost) {
     podFx.shockwave(r);
-    if (r === player) { sfx('boostStart'); shake = Math.max(shake, 0.25); }
+    if (r === player) { sfx('boostStart'); shake = Math.max(shake, 0.25); HAPTIC.pulse = Math.max(HAPTIC.pulse, 0.35); }
   }
   r.wasBoost = r.boosting;
   if (camD > 420) return;
@@ -2126,6 +2274,17 @@ function racerFx(r, dt, t) {
         emit(DUST, r.x - fx * 5 - fz * side, gy + 0.5, r.z - fz * 5 + fx * side, r.vx * 0.15 + (Math.random() - 0.5) * 5, 7 + Math.random() * 10, r.vz * 0.15 + (Math.random() - 0.5) * 5,
           1.4 + Math.random() * 1.2, { ground: gy, size0: 2.5, size1: 12, color: '#e3c49a', alpha: 0.5 });
       }
+    }
+  }
+  // a slide throws a sheet of sand out to the side the pod slides toward
+  if (slideV > 0.3 && sp > 20 && h < 5) {
+    const k = slideV * smooth(0.08, 0.35, slipV), side = Math.sign(r.lat || 0) || 1, rx = -fz * side, rz = fx * side;
+    const n = Math.floor(k * sp * 0.3 * dt * PQ + Math.random() * Math.min(1, k * 2));
+    for (let i = 0; i < n; i++) {
+      const back = (Math.random() - 0.3) * 6, out = 6 + Math.random() * 10;
+      const x = r.x + rx * 2.6 - fx * back, z = r.z + rz * 2.6 - fz * back;
+      emit(DUST, x, gy + 0.4, z, r.vx * 0.35 + rx * out, 1.5 + Math.random() * 4, r.vz * 0.35 + rz * out,
+        0.9 + Math.random() * 0.9, { ground: gy, size0: 1.8, size1: 8 + r.off * 4, alpha: 0.32, color: '#e3c49a' });
     }
   }
   // exhaust blast: low over the ground each jet kicks up a V of sand behind it, much more off the track
@@ -2271,7 +2430,7 @@ let DEBUG_FORCE = null;   // testing hook: input fields forced onto the player a
 // multiplayer session (null room = solo)
 const MP = { room: null, peers: new Map(), myReady: false, inRace: false, menuOpen: false, raceHost: null,
   sendT: 0, joinT: 0, note: '', noteT: 0, rLaps: 3, rDiff: 1 };
-const NO_INPUT = { throttle: 0, brake: 0, steer: 0, boost: false, analog: true };
+const NO_INPUT = { throttle: 0, brake: 0, steer: 0, boost: false, slide: false, analog: true };
 
 const $ = (id) => document.getElementById(id);
 const hudEl = $('hud'), touchEl = $('touch'), menuEl = $('menu'), pauseEl = $('pause'), resultEl = $('result'), centerEl = $('center'), roomEl = $('room');
@@ -2293,7 +2452,7 @@ function newRace() {
   racers.forEach((r) => {
     placeOnGrid(r, r.grid);
     const v = (Math.random() - 0.5) * 0.03;
-    r.skill = r.player ? 0.82 : SKILL[diff] + v;
+    r.skill = r.player ? 0.82 : (SKILL[diff] + v) * (aiSlider(r) ? 0.955 : 1);   // (the sliders carry more speed into corners)
     r.topMul = r.player ? 1 : SKILL[diff] + 0.05 + v;
     Object.assign(r, { aiOff: 0, aiOffT: 0, aiBoost: false, lapStart: 0, throttle: 0, brake: 0, boostIn: false, pitch: 0, roll: 0 });
   });
@@ -2431,8 +2590,8 @@ function stepSim(dt) {
     if (r.gone) continue;
     if (r.ctl === 'net') { netStep(r, dt); continue; }
     if (r.player && state === 'race' && !debugAuto) {
-      p.steer = inp.analog ? inp.steer : damp(p.steer, inp.steer, inp.steer === 0 ? 12 : 5, dt);
-      p.throttle = inp.throttle; p.brake = inp.brake; p.boostIn = inp.boost;
+      p.steer = inp.analog ? inp.steer : damp(p.steer, inp.steer, inp.steer === 0 ? HANDLING.keyFall : HANDLING.keyRise, dt);
+      p.throttle = inp.throttle; p.brake = inp.brake; p.boostIn = inp.boost; p.slideIn = inp.slide;
     } else driveAI(r, dt, raceT);
     if (DEBUG_FORCE && r.player) Object.assign(r, DEBUG_FORCE);
     physics(r, dt, simT);
@@ -2472,14 +2631,18 @@ const _ca = new THREE.Vector3(), _cb = new THREE.Vector3(), _cq = new THREE.Quat
 const _cam2 = new THREE.PerspectiveCamera();
 const noise1 = (t, s) => Math.sin(t * 1.9 + s) * 0.5 + Math.sin(t * 4.3 + s * 2.3) * 0.3 + Math.sin(t * 9.7 + s * 0.7) * 0.2;
 
-// the classic chase camera, with springy distance, look-ahead into turns, banking and noise shake
+// the classic chase camera, with springy distance, look-ahead into turns, banking and noise shake. It follows the
+// direction of travel more than the nose, and a little behind, so the pod is seen to turn into a corner and to hold
+// its angle in a slide. As the view widens with speed the camera comes closer, so the pod does not shrink away.
 function chaseCam(dt, p, c) {
-  camYaw += wrapAngle(p.yaw - camYaw) * (1 - Math.exp(-7 * dt));
+  const vYaw = p.fwd > 8 ? Math.atan2(p.vx, p.vz) : p.yaw;
+  camYaw += wrapAngle(vYaw + wrapAngle(p.yaw - vYaw) * 0.35 - camYaw) * (1 - Math.exp(-5 * dt));
   const sp = Math.abs(p.fwd);
   const acc = (p.fwd - CAMV.lastFwd) / Math.max(dt, 1e-3);
   CAMV.lastFwd = p.fwd;
   CAMV.accel = damp(CAMV.accel, clamp(acc / 60, -1, 1), 4, dt);
-  CAMV.dist = damp(CAMV.dist, c.d * (1 + 0.07 * clamp(sp / 150, 0, 1)) + (p.boosting ? 2.4 : 0) + CAMV.accel * 1.3, 3, dt);
+  const fovK = Math.sqrt(Math.tan(32 * Math.PI / 180) / Math.tan(fov * Math.PI / 360));
+  CAMV.dist = damp(CAMV.dist, c.d * fovK + (p.boosting ? 1.6 : 0) + CAMV.accel * 1.3, 3, dt);
   const fx = Math.sin(camYaw), fz = Math.cos(camYaw);
   let x = p.x - fx * CAMV.dist, z = p.z - fz * CAMV.dist;
   camLoc.i = p.loc.i;
@@ -2496,12 +2659,13 @@ function chaseCam(dt, p, c) {
   // smooth noise instead of white noise: hits shake, high speed and boost rumble
   CAMV.t += dt;
   const t = CAMV.t, sh = shake * shake * 1.1;
-  const rum = Math.pow(clamp(sp / 190, 0, 1), 2) * 0.045 + (p.boosting ? 0.035 : 0);
+  // (and the warning strip before the sand, and the sand itself, rattle it)
+  const rum = Math.pow(clamp(sp / 190, 0, 1), 2) * 0.045 + (p.boosting ? 0.035 : 0) + ((p.edge || 0) * 0.03 + (p.off || 0) * 0.05) * clamp(sp / 60, 0, 1);
   shake = Math.max(0, shake - dt * 2.2);
   camera.position.set(x + noise1(t * 3.1, 1) * sh + noise1(t * 23, 7) * rum, camY + noise1(t * 2.7, 4) * sh + noise1(t * 26, 3) * rum, z + noise1(t * 3.3, 9) * sh * 0.6);
   CAMV.lookX = damp(CAMV.lookX, p.steer * clamp(sp / 40, 0, 1) * 3.2, 2.5, dt);
   camera.lookAt(p.x + fx * 12 + fz * CAMV.lookX, p.y + c.look, p.z + fz * 12 - fx * CAMV.lookX);
-  CAMV.roll = damp(CAMV.roll, -p.roll * 0.2 + noise1(t * 2.2, 5) * sh * 0.05, 5, dt);
+  CAMV.roll = damp(CAMV.roll, -p.roll * 0.2 - (p.slide || 0) * Math.sign(p.steer) * 0.035 + noise1(t * 2.2, 5) * sh * 0.05, 5, dt);
   camera.rotateZ(CAMV.roll);
   fov = damp(fov, 64 + 24 * clamp(sp / 190, 0, 1) + (p.boosting ? 7 : 0), 3, dt);
 }
@@ -2678,7 +2842,7 @@ function recordReplay(dt) {
   if (state !== 'race' && state !== 'finished') return;
   if ((REC.acc += dt) < 1 / 30) return;
   REC.acc = 0;
-  REC.frames.push({ t: raceT, s: racers.map((r) => [r.x, r.y, r.z, r.yaw, r.fwd, r.steer, r.lat, r.pitch, r.throttle, r.boosting ? 1 : 0, r.overheat > 0 ? 1 : 0, r.off, r.vx, r.vz, r.gone ? 1 : 0, r.heat, r.brake, r.loc.s, r.crashN ?? 0]) });
+  REC.frames.push({ t: raceT, s: racers.map((r) => [r.x, r.y, r.z, r.yaw, r.fwd, r.steer, r.lat, r.pitch, r.throttle, r.boosting ? 1 : 0, r.overheat > 0 ? 1 : 0, r.off, r.vx, r.vz, r.gone ? 1 : 0, r.heat, r.brake, r.loc.s, r.crashN ?? 0, r.slide || 0]) });
   while (REC.frames.length > 360) REC.frames.shift();
 }
 function startReplay() {
@@ -2700,7 +2864,7 @@ function stepReplay(dt) {
     const a = A.s[n], b = B.s[n];
     const L = (j) => a[j] + (b[j] - a[j]) * k;
     Object.assign(p, { x: L(0), y: L(1), z: L(2), yaw: a[3] + wrapAngle(b[3] - a[3]) * k, fwd: L(4), steer: L(5), lat: L(6), pitch: L(7), throttle: L(8),
-      boosting: !!b[9], overheat: b[10], off: L(11), vx: L(12), vz: L(13), gone: !!b[14], heat: L(15), brake: L(16), mesh: racers[n].mesh });
+      boosting: !!b[9], overheat: b[10], off: L(11), vx: L(12), vz: L(13), gone: !!b[14], heat: L(15), brake: L(16), slide: L(19), mesh: racers[n].mesh });
     p.loc.s = a[17] + (((b[17] - a[17] + TR.L * 1.5) % TR.L) - TR.L / 2) * k;
     p.mesh.visible = !p.gone;
     if (p.crashN !== undefined && b[18] > p.crashN) crashFx(p, p.x, p.z, 50, true);
@@ -2791,6 +2955,9 @@ function updateHUD() {
   $('heatFill').style.width = player.heat.toFixed(1) + '%';
   const over = player.overheat > 0;
   $('heatFill').classList.toggle('over', over);
+  $('heatFill').classList.toggle('warn', !over && player.boosting && player.heat > 80);
+  $('heatFill').classList.toggle('cool', !over && player.cooling > 0.3);
+  $('draftTag').classList.toggle('on', player.draft > 0.35 && !player.finished);
   $('boostTag').classList.toggle('off', over);
   setHTML('boostTag', over ? 'HŰL' : 'BOOST');
   if (state === 'race' && player.wrong > 1.2) toast('ROSSZ IRÁNY', true, 0.3);
@@ -3128,7 +3295,7 @@ function netSend(dt) {
   for (const r of racers) {
     if (r.gone || r.ctl === 'net') continue;
     e.push([r.n, rd(r.x), rd(r.y), rd(r.z), rd(r.yaw, 1000), rd(r.vx), rd(r.vz), rd(r.fwd), rd(r.lat), rd(r.steer), rd(r.throttle),
-      (r.boosting ? 1 : 0) | (r.overheat > 0 ? 2 : 0) | (r.finished ? 4 : 0), r.lap, rd(r.loc.s), rd(r.finishTime), Math.round(r.heat), rd(r.pitch, 1000), r.crashN ?? 0]);
+      (r.boosting ? 1 : 0) | (r.overheat > 0 ? 2 : 0) | (r.finished ? 4 : 0) | (r.slide > 0.5 ? 8 : 0), r.lap, rd(r.loc.s), rd(r.finishTime), Math.round(r.heat), rd(r.pitch, 1000), r.crashN ?? 0]);
   }
   MP.room.send('st', { e });
 }
@@ -3159,6 +3326,7 @@ function netStep(r, dt) {
     r.yaw += wrapAngle(n.yaw - r.yaw) * k;
     locate(r.x, r.z, r.loc);
   }
+  r.slide = damp(r.slide || 0, n.f & 8 ? 1 : 0, 8, dt);
   Object.assign(r, { vx: n.vx, vz: n.vz, fwd: n.fwd, lat: n.lat, steer: n.steer, throttle: n.th, boosting: !!(n.f & 1),
     overheat: n.f & 2 ? 1 : 0, heat: n.heat, pitch: n.pitch, lap: n.lap, finished: !!(n.f & 4), finishTime: n.ft });
   r.prog = n.lap * TR.L + n.s;
@@ -3240,6 +3408,7 @@ function frame(now) {
       TRAILS.render(sdt);
     }
     netSend(dt);
+    haptics(dt);
     roomTimers(dt);
     updateWind(sdt);
     if (WAKE_ON) updateWake(racers, camera.position);       // pods disturb the world (E7): their wakes for the shaders
@@ -3470,6 +3639,7 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
     // view({ eye: [x, y, z], look: [x, y, z], n, fov }) pod-relative; view(null) back to the game cameras
     view(d) { DEBUG_CAM = d; updateCamera(1); renderFrame(0.016); },
     racer(n = 0) { return racers[n]; },
+    handling: HANDLING,
     force(o) { DEBUG_FORCE = o; },
     groundDebug(n) { groundDebug(n); renderFrame(0.016); },
     rebakeProbes() { PROBES = bakePodProbes(); },

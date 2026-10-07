@@ -600,6 +600,11 @@ export function trackMaterial(Q, trackLength, roof = [], drift = []) {
         col *= 1.0 + clamp( -burn, 0.0, 1.0 ) * 0.25;
         // packed sand is darker where it meets the loose edge (shadowed lip)
         col *= 1.0 - smoothstep( 0.9, 1.0, edge ) * ( 1.0 - smoothstep( 1.0, 1.15, edge ) ) * 0.15;
+        // out in the open the edge reads as a line (the sand past it slows the pods): a dark strip of packed, sooty sand
+        // along the last metre of the road and a pale ridge of loose sand just past it
+        float open_ = ( 1.0 - arena ) * ( 1.0 - canyon );
+        col *= 1.0 - smoothstep( -1.8, -0.9, e ) * ( 1.0 - smoothstep( -0.15, 0.25, e ) ) * 0.36 * open_;
+        col *= 1.0 + smoothstep( 0.2, 0.8, e ) * ( 1.0 - smoothstep( 1.4, 2.6, e ) ) * 0.12 * open_;
         diffuseColor.rgb = col * mix( vec3( 1.0 ), gDesertTint( xz, mac ), mix( 0.45, 1.0, out_ ) );
         float gAO = mix( 1.0, gS.ao, 0.85 ) * mix( 1.0, mac.r, out_ );
         // down in the canyon the floor sees only a strip of sky, less still by the walls
