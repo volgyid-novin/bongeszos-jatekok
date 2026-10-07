@@ -613,8 +613,9 @@ export function trackMaterial(Q, trackLength, roof = [], drift = []) {
         #else
           // with the baked light, in the canyon: its colour (the warm bounce), but this for how bright (GI_HUE in AO).
           // Its 6 m cells blur the slabs' shade and the 10-12 m sunlit gaps between them into one dark run
+          // (only where there is a bake: outside its volumes, or with none loaded, as without it)
           float gGIHue = 0.85 * canyon;
-          gAO *= pow( max( gOcc, 1e-4 ), gGIHue );
+          gAO *= pow( max( gOcc, 1e-4 ), mix( 1.0, gGIHue, hfGIW( vHfWorld, vec3( 0.0, 1.0, 0.0 ) ) ) );
         #endif
         diffuseColor.rgb *= mix( 1.0, gS.ao, 0.35 );
         float polish = groove * 0.2 + trail.r * 0.1 + oil * 0.42;
@@ -711,14 +712,19 @@ export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast 
         float gAO = mix( mix( 1.0, tpAO, 0.9 ), sN.a, sandK );
         diffuseColor.rgb *= mix( 1.0, tpAO, 0.3 * ( 1.0 - sandK ) );
         #ifdef ROCK_AO
-          #if defined( HF_GI ) && defined( GI_HUE )
-            gAO *= pow( max( vRockAO, 0.0 ), mix( rAOgi, 1.0 + 0.7 * hfShade, float( GI_HUE ) ) );
-          #elif defined( HF_GI )
-            gAO *= pow( max( vRockAO, 0.0 ), rAOgi );          // (the baked light has the large-scale part)
-          #else
-            // (max: with MSAA an edge pixel extrapolates the attribute, and pow of a negative is NaN)
-            gAO *= pow( max( vRockAO, 0.0 ), 1.0 + 0.7 * hfShade );
+          float gAOk = 1.0 + 0.7 * hfShade;
+          #ifdef HF_GI
+            // with the baked light only part of it, rAOgi (the bake has the large-scale part; with giHue, most of it
+            // again), and only where there is a bake: outside its volumes, as without it
+            #ifdef GI_HUE
+              float gAOgi = mix( rAOgi, gAOk, float( GI_HUE ) );
+            #else
+              float gAOgi = rAOgi;
+            #endif
+            gAOk = mix( gAOk, gAOgi, hfGIW( vHfWorld, hfGN ) );
           #endif
+          // (max: with MSAA an edge pixel extrapolates the attribute, and pow of a negative is NaN)
+          gAO *= pow( max( vRockAO, 0.0 ), gAOk );
           diffuseColor.rgb *= mix( 1.0, vRockAO, rAOAlb );        // deep cavities stay dark in sunlight too (aoAlbedo)
         #endif
         vec3 gNW = hfGN;`,

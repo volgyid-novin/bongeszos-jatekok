@@ -296,7 +296,11 @@ void mainImage( const in vec4 inputColor, const in vec2 uv, const in float depth
   vec3 py1 = csView( uv + vec2( 0.0, texelSize.y ), readDepth( uv + vec2( 0.0, texelSize.y ) ) ), py0 = csView( uv - vec2( 0.0, texelSize.y ), readDepth( uv - vec2( 0.0, texelSize.y ) ) );
   vec3 dx = abs( px1.z - P.z ) < abs( P.z - px0.z ) ? px1 - P : P - px0;
   vec3 dy = abs( py1.z - P.z ) < abs( P.z - py0.z ) ? py1 - P : P - py0;
-  vec3 N = normalize( cross( dx, dy ) );
+  // (no normal where the neighbours give none: normalize of a zero vector is NaN, and NaN passes the NL test below)
+  vec3 N = cross( dx, dy );
+  float nl2 = dot( N, N );
+  if ( !( nl2 > 1e-20 ) ) return;
+  N *= inversesqrt( nl2 );
   if ( dot( N, P ) > 0.0 ) N = - N;
   float NL = dot( N, uSunV );
   if ( NL <= 0.02 ) return;

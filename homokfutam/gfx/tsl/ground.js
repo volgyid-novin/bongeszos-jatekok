@@ -7,7 +7,7 @@ import {
 } from 'three/tsl';
 import { ATMO } from '../atmosphere.js';
 import { GI_ON } from '../gi.js';
-import { hfGI } from './gi.js';
+import { hfGI, hfGIW } from './gi.js';
 import { GU, POM_DEPTH } from '../ground.js';
 import { ss, lum, hash4, oneMinus } from './common.js';
 
@@ -435,8 +435,9 @@ export function trackNodeMaterial(Q, trackLength, u, hasDrift = false) {
     else {
       // with the baked light, in the canyon: its colour (the warm bounce), but this for how bright (giHue in
       // GroundLighting). Its 6 m cells blur the slabs' shade and the 10-12 m sunlit gaps between them into one dark run
+      // (only where there is a bake: outside its volumes, or with none loaded, as without it)
       sGIHue.assign(canyon.mul(0.85));
-      ao.mulAssign(pow(max(occ, 1e-4), sGIHue));
+      ao.mulAssign(pow(max(occ, 1e-4), mix(1, sGIHue, hfGIW(positionWorld, vec3(0, 1, 0)))));
     }
     sAO.assign(ao);
     sAlb.assign(col.mul(mix(1, gS.ao, 0.35)));
@@ -505,8 +506,10 @@ export function rockNodeMaterial(Q, params, u, { vertexColors, ao, arena, fade =
     col.mulAssign(mix(1, tpAO, oneMinus(sandK).mul(0.3)));
     if (ao) {
       const rockAO = attribute('aAO', 'float').toVar();
-      // (with the baked light, gi, only part of it: rAOgi; gfx/ground.js)
-      occ.mulAssign(pow(max(rockAO, 0), GI_ON ? (giHue > 0 ? mix(u.rAOgi, ATMO.hfShade.mul(0.7).add(1), giHue) : u.rAOgi) : ATMO.hfShade.mul(0.7).add(1)));
+      // (with the baked light only part of it, rAOgi, and only where there is a bake; gfx/ground.js)
+      const k = ATMO.hfShade.mul(0.7).add(1);
+      const kGI = giHue > 0 ? mix(u.rAOgi, k, giHue) : u.rAOgi;
+      occ.mulAssign(pow(max(rockAO, 0), GI_ON ? mix(k, kGI, hfGIW(wp, hfGN)) : k));
       col.mulAssign(mix(1, rockAO, u.rAOAlb));         // deep cavities stay dark in sunlight too (aoAlbedo)
     }
     sAO.assign(occ);

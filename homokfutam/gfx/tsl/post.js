@@ -62,7 +62,7 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
     const aoTex = denoise(aoPass.getTextureNode(), depth, null, camera);
     lit = Fn(() => {
       const fogF = smoothstep(200, 2500, viewZ.negate());
-      const a = mix(pow(aoTex.r, 2.2), 1, fogF);         // (denoise() works in place, at this pixel)
+      const a = mix(pow(max(aoTex.r, 0), 2.2), 1, fogF); // (denoise() works in place, at this pixel; max: pow of a negative is NaN)
       const k = mix(vec3(1), mix(vec3(0.0232, 0.0103, 0.0052), vec3(1), a), aoOn);    // #2a1a10 in linear
       return vec4(select(aoOnly.greaterThan(0.5), k, color.rgb.mul(k)), 1);
     })();

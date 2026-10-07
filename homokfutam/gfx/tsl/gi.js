@@ -36,3 +36,20 @@ export const hfGI = Fn(([wp, n]) => {
   });
   return out;
 });
+
+// how much hfGI has to say at wp (0 outside the volumes, or with no bake loaded): gfx/gi.js
+export const hfGIW = Fn(([wp, n]) => {
+  const out = float(0).toVar();
+  If(GIU.hfGIOn.greaterThan(0.5), () => {
+    const ws = float(0).toVar();
+    for (let b = 0; b < GIU.O.length; b++) {
+      const O = GIU.O[b], A = GIU.A[b], S = GIU.S[b];
+      const d = wp.add(n.mul(1.5)).sub(O.xyz).toVar();
+      const c = vec3(dot(d.xz, A.xy).mul(A.z), d.y.mul(A.w), dot(d.xz, vec2(A.y.negate(), A.x)).mul(S.x)).toVar();
+      const e = min(c, S.yzw.sub(c));
+      ws.addAssign(clamp(min(e.x, min(e.y, e.z)), 0, 1).mul(step(0.5, S.y)));
+    }
+    out.assign(min(ws, 1).mul(GIU.hfGIK));
+  });
+  return out;
+});

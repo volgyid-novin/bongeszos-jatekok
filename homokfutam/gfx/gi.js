@@ -79,6 +79,21 @@ vec3 hfGI( vec3 wp, vec3 n ) {
   T *= mix( hfGIShade, 1.0, smoothstep( 0.7, 1.0, dot( T, vec3( 0.2126, 0.7152, 0.0722 ) ) ) );
   return mix( vec3( 1.0 ), T, min( ws, 1.0 ) * hfGIK );
 }
+// how much hfGI has to say at wp (0 outside the volumes, or with no bake loaded, as hfGI returns 1 there): what a
+// surface's own shade that the bake stands in for is faded out by, so outside the volumes it is as without the bake
+float hfGIW( vec3 wp, vec3 n ) {
+  if ( hfGIOn < 0.5 ) return 0.0;
+  float ws = 0.0;
+  for ( int b = 0; b < ${MAX}; b ++ ) {
+    vec4 O = hfGIO[ b ], A = hfGIA[ b ], S = hfGIS[ b ];
+    if ( S.y < 0.5 ) continue;
+    vec3 d = wp + n * 1.5 - O.xyz;
+    vec3 c = vec3( dot( d.xz, A.xy ) * A.z, d.y * A.w, dot( d.xz, vec2( - A.y, A.x ) ) * S.x );
+    vec3 e = min( c, S.yzw - c );
+    ws += clamp( min( e.x, min( e.y, e.z ) ), 0.0, 1.0 );
+  }
+  return min( ws, 1.0 ) * hfGIK;
+}
 `;
 
 // fetch and install assets/world/gi.bin; resolves to the header, or null (no file, wrong version)
