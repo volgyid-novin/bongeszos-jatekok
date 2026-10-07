@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import {
   EffectComposer, RenderPass, EffectPass, Effect, EffectAttribute, BlendFunction, BloomEffect, SMAAEffect,
-  ToneMappingEffect, ToneMappingMode, GodRaysEffect, DepthOfFieldEffect, KernelSize,
+  ToneMappingEffect, ToneMappingMode, GodRaysEffect, DepthOfFieldEffect, KernelSize, Pass,
 } from 'postprocessing';
 import { N8AOPostPass } from 'n8ao';
+import { ATMO, ATMO_FUNCS } from './atmosphere.js';
 
 // ============================================================
 //  Post-processing chain (pmndrs/postprocessing + N8AO):
@@ -144,6 +145,84 @@ class GradeEffect extends Effect {
   }
 }
 
+// --- volumetric light (?gfx=vol:1; notes: gfx/tsl/post.js) ---------------------------------------------
+// Half-resolution march through the dust of the canyon / arch, lit by the baked world shadow (and the
+// cached mid shadow): rgb = light scattered in, a = transmittance. Without TRAA here the jitter is a fixed
+// per-pixel pattern (no shimmer), softened by the bilinear upsampling in VolEffect.
+const VOL_F = /* glsl */`
+  ${ATMO_FUNCS}
+  uniform sampler2D depthBuffer;
+  uniform mat4 uProjInv, uCamWorld;
+  uniform vec3 uCamPos, uCenter;
+  uniform float uK, uY, uDensity, uRadius;
+  varying vec2 vUv;
+  float ign( vec2 p ) { return fract( 52.9829189 * fract( dot( p, vec2( 0.06711056, 0.00583715 ) ) ) ); }
+  void main() {
+    if ( uK < 0.01 ) { gl_FragColor = vec4( 0.0, 0.0, 0.0, 1.0 ); return; }
+    float z = texture2D( depthBuffer, vUv ).r;
+    vec4 v = uProjInv * vec4( vUv * 2.0 - 1.0, z * 2.0 - 1.0, 1.0 );
+    vec3 dv = ( uCamWorld * vec4( v.xyz / v.w, 1.0 ) ).xyz - uCamPos;
+    float dist = min( length( dv ), 220.0 );
+    vec3 rd = normalize( dv );
+    float ds = dist / float( STEPS ), t = ds * ign( gl_FragCoord.xy );
+    float c = dot( rd, hfSunDir ), g = 0.55;
+    float phase = ( 1.0 - g * g ) / ( 12.5663706 * pow( 1.0 + g * g - 2.0 * g * c, 1.5 ) ) * 0.75 + 0.25 / 12.5663706;
+    vec3 sunL = hfSunCol * phase * 3.1, amb = hfFogCol * 0.32;
+    vec2 drift = hfTime * vec2( 0.011, 0.004 );
+    float T = 1.0;
+    vec3 acc = vec3( 0.0 );
+    for ( int k = 0; k < STEPS; k ++ ) {
+      vec3 q = uCamPos + rd * t;
+      float n = texture2D( hfCloudTex, q.xz / 37.0 + drift ).r * texture2D( hfCloudTex, ( q.xz + q.y * 0.8 ) / 11.0 - drift * 2.0 ).r * 2.6;
+      float zone = 1.0 - smoothstep( uRadius * 0.6, uRadius, length( q.xz - uCenter.xz ) );
+      float sig = uDensity * uK * zone * exp( - max( q.y - uY, 0.0 ) / 16.0 ) * smoothstep( 0.15, 0.75, n );
+      acc += ( sunL * hfStaticShadow( q, vec3( 0.0 ) ) + amb ) * sig * T * ds;
+      T *= exp( - sig * ds );
+      t += ds;
+    }
+    gl_FragColor = vec4( acc, T );
+  }`;
+class VolPass extends Pass {
+  constructor(camera, steps) {
+    super('VolPass');
+    this.needsSwap = false;
+    this.needsDepthTexture = true;
+    this.sceneCamera = camera;
+    this.target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+    this.target.texture.generateMipmaps = false;
+    this.fullscreenMaterial = new THREE.ShaderMaterial({
+      defines: { STEPS: steps },
+      uniforms: Object.assign({}, ATMO, {
+        depthBuffer: { value: null }, uProjInv: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() },
+        uCamPos: { value: new THREE.Vector3() }, uCenter: { value: new THREE.Vector3() },
+        uK: { value: 0 }, uY: { value: 0 }, uDensity: { value: 0.01 }, uRadius: { value: 200 },
+      }),
+      vertexShader: 'varying vec2 vUv; varying vec3 vHfWorld; void main() { vUv = position.xy * 0.5 + 0.5; vHfWorld = vec3( 0.0 ); gl_Position = vec4( position.xy, 1.0, 1.0 ); }',
+      fragmentShader: VOL_F, depthWrite: false, depthTest: false,
+    });
+  }
+  setDepthTexture(depthTexture) { this.fullscreenMaterial.uniforms.depthBuffer.value = depthTexture; }
+  setSize(w, h) { this.target.setSize(Math.max(1, Math.round(w / 2)), Math.max(1, Math.round(h / 2))); }
+  render(renderer) {
+    const u = this.fullscreenMaterial.uniforms, cam = this.sceneCamera;
+    u.uProjInv.value.copy(cam.projectionMatrixInverse);
+    u.uCamWorld.value.copy(cam.matrixWorld);
+    u.uCamPos.value.setFromMatrixPosition(cam.matrixWorld);
+    renderer.setRenderTarget(this.target);
+    renderer.render(this.scene, this.camera);
+  }
+}
+class VolEffect extends Effect {
+  constructor(tex) {
+    super('VolEffect', /* glsl */`
+      uniform sampler2D uVol;
+      void mainImage( const in vec4 inputColor, const in vec2 uv, out vec4 outputColor ) {
+        vec4 v = texture2D( uVol, uv );
+        outputColor = vec4( inputColor.rgb * v.a + v.rgb, inputColor.a );
+      }`, { uniforms: new Map([['uVol', new THREE.Uniform(tex)]]) });
+  }
+}
+
 export function createPost(renderer, scene, camera, Q, sunDir) {
   // on high-density screens the pixels are small enough that 2x MSAA looks like 4x for half the cost
   const msaa = Q.msaa && renderer.getPixelRatio() >= 1.4 ? Math.min(Q.msaa, 2) : Q.msaa;
@@ -160,9 +239,20 @@ export function createPost(renderer, scene, camera, Q, sunDir) {
     // (the plume shader writes alpha 1 over its whole box).
     // The AO fades out with distance by scene.fog's near/far (main.js).
     ao.autoDetectTransparency = false;
-    Object.assign(ao.configuration, { aoRadius: 5, distanceFalloff: 1.2, intensity: 2.2, color: new THREE.Color('#2a1a10'), halfRes: true, depthAwareUpsampling: true, transparencyAware: false });
-    ao.setQualityMode(Q.name === 'ultra' ? 'High' : 'Medium');
+    // ?gfx=aoq:1 (docs/visual-next-steps.md C6): one quality mode up and a wider radius, so the big shapes
+    // (stands, canyon foot, mesas) get their contact darkening too; aoq:2 also at full resolution
+    const aoq = Q.aoq || 0;
+    Object.assign(ao.configuration, { aoRadius: aoq ? 7 : 5, distanceFalloff: 1.2, intensity: 2.2, color: new THREE.Color('#2a1a10'), halfRes: aoq < 2, depthAwareUpsampling: true, transparencyAware: false });
+    ao.setQualityMode(['Medium', 'High', 'Ultra'][Math.min(2, (Q.name === 'ultra' ? 1 : 0) + (aoq ? 1 : 0))]);
     composer.addPass(ao);
+  }
+
+  let vol = null, volMix = null;
+  if (Q.vol) {
+    vol = new VolPass(camera, Q.name === 'ultra' ? 24 : 16);
+    volMix = new EffectPass(camera, new VolEffect(vol.target.texture));
+    composer.addPass(vol);
+    composer.addPass(volMix);
   }
 
   const speed = new SpeedEffect();
@@ -201,11 +291,17 @@ export function createPost(renderer, scene, camera, Q, sunDir) {
 
   const _v = new THREE.Vector3(), _f = new THREE.Vector3();
   const api = {
-    composer, speed, dof, dofPass, bloom, flare, grade, rays, ao, sunMesh,
+    composer, speed, dof, dofPass, bloom, flare, grade, rays, ao, sunMesh, vol,
     exposure: 1,
     setSize(width, height) { composer.setSize(width, height); },
     // per frame: v = { blur, aberr, center: Vector2, flash, fade, dof: {on, focus, range} }
     update(dt, v) {
+      if (vol) {
+        const u = vol.fullscreenMaterial.uniforms;
+        u.uK.value = v.vol?.k ?? 0; u.uY.value = v.vol?.y ?? 0; u.uDensity.value = v.vol?.density ?? 0.01; u.uRadius.value = v.vol?.radius ?? 200;
+        if (v.vol?.center) u.uCenter.value.copy(v.vol.center);
+        vol.enabled = volMix.enabled = u.uK.value > 0.01;           // outside the canyon and the arch: no passes at all
+      }
       const su = speed.uniforms;
       su.get('uBlur').value = v.blur || 0;
       su.get('uAberr').value = v.aberr || 0;

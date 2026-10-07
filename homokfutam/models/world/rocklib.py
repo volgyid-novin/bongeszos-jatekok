@@ -247,7 +247,10 @@ def export_glb(objs, path):
         r = subprocess.run([npx, '-y', 'gltfpack@0.24', '-i', raw, '-o', path, '-cc', '-kn', '-vp', '16'],
                            capture_output=True, text=True)
         if r.returncode == 0:
-            os.remove(raw)
+            try:
+                os.remove(raw)
+            except OSError as e:          # (Windows: a file watcher may still hold it)
+                print('could not remove', raw, e)
             return path
         print('gltfpack failed, keeping uncompressed:', r.stderr[-400:])
     shutil.move(raw, path)

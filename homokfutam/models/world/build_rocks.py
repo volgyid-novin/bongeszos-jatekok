@@ -1,8 +1,11 @@
 """Sandstone formations for the HOMOKFUTAM map, modelled in Blender from code.
 
   blender -b --factory-startup --python homokfutam/models/world/build_rocks.py -- [--only spire,arch]
+  blender -b --factory-startup --python homokfutam/models/world/build_rocks.py -- --hi 1
 
-Writes homokfutam/assets/world/rocks.glb (meshopt-compressed with gltfpack when Node is there):
+Writes homokfutam/assets/world/rocks.glb (meshopt-compressed with gltfpack when Node is there).
+With --hi: only the spires, one level up (36k / 12k / 3.5k triangles), into rocks_spires_hi.glb; the
+game loads that instead of the spires in rocks.glb with ?gfx=geo:1 (docs/visual-next-steps.md C9).
 
   spire0..7_lod0..2   hoodoos / spires, 100 m tall at scale 1 (the game scales them per instance):
                       beds of hard and soft sandstone (soft beds neck in), caprocks that overhang,
@@ -39,7 +42,7 @@ PAL = {k: R.srgb(v) for k, v in {
 
 def args():
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
-    opt = {'only': ''}
+    opt = {'only': '', 'hi': ''}
     for i in range(0, len(argv) - 1, 2):
         opt[argv[i].lstrip('-')] = argv[i + 1]
     return opt
@@ -128,6 +131,9 @@ SPIRES = [
 ]
 
 
+SPIRE_LODS = (12000, 3500, 1000)
+
+
 def spire(idx):
     seed, cap, slender, necks, lean, scheme = SPIRES[idx]
     rng = np.random.default_rng(seed)
@@ -195,7 +201,7 @@ def spire(idx):
     R.set_colors(ob, rgb, ao)
     R.shade(ob)
     out = []
-    for lod, t in enumerate((12000, 3500, 1000)):
+    for lod, t in enumerate(SPIRE_LODS):
         o = R.duplicate(ob, f'spire{idx}_lod{lod}')
         R.decimate(o, t)
         out.append(o)
@@ -493,8 +499,13 @@ def talus(idx):
 
 
 def main():
+    global SPIRE_LODS
     opt = args()
     only = [s for s in opt['only'].split(',') if s]
+    hi = bool(opt['hi'])
+    if hi:
+        SPIRE_LODS = (36000, 12000, 3500)
+        only = ['spire']
     R.reset()
     t0 = time.time()
     objs = []
@@ -511,11 +522,11 @@ def main():
         objs += made
         print(f'{name}: {len(made)} meshes, {sum(R.tris(o) for o in made)} tris, {time.time() - t:.0f}s')
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    path = OUT if not only else OUT.replace('.glb', '_' + '_'.join(only) + '.glb')
+    path = OUT.replace('.glb', '_spires_hi.glb') if hi else OUT if not only else OUT.replace('.glb', '_' + '_'.join(only) + '.glb')
     R.export_glb(objs, path)
     print(f'wrote {path}: {len(objs)} meshes, {sum(R.tris(o) for o in objs)} tris, '
           f'{os.path.getsize(path) / 1024:.0f} KB in {time.time() - t0:.0f}s')
-    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(HERE, 'build', 'rocks.blend'))
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(HERE, 'build', 'rocks_hi.blend' if hi else 'rocks.blend'))
 
 
 if __name__ == '__main__':

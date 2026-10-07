@@ -4,7 +4,7 @@ Working notes for the next round of visual work on HOMOKFUTAM, written so a new 
 them up cold. Three parts:
 
 1. **Two deferred items:** batching the exhaust plumes, and moving to WebGPU (three's `WebGPURenderer` with TSL node materials). The WebGPU move is now done behind `?renderer=webgpu`; section B has the results and what is left.
-2. **Optional upgrades:** improvements that cost performance. Measure each one on its own, then decide whether it is worth it.
+2. **Optional upgrades:** improvements that cost performance, each measured on its own. All eleven are now done, each behind a `?gfx=` key, and the High and Ultra presets switch on the ones worth their cost; section C has the results and what is left.
 3. **How to measure:** the harness used so far, and the numbers to compare against.
 
 ## Where things stand (October 2026)
@@ -229,13 +229,14 @@ Until then phones and tablets default to WEBGL (`pointer: coarse`, in `gfx/backe
 
 ---
 
-## C. Upgrades that cost performance (measure one at a time)
+## C. Upgrades that cost performance: done, each behind a `?gfx=` key
 
-**The A/B switch.** Put each upgrade behind a `?gfx=` key so it can be switched on and off in the same build.
-- `gfx/quality.js` only accepts keys that exist in `PRESETS`. Add each new key to all four presets, defaulting to off.
-- Then e.g. `?q=high&gfx=csm:1` vs `?q=high&gfx=csm:0`.
+**Status (October 2026).** Items 1–11 are implemented on both renderers, each behind its own key, and the presets switch them on by the decision rule below. Item 12 is moot: TRAA on WebGPU (section B) replaced it.
 
-**Decision rule.** On the reference GPU at the High preset and 2560×1440 (or the 2× pixel-ratio runs above):
+- **Keys:** `sky`, `csm`, `pom`, `refl`, `vol`, `aoq` (0, 1 or 2), `coat`, `grass`, `geo`, `clouds`, `parts`. All exist in all four presets in `gfx/quality.js`; `?gfx=sky:1` or `?gfx=grass:0` overrides a preset.
+- **Load-time choices:** each key changes what is built (shader variants, meshes, passes), so switching one reloads the page, like the preset itself. The GLSL chunks read their key once at import (`PB_SKY`, `MID_SHADOW`, `VCLOUDS` in `gfx/atmosphere.js`, `COAT` in `playerPod.js`); the node graphs are built for one or the other.
+
+**Decision rule.** On the reference GPU at the High preset and 2560×1440 (or the 2× pixel-ratio runs):
 
 | Cost | Decision |
 |---|---|
@@ -243,92 +244,124 @@ Until then phones and tablets default to WEBGL (`pointer: coarse`, in `gfx/backe
 | 0.3–1.5 ms | Ultra only, unless the gain is large |
 | > 1.5 ms | only for a major gain, and only on Ultra |
 
-Also check the effect on draw calls and JS time on Low and Medium. Keep Low at about 300 draws and 1.5M triangles or less.
+Low and Medium get none of them: they keep their draw and triangle budgets (Low: ~300 draws, ≤ 1.5M triangles).
 
-Ordered by my guess of gain per cost:
+### Results
 
-### 1. Physically based sky and aerial perspective (low cost)
+RTX 3080 Ti, headless Chrome. Each key measured on its own against the same build with it off, interleaved, median of 2 rounds, High at 2560×1440 at the four benchmark spots. GPU time is the WebGPU timestamp-query total of all render passes (`?gputime`, see part 3); CPU is the JS time per frame on WebGPU at 1920×1080; the WebGL column is the change in frame time at 2560×1440 (mostly GPU-bound there; noise about ±0.3 ms).
 
-- **Gain:** a richer, correct horizon gradient and distance haze. Mountains and buttes shift towards blue with distance the way real air does. The fog and sky colors stay consistent because they come from one model.
-- **How:** Hillaire 2020 lookup tables: transmittance, multi-scattering and sky view, plus an aerial-perspective volume. The sun never moves, so bake them once at load in `gfx/atmosphere.js`. The sky shader and `hfFogTint` / `hfFogAmount` then read the tables.
-- **Cost:** load time (a few ms of GPU) plus 1–2 texture reads per fogged pixel.
-- **Measure:** frame time at the dunes spot (lots of sky and distance).
+| # | Key | WebGPU GPU | CPU (WebGPU) | WebGL frame | Preset | Why |
+|---|---|---|---|---|---|---|
+| 1 | `sky` | +0.2–0.5 ms | – | ≈ 0 | Ultra | cost; it also shifts the palette (see below) |
+| 2 | `csm` | +0.05–0.1 ms | +0.2 ms avg (redraw spike 1.8 ms ~1/s) | +0.2–0.5 ms | High | sharper shadows 100–600 m out, far pods cast real shadows |
+| 3 | `pom` | +0.1–0.3 ms | – | +0.1–0.7 ms | Ultra | shows only in close-ups (photo mode, ground-level cameras) |
+| 4 | `refl` | +0.2–1.2 ms | +1.5–2 ms with a face every frame; it now draws one every other frame | +0.3 ms, +100 draws | Ultra | CPU |
+| 5 | `vol` | canyon +0.45 ms (24 steps; it now takes 16), elsewhere ~0 | – | canyon +0.5 ms, elsewhere 0 | High | large gain where it runs, nothing elsewhere |
+| 6 | `aoq` | 1: +0.1–0.3 ms, 2: +1.0–1.75 ms | – | 1: +0.3–0.5 ms | High and Ultra: 1 | full resolution (2) is not worth its cost |
+| 7 | `coat` | +0.16 ms at the grid, ~0 elsewhere | – | ≈ 0 | High | cheap; the player's pod is on screen all race |
+| 8 | `grass` | +0.1–0.3 ms | +0.2–0.3 ms, +2–7 draws | ≈ 0 | High | richer mid-ground |
+| 9 | `geo` | +0.15–0.3 ms; triangles 3.45M → 5.7M | – | +0.2–0.5 ms | Ultra | triangles cost far more on weaker GPUs than here |
+| 10 | `parts` | ≈ 0 (start grid, all boosting) | ≈ 0 | ≈ 0 | High | denser dust and smoke, streamers |
+| 11 | `clouds` | +0.2–0.35 ms | – | +0.1–0.7 ms (at 12 steps; it now takes 16 there) | High | big visible gain over half the screen |
 
-### 2. Cascaded / sharper near shadows
+Totals with the new presets against the same build with every key off: see "Totals" at the end of this section.
 
-- **Now:**
-  - One 2048 map covers a 130 m box in front of the camera (High; 4096 and 150 m on Ultra).
-  - A static 4096 world bake covers ~4 km, about 1 m per texel, so shadows beyond the box are soft and blobby.
-  - Pods far ahead have no shadow.
-- **How:** three's `CSM` addon (`three/addons/csm/CSM.js`) with 3 cascades, e.g. 0–40 m, 40–150 m and 150–600 m. Pods and rocks keep casting, and the static bake stays for beyond 600 m. Alternatively, a second static bake at 8192 over the track corridor only.
-- **Cost:** +1–2 shadow passes (each ~100–130 draws on High, so CPU) plus shadow sampling per pixel.
-- **Measure:** draws per pass with the draw-call census, fps at the grid and canyon.
+### 1. Physically based sky and aerial perspective (`sky`)
 
-### 3. Parallax occlusion mapping on the ground (near only)
+- **Built:** `gfx/skylut.js` bakes Hillaire 2020's tables on the CPU in a worker at load (`gfx/skylut.worker.js`, ~0.3 s, hidden behind the world build): transmittance 256×64, multiple scattering 32×32, sky view 192×112 at ground level (u = azimuth from the sun, symmetric, so 0..π; v = elevation, denser at the horizon). The sun never moves, so the bake happens once. `boot()` builds the environment map after it.
+- **Sky:** the table (Rayleigh, a thin aerosol, ozone ×2 for a deeper zenith, multiple scattering, sand albedo) times `hfSkyE`, then the low dust in front of it out to infinity.
+- **Fog / aerial perspective (`hfAerial`):** per pixel, in closed form. Rayleigh at ground density over the distance × `hfApScale` (3: the world is a few km, real air needs tens to turn things blue); the old exponential height fog becomes the low dust layer with an albedo and a two-lobe Henyey–Greenstein phase, lit by the scene's sun (`hfSunCol`, the same light as the ground), the multiple scattering from the tables and the sunlit sand under it. The two are combined by optical depth, per channel: transmittance `T` and in-scatter `S`, so additive materials fade by `T` and the rest get `col × T + S`.
+- **Calibration:** with real coefficients the dust haze came out ~1.6× brighter than the hand-tuned fog, and the aerosol's forward lobe blew out everything near the sun through the bloom. The dust's "albedo" (0.56, 0.43, 0.27) keeps the old fog colour side-on (it stands for the albedo and the light lost inside the layer), its phase is a gentle g = 0.3, and the aerosol is kept thin (0.8× Hillaire's clear sky, g = 0.65). The node-graph and GLSL versions share every constant.
+- **What it looks like:** away from the sun, distant mesas and the horizon ranges now layer into blue-violet with distance; the sky is a paler, more natural blue; looking towards the sun the haze is brighter. It is a palette shift from the hand-tuned look (warmer, more saturated), which is why it is not on High even though it is nearly free on WebGL. Decide by eye: `?gfx=sky:1` vs `sky:0`.
 
-- **Gain:** ripples, gravel, paving and the track's grooves get real depth and self-occlusion at grazing angles near the pod. This is the biggest close-up ground gain.
-- **How:** the height is already in the alpha channel of `ground_c`. In `gBlend`, for the 2–3 heaviest layers within ~40 m, march 8–16 steps along the view ray in texture space, then fetch color and normal at the offset uv. `GQ` 2 only.
-- **Cost:** fill rate, about +8–16 fetches per near-ground pixel. Expensive at high pixel ratios; likely Ultra only.
-- **Measure:** 2× pixel-ratio fps at the grid (paving) and dunes, plus a close-up montage.
+### 2. Cached mid-distance shadow (`csm`)
 
-### 4. Real-time reflections on the player's pod
+- **Not three's CSM:** three cascades re-rendered every frame would add ~150–200 shadow draws a frame, ~1.5–2 ms of CPU on the WebGPU path, which is CPU-bound already.
+- **Built (`createMidShadow`, `gfx/atmosphere.js`):** the static world once more, into a 2048×1024 depth map over a 640×320 m light-space box (≈0.3 m per texel; Ultra 4096×2048 over 760×380 m) placed ~230 m ahead of the camera. Only static casters, on a layer of their own (7), so it is redrawn only when the wanted box has moved an eighth of its size, about once a second at race speed (100–120 draws, 0.5 ms on WebGL, 1.8 ms on WebGPU, then nothing until the next).
+- **Far pods:** a quarter-size map of the pods alone (layer 8), drawn every frame while a pod is in the box and more than 75 m away (~20 draws). Their shadows used to be only the soft blob; now they have their real outline out to ~600 m.
+- **Sampling:** `hfStaticShadow` takes the mid map inside the box (fading at its edge) instead of the 1 m world bake, so everything that reads the bake gets sharper: the lit materials' sun, the haze, the volumetric light.
 
-- **Gain:** the other pods, boost flames and nearby track show up in the player's metal and canopy. That isn't possible with the static probes.
-- **How:** a `CubeCamera` at 64–128 px, one face per frame, rendering only terrain, rocks, arena, sky and other pods (no particles or effects) via camera layers. Feed it to the player's pod materials as `envMapB`, which is already wired through `podEnvPatch`. Either run PMREM on it every few frames, or sample the raw cube with a roughness-based mip.
-- **Cost:** +60–150 draws per frame (CPU) plus a small GPU pass; PMREM is ~10 small passes.
-- **Measure:** JS time and draws on High, and a close-up montage behind the player.
+### 3. Parallax occlusion on the ground (`pom`)
 
-### 5. True volumetric light in the canyon and under the arch
+- **Built (`gParallax` in both `gfx/ground.js` and `gfx/tsl/ground.js`):** the view ray is marched (6–14 steps) through the height field of the *dominant* layer only, then every layer is looked up at the hit; a 5-step march towards the sun shades the lee side of ripples and grooves. Marching every layer was out of the question, and following one layer avoids seams where layers swap.
+- **Faded by the pixel footprint,** not by distance: off once a pixel covers more than ~1.6 cm of ground. Without that, ripples 8–20 m away turned to mush: the march is far too coarse for them there.
+- **Result:** at photo-mode heights (0.5 m) the relief is real (crests hide what is behind, lee sides darken); from the chase camera (2–4 m up) the ground is already too foreshortened for it to show. Hence Ultra.
+- **Compile time:** the sun march first unrolled into seven inlined copies of the height fetch in WGSL, and the cold compile of the terrain and track shaders took 11 s longer. As a loop it is ~1 s. (A `setLayout` TSL function would be the cleaner fix, but in this three version a laid-out function cannot reach the texture bindings.)
 
-- **Gain:** real light shafts through dust where the sun cuts into the slot, instead of the transparent haze sheets (`world/haze.js`) plus screen-space god rays.
-- **How:** a half-resolution post pass that raymarches the height fog plus a dust density (noise), sampling the static world shadow (`hfShadowMap`). It runs only where the canyon or arch fills the screen, gated by a zone uniform. Composite before bloom.
-- **Cost:** ~0.5–1.5 ms at 1440p for 16–32 steps.
-- **Measure:** canyon spot fps, and a montage of the canyon and arch.
+### 4. Live reflections on the player's pod (`refl`)
 
-### 6. Better AO
+- **Built (`createLiveEnv`, `gfx/probes.js`):** a cube camera at the player's pod renders one face every other frame into a 256² half-float cube, of everything on layer 9: ground, rock, buildings, sky, horizon and the other pods; no particles or effects. Once all six faces are new it is prefiltered (PMREM) to the probes' size, so it drops into the pod's materials in place of the probe pair without a shader change (`setPodEnv`).
+- **Gain:** the paving, the stands and the neighbouring pods show in the player's metal and canopy (a mirror test confirms orientation). On the worn paint it is subtle; with `coat` it shows more.
+- **Cost:** a face is a full scene pass with 50–140 draws, ~1.5–2 ms of CPU on WebGPU; every other frame halves that, and the cube is at most 12 frames old.
 
-- **Options:** N8AO "High" quality on High (now "Medium"), full resolution on Ultra (now half, since `ba33f36`), or a larger radius for big shapes (stands, canyon base).
-- **Cost:** half resolution "Medium" was ~1.5 ms at 3360×1890 including the extra transparency renders that are now gone. Full resolution "High" was about 2–3× that on Ultra before `ba33f36`.
-- **Measure:** `?gfx=ao:1` variants, plus the AO-only view (`__homok.post.ao.configuration.renderMode = 1`).
+### 5. Volumetric light in the canyon and under the arch (`vol`)
 
-### 7. Clearcoat paint on the pods
+- **Built:** a half-resolution pass marching the view ray (16 steps; 24 on WebGL Ultra, which has no TRAA; up to 220 m) through extra dust that hangs low in these places (a zone sphere around the arch, the slot around the camera in the canyon), lit by the sun as far as `hfStaticShadow` lets it through. WebGPU: composited into the scene colour before TRAA, which averages the per-frame jitter. WebGL: a `VolPass` into a half-size target and a composite effect, with a fixed per-pixel jitter.
+- **Zone:** `volZone()` in `main.js` sets how far the camera is in the canyon or under the arch (and fades the old dust sheets of `world/haze.js` out as the volume comes in). Outside both, the passes do not run at all.
+- **Tuning that mattered:** shadowed dust must glow at about the level of the shaded walls (sky and bounce light), or the canyon fills with dark smoke; the arch's dust must stay within ~75 m of it, or the whole landscape seen through it hazes over.
 
-- **Gain:** sharp, glossy highlights on the painted panels over the worn base.
-- **How:** use `MeshPhysicalMaterial` with `clearcoat` for the `PodAtlas` materials in `playerPod.js`, with the clearcoat mask from the livery's paint channel. That means a small patch in `patchLivery`.
-- **Cost:** a heavier shader, but pods cover few pixels; it also adds one more program.
-- **Measure:** close-up montage, and fps on the grid with all 6 pods on screen.
+### 6. Better AO (`aoq`)
 
-### 8. Denser near-track clutter and swaying dry grass
+- `aoq:1`: WebGPU GTAO +8 samples, radius 4 → 6 m, thickness 2 → 3; WebGL N8AO one quality mode up, radius 5 → 7 m. The stands, the canyon foot and the bays get their contact darkening.
+- `aoq:2`: also at full resolution: sharper fine detail, +1.0–1.75 ms at 1440p. Not enabled anywhere.
 
-- **Gain:** a richer mid-ground at speed.
-- **How:** more instances in `world/scatter.js` within 60–80 m, plus a grass-tuft card mesh with vertex sway (like the cloth in `world/dressing.js`). No shadow casting.
-- **Cost:** vertices plus 2–4 draws; overdraw if the cards are alpha-tested.
-- **Measure:** triangle and draw counts on Low (keep it off there) and fps on High at the dunes spot.
+### 7. Clear coat on the pods (`coat`)
 
-### 9. More geometry for rocks and canyon walls
+- The `PodAtlas` materials become physical materials with a clear coat (roughness 0.07) where the livery's paint masks (R, G) say the paint is intact; the worn metal keeps its rough base. GLSL: `withCoat()` + a line in `patchLivery`; TSL: `clearcoatNode` from the same masks.
 
-- **How:**
-  - Spire LOD0 from 12k to 30–40k triangles, and LOD switch distances ×1.5 on Ultra (`build_rocks.py`, then the `Q.lod` factor).
-  - Canyon walls: `STEP` from 2 m to 1 m and `J` from 56 to 90 within ~150 m of the track (`main.js`, the canyon block).
-- **Cost:** triangles in both the main and shadow passes.
-- **Measure:** `tris` from `perf()`, fps at the canyon spot.
+### 8. Dry grass and denser near-track clutter (`grass`)
 
-### 10. Particle quality
+- **Grass (`world/grass.js`):** tufts of 34 thin curved blades, real geometry (no alpha-tested cards: no overdraw, nothing for the anti-aliasing to shimmer on), straw coloured, swaying with the wind (gusts travelling along it, a flicker across it), tips moving most. ~40k tufts in clumps beside the track (2–60 m out, none on gravel, slopes or in the canyon), drawn within 75 m. No shadows.
+- **Chunks, not the rock LOD fields:** the tufts sit in 130 m chunks along the track, one instanced mesh each, uploaded once; a chunk is shown by distance and frustum-culled by three. Through `LodInstances` they cost ~2 ms of CPU a frame (re-sorting and re-uploading tens of thousands of matrices as the camera moved); three shapes per chunk still cost ~0.5 ms in draws. The copies are only moved and scaled (never turned or mirrored, which would flip the double-sided blades' normals), so the sway can use the wind in world space.
+- **Clutter:** twice the pebbles within ~70 m of the track, in the existing pebble meshes (no new draws).
 
-- **How:** denser dust and smoke behind the pods, larger flipbooks (more frames: `build_flipbooks.py`), and sand streamers across the track at high speed. Optionally, a shadow lookup per particle (the crowd already does this per vertex).
-- **Cost:** overdraw. The worst case is a full grid boosting at the start.
-- **Measure:** fps at the arena start right after "RAJT!" with all bots boosting.
+### 9. More geometry (`geo`)
 
-### 11. Volumetric clouds
+- **Canyon walls:** swept every 1 m instead of 2, with 90 rows instead of 56: the fine noise, the joints and the hard beds' lips resolve instead of aliasing between rows. Clearly visible.
+- **Spires:** `build_rocks.py -- --hi 1` writes `assets/world/rocks_spires_hi.glb` (36k / 12k / 3.5k triangles per spire instead of 12k / 3.5k / 1k; 2.3 MB, loaded only with the key) and the LOD distances go ×1.5. A modest gain at mid range.
+- Triangles on High: 3.45M → 5.7M (main and shadow passes). On Low it would be ~2.1M, over its budget.
 
-- **How:** a cheap 2.5D raymarch of 6–8 steps through a cloud slab, replacing the 2D cloud layer in the sky shader. The cloud shadows on the ground stay as they are.
-- **Cost:** sky pixels can be half the screen; ~0.3–1 ms.
-- **Measure:** dunes spot fps, sky montage.
+### 10. Particles (`parts`)
 
-### 12. Anti-aliasing tiers (if WebGPU/TRAA is not pursued)
+- Every pool and emission rate ×1.5 (denser dust and smoke behind the pods); sand streamers: short ribbons of grains sliding across the track ahead in the wind at speed (a stretched `spark` pool).
+- Not done: re-rendering the flipbooks with more frames (the shader already cross-fades frames, so the gain is small for a long Mantaflow + Cycles run); per-particle shadow lookups were already there.
 
-- **Options:** SMAA on top of MSAA on High, or 1.5× supersampling on Ultra.
-- **Cost:** supersampling at 1.5× is about 2.25× the fill cost, and is only worth considering for screenshots / photo mode.
+### 11. 2.5D clouds (`clouds`)
+
+- The sky's cloud layer becomes a 650 m slab marched in 10 steps (WebGPU, jittered per frame for TRAA) or 16 (WebGL, fixed 4×4 ordered dither), over at most the first ~2 km of the slab along the ray (at grazing angles a longer march bands the cloud edges near the horizon): the flat layer's noise read as columns, with flat bases, rounded tops and eroded edges, each step lit through two density samples towards the sun (self-shadowing, a silver lining towards it, darker bases) plus sky light. The cloud shadows on the ground keep using the flat layer at the slab's base, so they still line up.
+- On WebGL the lookups are at an explicit mip level: with implicit derivatives inside the loop the D3D compiler's output cost +1.4–2.3 ms; with explicit LOD +0.1–0.7 ms.
+
+### Things that bit
+
+- **An orthographic camera set to WebGPU's coordinate system must rebuild its projection** (`updateProjectionMatrix()`). The renderer only fixes cameras whose system differs from its own, so a camera already set to WebGPU kept WebGL's −1..1 depth, and half the depth range was clipped: the mid map silently lost everything above the ground plane (the canyon floor came out sunlit).
+- **WebGL allocates a depth texture only when it is first drawn into;** sampling it before that drops the draw (`GL_INVALID_OPERATION: Mismatch between texture format and sampler type`). The pods map is drawn once at creation for that reason.
+- **First load after a shader change:** shader compiles are cached by the driver, so a second load hides them. Measure load-time regressions on a cold shader (change a constant), as for `pom` above.
+- **Physically based is not automatically better:** the sky and the dust needed calibrating against the art direction (the bloom amplifies any bright haze).
+
+### Totals
+
+Each preset as it is now against the same preset with every key off (`?gfx=sky:0,csm:0,...`), grid / dunes / canyon / arena, median of 2 interleaved rounds:
+
+| Preset, size, renderer | Frame time, all off → as shipped | GPU time (WebGPU) |
+|---|---|---|
+| High, 1920×1080, WebGPU | 6.5 / 6.1 / 6.8 / 6.5 → 6.8 / 6.8 / 7.4 / 7.3 ms (CPU-bound; JS +0.5–0.8 ms) | – |
+| High, 2560×1440, WebGPU | 6.5 / 5.9 / 6.7 / 6.4 → 6.9 / 6.8 / 7.4 / 7.3 ms | 4.6 / 3.3 / 4.8 / 3.0 → 5.2 / 4.1 / 5.9 / 3.7 ms |
+| High, 2560×1440, WebGL | 4.1 / 3.3 / 3.7 / 3.4 → 5.1 / 3.9 / 4.8 / 5.2 ms | – |
+| Ultra, 2× screen (3840×2160), WebGPU | 10.6 / 8.5 / 10.9 / 6.9 → 14.0 / 11.4 / 14.7 / 9.4 ms | 9.9 / 7.5 / 10.2 / 7.0 → 10.9 / 10.9 / 14.1 / 9.3 ms |
+| Ultra, 2× screen, WebGL | 8.4 / 7.3 / 7.1 / 6.2 → 10.9 / 9.1 / 12.8 / 9.2 ms (reflections a face every frame then; now every other) | – |
+
+- **High** pays ~0.4–0.9 ms a frame on WebGPU (5–11 % of the frame rate) and 0.6–1.9 ms on WebGL, still 190–255 fps at 1440p here.
+- **Ultra** at 4K is GPU-bound: +1–4 ms of GPU. Of that, the High set is +1.1–2.9 ms at this resolution (clouds and `aoq` alone ~1–1.8 ms; in the canyon the volume) and the four Ultra-only keys ~+1 ms more. Still 68–106 fps here; on smaller GPUs the dynamic resolution steps in. If Ultra needs to get cheaper, `aoq` back to 0 and `clouds` at half resolution are the first places to look.
+- **Low and Medium** are unchanged (all keys off).
+- **Load:** warm loads are unchanged (~11.5 s for High on WebGPU in this harness). On a cold shader cache, everything compiles anyway after any shader change; `sky` makes every material's fog a little bigger.
+
+### What is left in C
+
+1. **`sky` on High** once the palette shift is accepted: it is ~free on WebGL and 0.2–0.5 ms on WebGPU.
+2. **Clouds at half resolution** (render the sky's cloud term into a half-size target, upsample): would bring `clouds` under 0.2 ms at 4K.
+3. **Live reflections on High:** needs a cheaper face pass (render bundles, or only the nearest pods and a few big meshes per face).
+4. **Volumetric light in more places:** the same pass works anywhere `hfStaticShadow` has structure (under the arena gantry, by the mesas at the start); only `volZone()` needs to know about them.
+5. **Flipbooks with more frames:** only if close-ups of smoke show the cross-fade.
 
 ---
 
@@ -354,18 +387,19 @@ The scripts used so far lived in the session scratchpad and are not in the repo.
 |---|---|
 | `start(laps, diff, intro)` | starts a race |
 | `sim(seconds)` | fast-forwards the race |
-| `perf(frames)` | → `{fps, jsMs, calls, tris, ratio}` |
+| `perf(frames)` | → `{fps, jsMs, calls, tris, ratio}`, plus `gpuMs` with `?gputime` (below) |
 | `view({eye, look, fov, abs})` | debug camera: pod-relative, or world space with `abs: true`; `view(null)` restores |
 | `force({...})` | forces inputs on the player, e.g. boost |
 | `crash(n, power)` | visual crash on racer n |
 | `podEnv(k)` | 0 = sky-only lighting on the pods; k = probes at strength k |
 | `rebakeProbes()` | bakes the light probes again |
-| `rocks` | the rock lists, for framing spires |
+| `rocks` | the rock lists, for framing spires (`rocks.arch`: the arch's position) |
+| `mid` | the cached mid-distance shadow (`?gfx=csm:1`): `renders`, `draws`, `update(camera, true)` |
 | `groundDebug(n)` | ground shader debug views |
 | `post`, `scene`, `renderer`, `camera` | for direct probing |
 | `ATMO`, `TSL`, `GPUTHREE`, `GPU`, `trails` | the shared atmosphere uniforms (freeze `ATMO.hfTime` to stop shader time on either renderer), three's TSL and WebGPU modules on the WebGPU path, the trail map |
 
-On the WebGPU path `post` has `grade` / `speed` / `flare` handles with the same `uniforms.get(...)` as the WebGL chain, and `post.ao.setAoOnly(true)` shows the AO alone.
+On the WebGPU path `post` has `grade` / `speed` / `flare` handles with the same `uniforms.get(...)` as the WebGL chain, and `post.ao.setAoOnly(true)` shows the AO alone. `post.vol` (WebGPU) and `post.vol.fullscreenMaterial.uniforms` (WebGL) hold the volumetric light's uniforms (`?gfx=vol:1`).
 
 ### Benchmark
 
@@ -373,6 +407,10 @@ On the WebGPU path `post` has `grade` / `speed` / `flare` handles with the same 
 - **Two runs:** DPR 1, which is mostly CPU-bound and shows draw-call and JS changes, and DPR 2 (deviceScaleFactor 2), which is GPU-bound and shows shader and fill changes.
 - **Pass the renderer explicitly** (`renderer=webgl` or `renderer=webgpu`): without it the page uses the menu's saved choice or the WebGPU default.
 - **Interleave A and B** (A, B, A, B). Check for other GPU load first: in this session the user's own dev server and Chrome running the game skewed one run by ~35%.
+- **GPU time on WebGPU:** `?gputime` creates the renderer with `trackTimestamp`, and `perf()` then also returns `gpuMs`, the timestamp-query total of all render passes per frame. Section C's numbers were taken with Chrome also launched with `--enable-dawn-features=allow_unsafe_apis`. This is what section C measured with: the WebGPU path is CPU-bound at 1080p and 1440p, so frame time hides GPU costs there.
+- **WebGL frame time** at 2560×1440 is mostly GPU-bound; expect about ±0.3 ms of noise between rounds.
+- **Freeze the speed blur for captures:** pausing lets `FX.blur` ease out over many frames; redefine `post.speed.uniforms.get('uBlur'|'uAberr').value` as 0, as `ATMO.hfTime` is frozen.
+- **Cold shaders:** the GPU driver caches compiled shaders across runs, so the second load of a variant hides its compile time. For load-time regressions, change a literal in the shader (a cache miss) and load once.
 
 ### Draw-call census
 

@@ -5,6 +5,12 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { atmoUniforms } from './gfx/atmosphere.js';
 import { podEnvPatch } from './gfx/probes.js';
 import { GPU, U, maxAnisotropy, N } from './gfx/backend.js';
+import { pickQuality } from './gfx/quality.js';
+
+// ?gfx=coat:1 (docs/visual-next-steps.md C7): a clear coat over the paint that is still intact (the livery's
+// R and G masks), so the painted panels get a sharp second highlight over the worn, rougher base
+const COAT = !!pickQuality().coat;
+const COAT_ROUGH = 0.07;
 
 // Detailed pod, used by every racer in its own livery. The model is generated in Blender by models/pod/*.py:
 // build_pod.py builds it, bake_export.py bakes the textures and writes the two assets below.
@@ -19,6 +25,7 @@ const damp = (a, b, k, dt) => a + (b - a) * (1 - Math.exp(-k * dt));
 function patchLivery(m, map, paint, trim, heat) {
   if (m.userData.livery) return;
   m.userData.livery = true;
+  const coat = m.isMeshPhysicalMaterial && m.clearcoat > 0;
   m.onBeforeCompile = (sh) => {
     atmoUniforms(sh);
     Object.assign(sh.uniforms, { liveryMap: { value: map }, liveryPaint: { value: paint }, liveryTrim: { value: trim }, liveryHeat: heat });
@@ -27,6 +34,8 @@ function patchLivery(m, map, paint, trim, heat) {
       .replace('#include <map_fragment>', `#include <map_fragment>
         vec3 livery = texture2D(liveryMap, vMapUv).rgb;
         diffuseColor.rgb *= mix(vec3(1.0), liveryPaint, livery.r) * mix(vec3(1.0), liveryTrim, livery.g);`)
+      .replace('#include <lights_physical_fragment>', coat ? `#include <lights_physical_fragment>
+        material.clearcoat *= smoothstep( 0.35, 0.8, max( livery.r, livery.g ) );` : '#include <lights_physical_fragment>')
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         {
           // liveryHeat.x = heat level 0..1, .y = backfire flash
@@ -39,7 +48,7 @@ function patchLivery(m, map, paint, trim, heat) {
           totalEmissiveRadiance += hc * ( g * g * 0.5 * vary + livery.b * liveryHeat.y * 1.0 );
         }`);
   };
-  m.customProgramCacheKey = () => 'pod-livery';
+  m.customProgramCacheKey = () => (coat ? 'pod-livery-coat' : 'pod-livery');
 }
 
 // Loads the model once and returns a factory: every call builds another pod that shares the
@@ -71,6 +80,16 @@ function loadLivery() {
       t.needsUpdate = true;
       return t;
     });
+}
+
+// the same material as a MeshPhysicalMaterial with a clear coat (masked to the paint in patchLivery)
+function withCoat(m) {
+  const p = new THREE.MeshPhysicalMaterial();
+  THREE.MeshStandardMaterial.prototype.copy.call(p, m);
+  p.defines = { STANDARD: '', PHYSICAL: '' };
+  p.clearcoat = 1;
+  p.clearcoatRoughness = COAT_ROUGH;
+  return p;
 }
 
 // float copy of a (possibly quantized, gltfpack) attribute
@@ -163,13 +182,16 @@ function makePod(src, livery) {
     let m = mats.get(o.material);
     if (!m && GPU) {
       // node materials (gfx/tsl/pod.js); the probe blend is set up by setPodEnv
-      m = o.material.name.startsWith('PodAtlas') ? N.podLiveryMaterial(o.material, livery, paint, trim, heat) : N.toNodeMaterial(o.material);
+      m = o.material.name.startsWith('PodAtlas') ? N.podLiveryMaterial(o.material, livery, paint, trim, heat, COAT ? COAT_ROUGH : 0) : N.toNodeMaterial(o.material);
       if (m.transparent && m.side === THREE.DoubleSide) m.forceSinglePass = true;
       mats.set(o.material, m);
     }
     if (!m) {
       m = o.material.clone();
-      if (m.name.startsWith('PodAtlas')) patchLivery(m, livery, paint, trim, heat);
+      if (m.name.startsWith('PodAtlas')) {
+        if (COAT) m = withCoat(m);
+        patchLivery(m, livery, paint, trim, heat);
+      }
       // transparent + double-sided is drawn in two passes, each flagging the material for a
       // shader re-check; the canopy is thin enough that one pass looks the same
       if (m.transparent && m.side === THREE.DoubleSide) m.forceSinglePass = true;

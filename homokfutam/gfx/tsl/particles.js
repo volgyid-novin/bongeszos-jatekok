@@ -4,7 +4,7 @@ import {
   varyingProperty, cameraPosition, mix, max, min, clamp, sqrt, abs, sin, cos, length, dot, normalize, floor, fract, mod, step, select, smoothstep,
 } from 'three/tsl';
 import { ATMO } from '../atmosphere.js';
-import { hfApplyFog, hfFogFactor, hfFogTint } from './atmosphere.js';
+import { hfApplyFog, hfFogTrans, hfApplyFogPremul } from './atmosphere.js';
 import { ss, oneMinus } from './common.js';
 
 // ============================================================
@@ -119,8 +119,8 @@ export function particleMaterial(K, U, params) {
     rgb = vCol.rgb.mul(U.uAmbient.add(U.uSunCol.mul(lam).mul(sunAt(vCenter.add(ATMO.hfSunDir.mul(2)))))); alpha = a.mul(vAlpha);
   }
   // the height fog at the particle's centre: additive ones fade, premultiplied ones fade towards the fog by their coverage
-  if (K.add || K.spark) rgb = rgb.mul(oneMinus(hfFogFactor(vCenter)));
-  else if (K.fire) rgb = mix(rgb, hfFogTint(normalize(vCenter.sub(cameraPosition))).mul(alpha), hfFogFactor(vCenter));
+  if (K.add || K.spark) rgb = rgb.mul(hfFogTrans(vCenter));
+  else if (K.fire) rgb = hfApplyFogPremul(rgb, alpha, vCenter);
   else rgb = hfApplyFog(rgb, vCenter);
   m.colorNode = rgb;
   m.opacityNode = alpha;

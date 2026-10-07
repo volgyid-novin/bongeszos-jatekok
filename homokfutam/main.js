@@ -5,7 +5,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RaceRoom, selfId } from './net.js';
 import { loadPodModel, setPodLivery, setPodEnv, animatePlayerPod, podLift } from './playerPod.js';
 import { pickQuality, saveQuality, createDynRes, ORDER as GFX_ORDER } from './gfx/quality.js';
-import { installAtmosphere, ATMO, SUN_DIR, PALETTE, skyMaterial, cloudTexture, buildEnvironment, bakeWorldShadow } from './gfx/atmosphere.js';
+import { installAtmosphere, ATMO, SUN_DIR, PALETTE, skyMaterial, cloudTexture, buildEnvironment, bakeWorldShadow, loadSky, PB_SKY, MID_SHADOW, createMidShadow } from './gfx/atmosphere.js';
 import { loadSurfaces, triplanarMaterial } from './gfx/surfaces.js';
 import { loadGround, terrainMaterial, trackMaterial, rockMaterial, groundDebug, ROCK as ROCKL, ARENA, WIND_DIR } from './gfx/ground.js';
 import { bakeMacro } from './world/macro.js';
@@ -14,7 +14,7 @@ import { buildScatter } from './world/scatter.js';
 import { buildHorizon } from './world/horizon.js';
 import { buildHaze } from './world/haze.js';
 import { createPost } from './gfx/post.js';
-import { bakeProbes } from './gfx/probes.js';
+import { bakeProbes, createLiveEnv } from './gfx/probes.js';
 import { Particles, loadFlipbooks } from './gfx/particles.js';
 import { createPodFx, createDebris, HeatLayer, createTrailMap } from './gfx/podfx.js';
 import { createBeam, createBeamLights, createBeamFlares } from './gfx/beam.js';
@@ -23,6 +23,7 @@ import { buildDressing } from './world/dressing.js';
 import { createAudio } from './audio.js';
 
 const Q = pickQuality();
+const SKY_READY = loadSky();       // ?gfx=sky:1: the sky tables bake in a worker while the world is built
 await loadNodes();             // WebGPURenderer: the node materials (gfx/tsl/), before anything is built
 if (!GPU) installAtmosphere();
 
@@ -312,7 +313,8 @@ const canvas = document.getElementById('view');
 // WebGPURenderer (?renderer=webgpu, gfx/backend.js): WebGPU, or its own WebGL2 backend; it has to finish
 // initialising before anything renders or asks for its features (the KTX2 loader does)
 const renderer = GPU
-  ? new W.WebGPURenderer({ canvas, antialias: !Q.post, powerPreference: 'high-performance', stencil: false, forceWebGL: FORCE_GL })
+  ? new W.WebGPURenderer({ canvas, antialias: !Q.post, powerPreference: 'high-performance', stencil: false, forceWebGL: FORCE_GL,
+    trackTimestamp: new URLSearchParams(location.search).has('gputime') })      // GPU time per frame in perf() (localhost hook)
   : new THREE.WebGLRenderer({ canvas, antialias: !Q.post, powerPreference: 'high-performance', stencil: false });
 if (GPU) {
   await renderer.init();
@@ -354,7 +356,8 @@ ATMO.hfCloudShadow.value = Q.cloudShadows ? 0.5 : 0;
   scene.add(sky);
   scene.userData.sky = sky;
 }
-scene.environment = buildEnvironment(renderer);
+// (with the physically based sky the environment waits for its tables: boot)
+scene.environment = PB_SKY ? null : buildEnvironment(renderer);
 scene.environmentIntensity = 0.6;
 // warm bounce from the sand and rock that the sky-only environment does not have
 scene.add(new THREE.HemisphereLight('#9db4d2', '#c98b52', 0.55));
@@ -586,7 +589,9 @@ let CANYON_BRIDGE = null;
       return { k, f: u - k, hard: hash1(k) };
     };
     const s0 = TR.s[TR.idx(r[0] - 2)], len = (((TR.s[TR.idx(r[1] + 2)] - s0) % TR.L) + TR.L) % TR.L;
-    const J = 56, STEP = 2;
+    // ?gfx=geo:1 (docs/visual-next-steps.md C9): every metre and 90 rows up, so the fine noise, the joints
+    // and the lips of the hard beds are resolved instead of aliased between rows
+    const J = Q.geo ? 90 : 56, STEP = Q.geo ? 1 : 2;
     for (const side of [-1, 1]) {
       const pos = [], col = [], occ = [], index = [];
       let rows = 0, M = 0;
@@ -1054,7 +1059,9 @@ const mesaMatAO = rockMaterial(Q, ROCKL.cliff, { scale: 1 / 40, chroma: 0.3, nor
 
 function buildRockVisuals(models) {
   const lod = (prefix, n, levels) => Array.from({ length: n }, (_, k) => Array.from({ length: levels }, (_, l) => models.get(`${prefix}${k}_lod${l}`)));
-  ROCKS.lods.push(new LodInstances(scene, lod('spire', 8, 3), rockMatAO, ROCKS.spires, [380 * Q.lod, 1400 * Q.lod]));
+  // (?gfx=geo:1: the spires one level of detail up, rocks_spires_hi.glb, and switching half as far again)
+  const far = Q.geo ? 1.5 : 1;
+  ROCKS.lods.push(new LodInstances(scene, lod('spire', 8, 3), rockMatAO, ROCKS.spires, [380 * Q.lod * far, 1400 * Q.lod * far]));
   ROCKS.lods.push(new LodInstances(scene, lod('boulder', 6, 2), boulderMatAO, ROCKS.boulders, [160 * Q.lod]));
   ROCKS.lods.push(new LodInstances(scene, lod('talus', 2, 2), boulderMatAO, ROCKS.talus, [180 * Q.lod]));
   // buttes: one instanced mesh per shape, no detail levels (they are always kilometres away)
@@ -1134,7 +1141,9 @@ function buildRockFallback() {
 let PROPS_MODELS = null;          // assets/world/props.glb: ground clutter, placed at boot (needs the macro map)
 const PROPS_READY = loadRockModels(new URL('./assets/world/props.glb', import.meta.url).href).then((m) => { PROPS_MODELS = m; })
   .catch((e) => console.warn('HOMOKFUTAM: props failed, no ground clutter', e));
-const ROCKS_READY = loadRockModels().then(buildRockVisuals).catch((e) => {
+const ROCKS_READY = Promise.all([loadRockModels(), Q.geo && loadRockModels(new URL('./assets/world/rocks_spires_hi.glb', import.meta.url).href)
+  .catch((e) => { console.warn('HOMOKFUTAM: detailed spires failed, using the regular ones', e); return null; })])
+  .then(([models, hi]) => { if (hi) for (const [k, g] of hi) models.set(k, g); buildRockVisuals(models); }).catch((e) => {
   console.warn('HOMOKFUTAM: rock models failed, using the simple shapes', e);
   buildRockFallback();
 });
@@ -1289,7 +1298,8 @@ function addFlame(engine, pos) {
 // ============================================================
 //  Particles (gfx/particles.js) and pod effects (gfx/podfx.js)
 // ============================================================
-const PQ = Q.particles;
+// ?gfx=parts:1 (docs/visual-next-steps.md C10): half as many again of every pool and emission rate
+const PQ = Q.particles * (Q.parts ? 1.5 : 1);
 const DUST = new Particles(scene, { capacity: 2400 * PQ, kind: 'lit', flip: 'smoke', size: [2.2, 9], alpha: 0.2, drag: 1.3, grav: -0.5, color: '#dcb88a' });
 const SMOKE = new Particles(scene, { capacity: 400 * PQ, kind: 'lit', flip: 'smoke', size: [1.6, 7.5], alpha: 0.5, drag: 0.7, grav: -3, color: '#5e554d', ambient: '#7a6e62', sun: '#c8b498' });
 // simulated fireballs (explosions, backfires): flame emission plus the smoke they roll into
@@ -1299,8 +1309,10 @@ const FIRE = new Particles(scene, { capacity: 300 * PQ, kind: 'add', size: [1.1,
 const CONFETTI = new Particles(scene, { capacity: 900 * PQ, kind: 'confetti', size: [0.4, 0.4], alpha: 1, drag: 1.8, grav: 4, spin: 14 });
 const WIND = new Particles(scene, { capacity: 240, kind: 'spark', size: [0.045, 0.045], alpha: 0.5, drag: 0, grav: 0, color: '#ffe9c8', stretch: 0.03, fadeIn: 0.3 });
 const SAND = new Particles(scene, { capacity: 260 * PQ, kind: 'lit', size: [4, 11], alpha: 0.12, drag: 0.15, grav: 0, color: '#e6c597', fadeIn: 0.4 });
+// ?gfx=parts:1: sand streaming low across the track in the wind at speed (thin streaks, a few at a time)
+const STREAM = Q.parts ? new Particles(scene, { capacity: 700, kind: 'spark', size: [0.11, 0.06], alpha: 0.3, drag: 0.4, grav: 0.6, color: '#f0d6ab', stretch: 0.12, fadeIn: 0.15 }) : null;
 function emit(pool, x, y, z, vx, vy, vz, life, p) { pool.emit(x, y, z, vx, vy, vz, life, p); }
-const POOLS = [DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST];
+const POOLS = [DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST, ...(STREAM ? [STREAM] : [])];
 loadFlipbooks().catch((e) => console.warn('HOMOKFUTAM: particle flipbooks failed to load, using plain puffs', e));
 heatLayer = Q.post && Q.heat ? new HeatLayer() : null;
 const podFx = createPodFx(scene, heatLayer, {
@@ -1808,7 +1820,9 @@ function racerFx(r, dt, t) {
     POD_FX.hot = pfx ? pfx.hot : 0; POD_FX.flash = pfx ? Math.max(pfx.flash[0], pfx.flash[1]) : 0;
     POD_FX.beam = ud.beam.S.k + ud.beam.S.flash[0] * 0.5; POD_FX.beamCol.copy(ud.beam.group.children[0].material.uniforms.uCol.value);
     animatePlayerPod(ud.pod, r, dt, POD_FX);
-    if (PROBES) { const [b, w] = podProbe(r); setPodEnv(ud.pod, PROBES.desert, b, w, PROBE_K); }
+    // the player's pod reflects the live cube (?gfx=refl:1) instead of the baked probes
+    if (LIVE?.texture && r === player) setPodEnv(ud.pod, LIVE.texture, null, 0, PROBE_K);
+    else if (PROBES) { const [b, w] = podProbe(r); setPodEnv(ud.pod, PROBES.desert, b, w, PROBE_K); }
     ud.body.position.y = podLift(ud.pod, r, groundQuery, dt);
   }
   podFx.update(r, dt, groundQuery, camera.position);       // also brings the pod's world matrices up to date
@@ -1902,6 +1916,20 @@ function updateWind(dt) {
     const z = camera.position.z + fz * along + Math.cos(a) * rad * fx;
     const y = camera.position.y + Math.sin(a) * rad * 0.5 + 1;
     emit(WIND, x, y, z, -player.vx * 0.15, 0, -player.vz * 0.15, 0.5 + Math.random() * 0.3, { alpha: 0.25 + k * 0.35 });
+  }
+  // streamers: ribbons of grains sliding across the track ahead, faster than the air above them
+  if (STREAM && k > 0) {
+    for (let r = Math.floor(k * 26 * dt + Math.random()); r > 0; r--) {
+      const along = 12 + Math.random() * 70, side = (Math.random() - 0.5) * 50;
+      let x = player.x + fx * along - fz * side, z = player.z + fz * along + fx * side;
+      const v = 9 + Math.random() * 6, n = 3 + Math.floor(Math.random() * 5);
+      for (let j = 0; j < n; j++) {
+        x += WIND_DIR.y * (Math.random() - 0.5) * 0.8 - WIND_DIR.x * 0.4; z -= WIND_DIR.x * (Math.random() - 0.5) * 0.8 + WIND_DIR.y * 0.4;
+        const g = groundQuery(x, z);
+        emit(STREAM, x, g + 0.08 + Math.random() * 0.35, z, WIND_DIR.x * v, 0.2 + Math.random() * 0.4, WIND_DIR.y * v, 0.5 + Math.random() * 0.5,
+          { alpha: 0.2 + k * 0.25, ground: g });
+      }
+    }
   }
   if (Math.random() < dt * 18 * PQ) {
     const a = Math.random() * TAU, d = 25 + Math.random() * 110;
@@ -2514,6 +2542,47 @@ onPress.Escape = onPress.KeyP = togglePause;
 onPress.KeyC = () => { camMode = (camMode + 1) % CAMS.length; };
 onPress.KeyR = () => { if (state === 'race') { respawn(player); toast('VISSZA A PÁLYÁRA'); } };
 onPress.KeyM = () => { setMuted(!SND.muted); toast(SND.muted ? 'HANG KI' : 'HANG BE'); };
+// FPS meter and film grain: menu rows and keys I / G (not while typing in a text field), saved in the browser
+const FPS = { on: false, n: 0, t0: 0 };
+const loadPref = (k, d) => { try { const v = localStorage.getItem('homokfutam:' + k); return v === null ? d : v === '1'; } catch { return d; } };
+const savePref = (k, on) => { try { localStorage.setItem('homokfutam:' + k, on ? '1' : '0'); } catch { /* storage blocked */ } };
+let grainOn = loadPref('grain', true), grainK = 0;          // grainK: the grade's own grain strength (gfx/post.js), read at boot
+function setFps(on) {
+  FPS.on = on; FPS.n = 0; FPS.t0 = performance.now();
+  $('fps').hidden = !on;
+  $('fps').textContent = '';
+  syncSeg('fpsSeg', on ? 1 : 0);
+  savePref('fps', on);
+}
+function setGrain(on) {
+  grainOn = on;
+  const u = post?.grade?.uniforms?.get('uGrain');
+  if (u) u.value = on ? grainK : 0;
+  syncSeg('grainSeg', on ? 1 : 0);
+  savePref('grain', on);
+}
+// called every frame: frames per second and the average frame time over half a second, the JS time per frame,
+// the renderer and the preset
+function updateFps(now) {
+  if (!FPS.on) return;
+  FPS.n++;
+  const el = now - FPS.t0;
+  if (el < 500) return;
+  const preset = $('gfxSeg').querySelector(`[data-v="${GFX_ORDER.indexOf(Q.name)}"]`)?.textContent ?? Q.name;
+  $('fps').innerHTML = `${Math.round(FPS.n * 1000 / el)} FPS<small>${(el / FPS.n).toFixed(1)} ms · JS ${PERF.js.toFixed(1)} ms · ${RENDERER.toUpperCase()} · ${preset}</small>`;
+  FPS.n = 0; FPS.t0 = now;
+}
+const typing = (e) => e?.target instanceof HTMLInputElement || e?.target instanceof HTMLTextAreaElement;
+bindSeg('fpsSeg', (v) => setFps(v === 1));
+bindSeg('grainSeg', (v) => setGrain(v === 1));
+if (!Q.post) {
+  $('grainSeg').querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  $('grainNote').hidden = false;
+}
+syncSeg('grainSeg', grainOn && Q.post ? 1 : 0);          // (no post-processing on Low: no grain to show)
+setFps(loadPref('fps', false));
+onPress.KeyI = (e) => { if (typing(e)) return; setFps(!FPS.on); toast(FPS.on ? 'FPS-MÉRŐ BE' : 'FPS-MÉRŐ KI'); };
+onPress.KeyG = (e) => { if (typing(e) || !Q.post) return; setGrain(!grainOn); toast(grainOn ? 'FILMSZEMCSE BE' : 'FILMSZEMCSE KI'); };
 onPress.KeyN = () => { AUDIO.setMusic(!AUDIO.musicOn); toast(AUDIO.musicOn ? 'ZENE BE' : 'ZENE KI'); try { localStorage.setItem('homokfutam:music', AUDIO.musicOn ? '1' : '0'); } catch { /* storage blocked */ } };
 try { if (localStorage.getItem('homokfutam:music') === '0') AUDIO.setMusic(false); } catch { /* storage blocked */ }
 document.addEventListener('click', (e) => { if (e.target.closest?.('button')) { initAudio(); sfx('ui'); } });
@@ -2873,11 +2942,14 @@ function frame(now) {
   arenaLife(sdt);
   updateCamera(dt);
   placeSunShadow();
+  if (MID) { MID.update(camera); MID.pods(racers.map((r) => !r.gone && r.mesh), camera); }
+  if (LIVE && player && !player.gone) LIVE.update(livePos(), player.mesh, racers.map((r) => r !== player && r.mesh));
   if (state === 'countdown' || state === 'race' || state === 'finished' || state === 'paused') updateHUD();
   updateAudio(dt, state === 'countdown' || state === 'race' || state === 'finished' || state === 'results');
   renderFrame(dt);
   if (PHOTO.shot) { PHOTO.shot = false; savePhoto(); }
   PERF.js += (performance.now() - tStart - PERF.js) * 0.05;
+  updateFps(now);
 }
 
 // the near shadow map follows what the camera looks at, snapped to its texels so it does not shimmer
@@ -2967,7 +3039,23 @@ function celebrate() {
 }
 
 // screen effects driven by the race: speed blur, aberration, flashes, depth of field in menus
-const FX = { blur: 0, aberr: 0, flash: 0, fade: 0, center: new THREE.Vector2(0.5, 0.5), dof: { on: false, focus: new THREE.Vector3(), range: 14 } };
+const FX = { blur: 0, aberr: 0, flash: 0, fade: 0, center: new THREE.Vector2(0.5, 0.5), dof: { on: false, focus: new THREE.Vector3(), range: 14 }, vol: { k: 0, y: 0, center: new THREE.Vector3(), radius: 200, density: 0.01 } };
+// volumetric light (?gfx=vol:1): how far the camera is in the canyon or under the arch, and the track height
+// there; the dust sheets (world/haze.js) give way to the real volume as it comes in
+const _vnc = { i: 0, d: 0 };
+function volZone() {
+  nearestCoarse(camera.position.x, camera.position.z, _vnc);
+  const i = _vnc.i;
+  if (i < 0) { FX.vol.k = 0; return; }
+  const inside = 1 - smooth(TR.hw[i] + 25, TR.hw[i] + 70, _vnc.d);
+  const canyon = TR.canyon[i], arch = 1 - smooth(12, 50, archGap(i));
+  FX.vol.k = Math.max(canyon, arch) * inside;
+  FX.vol.y = TR.py[i];
+  // the canyon's dust fills the slot round the camera; the arch's hangs under and round it
+  if (arch > canyon && ROCKS.arch) { FX.vol.center.set(ROCKS.arch.x, 0, ROCKS.arch.z); FX.vol.radius = 75; FX.vol.density = 0.013; }
+  else { FX.vol.center.copy(camera.position); FX.vol.radius = 260; FX.vol.density = 0.009; }
+  if (HAZE) HAZE.userData.uK.value = HAZE.userData.k0 * (1 - FX.vol.k);
+}
 const _pv = new THREE.Vector3();
 function renderFrame(dt) {
   beamLights();
@@ -2981,6 +3069,7 @@ function renderFrame(dt) {
   if (racing) FX.center.set(clamp(_pv.x * 0.5 + 0.5, 0.2, 0.8), clamp(_pv.y * 0.5 + 0.5, 0.2, 0.8));
   else FX.center.set(0.5, 0.5);
   FX.dof.on = state === 'menu' || state === 'room' || state === 'results' || (state === 'photo' && PHOTO.dof);
+  if (Q.vol) volZone();
   const fp = CINE.replay ? CINE.replay.proxies[player.n] : player;
   if (FX.dof.on) { FX.dof.focus.set(fp.x, fp.y + 1, fp.z); FX.dof.range = state === 'photo' ? Math.max(6, PHOTO.dist * 0.6) : CINE.replay ? 30 : 18; }
   post.update(dt, FX);
@@ -2994,13 +3083,18 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
   window.__homok = {
     THREE, scene, renderer, camera, rocks: ROCKS, TSL, GPUTHREE: W, ATMO, GPU, trails: TRAILS, fx: () => ({ DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST }), get post() { return post; }, set post(v) { post = v; },
     start(l = 1, d = 1, intro = false) { laps = l; diff = d; newRace(); if (!intro) endIntro(); return this.info(); },
-    cine: CINE, photo: PHOTO,
+    cine: CINE, photo: PHOTO, get mid() { return MID; },
     perf(frames = 120) {
+      // ?gputime on WebGPU: the GPU time of all render passes per frame (timestamp queries)
+      const timed = GPU && renderer.backend.trackTimestamp;
       return new Promise((res) => {
-        let n = 0; const t0 = performance.now();
+        let n = 0, gpu = 0, gn = 0; const t0 = performance.now();
         const tick = () => {
-          if (++n >= frames) res({ fps: +(frames * 1000 / (performance.now() - t0)).toFixed(1), jsMs: +PERF.js.toFixed(2), calls: GPU ? renderer.info.render.drawCalls : renderer.info.render.calls, tris: renderer.info.render.triangles, ratio: renderer.getPixelRatio(), q: Q.name });
-          else requestAnimationFrame(tick);
+          if (timed && n > 0) renderer.resolveTimestampsAsync('render').then((ms) => { if (ms > 0) { gpu += ms; gn++; } });
+          if (++n >= frames) {
+            const out = { fps: +(frames * 1000 / (performance.now() - t0)).toFixed(1), jsMs: +PERF.js.toFixed(2), calls: GPU ? renderer.info.render.drawCalls : renderer.info.render.calls, tris: renderer.info.render.triangles, ratio: renderer.getPixelRatio(), q: Q.name };
+            if (timed) setTimeout(() => res({ ...out, gpuMs: +(gpu / Math.max(gn, 1)).toFixed(3) }), 100); else res(out);
+          } else requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
       });
@@ -3051,6 +3145,9 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
 // of the zone it is in faded in (TR.arena / TR.canyon fade along the track; the arch's shade is short).
 let PROBES = null;
 const PROBE_K = 1.0;              // probe light strength on the pods
+let LIVE = null;                  // live reflections on the player's pod (?gfx=refl:1, gfx/probes.js)
+const _lp = new THREE.Vector3();
+const livePos = () => _lp.copy(player.mesh.position).setY(player.mesh.position.y + 1);
 // metres along the track from sample i to the arch
 const archGap = (i) => { if (!ROCKS.arch) return 1e9; const d = Math.abs(TR.s[i] - TR.s[ROCKS.arch.i]); return Math.min(d, TR.L - d); };
 function bakePodProbes() {
@@ -3103,8 +3200,11 @@ async function precompile() {
 }
 
 // static sun shadow for the whole world, rendered once everything static exists
+let MID = null;          // the cached mid-distance shadow (?gfx=csm:1)
+let HAZE = null;         // the dust sheets in the canyon and under the arch (world/haze.js)
 const WORLD_BOUNDS = new THREE.Box3(new THREE.Vector3(-1850, -70, -2450), new THREE.Vector3(2050, 270, 1000));
 async function boot(data) {
+  if (PB_SKY) { await SKY_READY; scene.environment = buildEnvironment(renderer); }       // (the loading timeout may have won the race)
   try { await bakeMacro(renderer, scene, { x0: TERRAIN.cx - TERRAIN.size / 2, z0: TERRAIN.cz - TERRAIN.size / 2, size: TERRAIN.size, res: 1024 }); }
   catch (e) { console.warn('HOMOKFUTAM: macro map failed', e); }
   if (PROPS_MODELS) {
@@ -3112,19 +3212,34 @@ async function boot(data) {
     catch (e) { console.warn('HOMOKFUTAM: ground clutter failed', e); }
   }
   bakeWorldShadow(renderer, scene, WORLD_BOUNDS, Q.staticShadow);
+  if (MID_SHADOW) {
+    // ?gfx=csm:1: the sharper cached shadow ahead of the camera (before anything samples it)
+    MID = createMidShadow(renderer, scene, Q.name === 'ultra' ? { size: 4096, box: [760, 380], ahead: 280 } : {});
+    const n = MID.collect();
+    MID.update(camera, true);
+    MID.pods(racers.map((r) => r.mesh), camera, true);
+    console.log(`HOMOKFUTAM: mid shadow: ${n} static casters, ${MID.draws} draws`);
+  }
   try { PROBES = bakePodProbes(); } catch (e) { console.warn('HOMOKFUTAM: light probes failed', e); }
   if (PROBES?.canyon) { canyonMat.envMap = PROBES.canyon; canyonMat.needsUpdate = true; }        // sky through the slot, red rock all round
+  if (Q.refl && PROBES && player) {
+    // a face every other frame: the cube is at most 12 frames old, and each face is a full scene pass
+    try { LIVE = createLiveEnv(renderer, scene, { every: 2 }); LIVE.collect(); LIVE.warm(livePos(), player.mesh); }
+    catch (e) { console.warn('HOMOKFUTAM: live reflections failed', e); LIVE = null; }
+  }
   // LOW: only the things that move (pods, debris) draw into the near shadow map every frame; the
   // static world keeps just its baked shadow
   if (Q.casters === false) {
     const moves = (o) => { for (let p = o; p; p = p.parent) if (p.userData.dynamic) return true; return false; };
     scene.traverse((o) => { if (o.isMesh && o.castShadow && !moves(o)) o.castShadow = false; });
   }
-  try { buildHaze({ scene, TR, rangeWhere, arch: ROCKS.arch, Q }); } catch (e) { console.warn('HOMOKFUTAM: haze failed', e); }
+  try { HAZE = buildHaze({ scene, TR, rangeWhere, arch: ROCKS.arch, Q }); } catch (e) { console.warn('HOMOKFUTAM: haze failed', e); }
   if (Q.post) {
     try {
       post = GPU ? N.createNodePost(renderer, scene, camera, Q, SUN_DIR, heatLayer) : createPost(renderer, scene, camera, Q, SUN_DIR);
       if (heatLayer && !GPU) { post.speed.uniforms.get('uDistort').value = heatLayer.rt.texture; post.speed.uniforms.get('uDistortOn').value = 1; }
+      grainK = post.grade.uniforms.get('uGrain').value;
+      setGrain(grainOn);
       resize();
     }
     catch (e) { console.warn('HOMOKFUTAM: post-processing failed, rendering without it', e); post = null; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0; }
@@ -3139,7 +3254,7 @@ async function boot(data) {
   requestAnimationFrame((t) => { lastT = t; frame(t); $('loading').hidden = true; });
 }
 // show the game once the surface textures are in (or after 10 s, whatever happens first)
-const texturesReady = Promise.race([Promise.all([SURF.ready, GROUND_READY, ROCKS_READY, ARENA_READY, PROPS_READY, DRESS.ready]), new Promise((r) => setTimeout(r, 15000))]);
+const texturesReady = Promise.race([Promise.all([SURF.ready, GROUND_READY, ROCKS_READY, ARENA_READY, PROPS_READY, DRESS.ready, SKY_READY]), new Promise((r) => setTimeout(r, 15000))]);
 const hot = window.claude && window.claude.hot;
 if (hot && typeof hot.snapshot === 'function') { try { hot.snapshot(() => ({ laps, diff, muted: SND.muted })); } catch { /* ignore */ } }
 if (hot && typeof hot.ready === 'function') hot.ready((d) => texturesReady.then(() => boot(d)));

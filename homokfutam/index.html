@@ -86,6 +86,12 @@ button:focus-visible { outline: 2px solid var(--flame); outline-offset: 3px; }
   padding: 6px 18px; border-radius: 4px; background: var(--glass); white-space: nowrap;
 }
 #toast.warn { color: var(--bad); }
+#fps {
+  position: fixed; left: 50%; top: calc(10px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); z-index: 30;
+  pointer-events: none; padding: 4px 12px; border-radius: 4px; background: var(--glass); white-space: nowrap;
+  font-family: var(--font-display); font-weight: 700; font-size: 17px; letter-spacing: .06em;
+}
+#fps small { margin-left: 10px; font-weight: 500; font-size: 13px; letter-spacing: .1em; color: var(--sand-dim); }
 
 /* ---------- Touch controls ---------- */
 #touch { position: fixed; inset: auto 0 0 0; height: 0; pointer-events: none; }
@@ -114,6 +120,7 @@ body.touch #minimap { bottom: auto; top: calc(130px + env(safe-area-inset-top, 0
 .brand span { color: var(--flame); }
 .tag { margin: 0; color: var(--sand-dim); font-size: 15px; line-height: 1.5; max-width: 38ch; }
 .opt { display: flex; flex-direction: column; gap: 8px; }
+.opt-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .seg button {
   border: 0; background: transparent; padding: 10px 6px; cursor: pointer;
@@ -223,6 +230,7 @@ input.txt.err { border-color: var(--bad); }
 </head>
 <body>
 <canvas id="view"></canvas>
+<div id="fps" class="num" hidden></div>
 
 <div id="hud" hidden>
   <div class="hud-tl">
@@ -298,6 +306,23 @@ input.txt.err { border-color: var(--bad); }
       </div>
       <p class="gfx-note" id="rendererNote" hidden></p>
     </div>
+    <div class="opt-pair">
+    <div class="opt">
+      <span class="lbl">FPS-mérő</span>
+      <div class="seg" id="fpsSeg">
+        <button data-v="0" aria-pressed="true">KI</button>
+        <button data-v="1" aria-pressed="false">BE</button>
+      </div>
+    </div>
+    <div class="opt">
+      <span class="lbl">Filmszemcse</span>
+      <div class="seg" id="grainSeg">
+        <button data-v="0" aria-pressed="false">KI</button>
+        <button data-v="1" aria-pressed="true">BE</button>
+      </div>
+      <p class="gfx-note" id="grainNote" hidden>ALACSONY fokozaton nincs filmszemcse.</p>
+    </div>
+    </div>
     <button class="cta" id="startBtn"><span>RAJT EGYEDÜL</span><span aria-hidden="true">→</span></button>
     <div class="record" id="recordTxt"></div>
     <div class="mp">
@@ -319,6 +344,8 @@ input.txt.err { border-color: var(--bad); }
       <kbd>Esc / P</kbd><span>szünet</span>
       <kbd>M</kbd><span>hang ki/be</span>
       <kbd>N</kbd><span>zene ki/be</span>
+      <kbd>I</kbd><span>FPS-mérő ki/be</span>
+      <kbd>G</kbd><span>filmszemcse ki/be</span>
     </div>
   </div>
 </section>

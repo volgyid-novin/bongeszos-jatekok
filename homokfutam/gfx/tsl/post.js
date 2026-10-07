@@ -2,8 +2,10 @@ import * as THREE from 'three/webgpu';
 import {
   Fn, If, Loop, float, vec2, vec3, vec4, uniform, uv, pass, mrt, output, velocity, time, screenSize, screenCoordinate,
   mix, max, min, clamp, pow, exp, abs, sin, cos, atan, length, dot, fract, step, select, smoothstep, rtt, renderOutput,
-  texture, interleavedGradientNoise,
+  texture, interleavedGradientNoise, getViewPosition, normalize,
 } from 'three/tsl';
+import { ATMO } from '../atmosphere.js';
+import { hfStaticShadow } from './atmosphere.js';
 import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import { ao as gtao } from 'three/addons/tsl/display/GTAONode.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
@@ -40,11 +42,14 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
   let lit = color;
   if (Q.ao) {
     aoPass = gtao(depth, null, camera);
-    aoPass.resolutionScale = 0.5;
-    aoPass.radius.value = 4;
+    // ?gfx=aoq:1 (docs/visual-next-steps.md C6): more samples and a wider radius, so the big shapes (stands,
+    // canyon foot, mesas) get their contact darkening too; aoq:2 also at full resolution
+    const aoq = Q.aoq || 0;
+    aoPass.resolutionScale = aoq >= 2 ? 1 : 0.5;
+    aoPass.radius.value = aoq ? 6 : 4;
     aoPass.distanceExponent.value = 1.2;
-    aoPass.thickness.value = 2;
-    aoPass.samples.value = Q.name === 'ultra' ? 16 : 12;
+    aoPass.thickness.value = aoq ? 3 : 2;
+    aoPass.samples.value = (Q.name === 'ultra' ? 16 : 12) + (aoq ? 8 : 0);
     aoPass.useTemporalFiltering = taa;
     // GTAO is noisy by design; TRAA alone leaves grain under the pods (and on the glows drawn over
     // them), so a depth-aware spatial denoise first, as N8AO does (normals rebuilt from depth)
@@ -55,6 +60,55 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
       const k = mix(vec3(1), mix(vec3(0.0232, 0.0103, 0.0052), vec3(1), a), aoOn);    // #2a1a10 in linear
       return vec4(select(aoOnly.greaterThan(0.5), k, color.rgb.mul(k)), 1);
     })();
+  }
+  // --- volumetric light (?gfx=vol:1, docs/visual-next-steps.md C5) ---------------------------------------
+  // Shafts of sun through dust in the canyon and under the arch: at half resolution, the view ray (to the
+  // depth buffer, at most 220 m) is marched through extra dust that hangs in these places (denser low down,
+  // broken up by drifting noise), each step lit by the sun as far as the baked world shadow (and the cached
+  // mid shadow, if on) lets it through. Jittered per pixel and per frame, and laid over the scene before
+  // TRAA, which averages the jitter away. VOL.k: how much the camera is in such a place (main.js); 0 skips it.
+  const VOL = {
+    k: uniform(0), y: uniform(0), density: uniform(0.022), frame: uniform(0), center: uniform(new THREE.Vector3()), radius: uniform(200),
+    projInv: uniform(new THREE.Matrix4()), camWorld: uniform(new THREE.Matrix4()), camPos: uniform(new THREE.Vector3()),
+  };
+  if (Q.vol) {
+    const STEPS = 16;          // (TRAA averages the jitter; the WebGL chain takes 24 on Ultra)
+    const volFn = Fn(() => {
+      const p = uv();
+      const out = vec4(0, 0, 0, 1).toVar();
+      If(VOL.k.greaterThan(0.01), () => {
+        const vp = getViewPosition(p, depth.sample(p).r, VOL.projInv);
+        const dv = VOL.camWorld.mul(vec4(vp, 1)).xyz.sub(VOL.camPos).toVar();
+        const dist = min(length(dv), 220).toVar();
+        const rd = normalize(dv).toVar();
+        const ds = dist.div(STEPS).toVar();
+        const t = ds.mul(interleavedGradientNoise(screenCoordinate.add(vec2(VOL.frame.mul(5.588), VOL.frame.mul(2.317))))).toVar();
+        // phase: forward glow towards the sun on an even floor
+        const c = dot(rd, ATMO.hfSunDir), g = 0.55;
+        const phase = float((1 - g * g) / (4 * Math.PI)).div(pow(c.mul(-2 * g).add(1 + g * g), 1.5)).mul(0.75).add(0.25 / (4 * Math.PI));
+        const sunL = ATMO.hfSunCol.mul(phase.mul(3.1));
+        // dust in shadow still glows with the sky and the sunlit rock round it: about the shaded walls' level
+        const amb = ATMO.hfFogCol.mul(0.32);
+        const T = float(1).toVar(), acc = vec3(0).toVar();
+        Loop(STEPS, () => {
+          const q = VOL.camPos.add(rd.mul(t)).toVar();
+          const drift = ATMO.hfTime.mul(vec2(0.011, 0.004));
+          const n = ATMO.hfCloudTex.sample(q.xz.div(37).add(drift)).r.mul(ATMO.hfCloudTex.sample(q.xz.add(vec2(q.y.mul(0.8))).div(11).sub(drift.mul(2))).r).mul(2.6);
+          // the dust lies low in the slot or round the arch (centre, radius), in drifting wisps
+          const zone = oneMinus(smoothstep(VOL.radius.mul(0.6), VOL.radius, length(q.xz.sub(VOL.center.xz))));
+          const sig = VOL.density.mul(VOL.k).mul(zone).mul(exp(max(q.y.sub(VOL.y), 0).div(-16))).mul(smoothstep(0.15, 0.75, n)).toVar();
+          const vis = hfStaticShadow(q, vec3(0));
+          acc.addAssign(sunL.mul(vis).add(amb).mul(sig).mul(T).mul(ds));
+          T.mulAssign(exp(sig.mul(ds).negate()));
+          t.addAssign(ds);
+        });
+        out.assign(vec4(acc, T));
+      });
+      return out;
+    });
+    const volTex = rtt(volFn(), null, null, { resolutionScale: 0.5 });
+    const base = lit;
+    lit = Fn(() => { const v = volTex.sample(uv()); return vec4(base.rgb.mul(v.a).add(v.rgb), 1); })();
   }
   const resolved = taa ? traa(lit, depth, scenePass.getTextureNode('velocity'), camera) : lit;
   const src = taa ? resolved.getTextureNode() : rtt(lit);
@@ -217,7 +271,7 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
 
   const _v = new THREE.Vector3(), _f = new THREE.Vector3();
   const api = {
-    pipeline, scenePass, aoPass, taa,
+    pipeline, scenePass, aoPass, taa, vol: VOL,
     // the same handles the tests use on the WebGL chain (gfx/post.js)
     grade: { uniforms: new Map(Object.entries(G)) },
     speed: { uniforms: new Map(Object.entries(S)) },
@@ -225,6 +279,17 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
     ao: aoPass && { setAoOnly(on) { aoOnly.value = on ? 1 : 0; }, setOn(on) { aoOn.value = on ? 1 : 0; } },
     setSize() { /* the passes follow the renderer's size */ },
     update(dt, v) {
+      if (Q.vol) {
+        VOL.k.value = v.vol?.k ?? 0;
+        VOL.y.value = v.vol?.y ?? 0;
+        if (v.vol?.center) VOL.center.value.copy(v.vol.center);
+        VOL.radius.value = v.vol?.radius ?? 200;
+        VOL.density.value = v.vol?.density ?? 0.01;
+        VOL.frame.value = (VOL.frame.value + 1) % 64;
+        VOL.projInv.value.copy(camera.projectionMatrixInverse);
+        VOL.camWorld.value.copy(camera.matrixWorld);
+        VOL.camPos.value.setFromMatrixPosition(camera.matrixWorld);
+      }
       S.uBlur.value = v.blur || 0;
       S.uAberr.value = v.aberr || 0;
       if (v.center) S.uCenter.value.copy(v.center);

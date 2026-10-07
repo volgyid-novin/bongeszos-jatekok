@@ -23,6 +23,8 @@ export const ROCK = { cliff: 0, boulder: 1 };
 export const ARENA = { stone: 0, plaster: 1, wood: 2, cloth: 3, metal: 4 };
 const NL = 7;
 const TILE = [5.0, 5.0, 3.2, 5.0, 4.5, 7.0, 4.5];        // metres per repeat in the game
+// parallax occlusion (?gfx=pom:1): depth of each layer's relief in metres
+export const POM_DEPTH = [0.035, 0.02, 0.03, 0.018, 0.022, 0.02, 0.028];
 export const WIND_DIR = new THREE.Vector2(0.92, 0.39).normalize();
 
 const url = (f) => new URL(`../assets/tex/${f}.ktx2`, import.meta.url).href;
@@ -153,8 +155,12 @@ void gFetch( int i, vec2 p, vec2 dpx, vec2 dpy, float rnd, float tile, out vec4 
 struct GSurf { vec3 alb; vec2 nd; float rough; float ao; float h; float sand; };
 // trackFrame: (a, b) world axes of the track's own frame and its coordinates p, used by the
 // packed layer (index 4) so its grooves run along the track
-GSurf gBlend( float w[ ${NL} ], vec2 xz, float rnd, vec2 trA, vec2 trB, vec2 trP, float trTile ) {
+// off: world-xz offset to look the layers up at (parallax occlusion, gParallax); the mip level stays the
+// surface's own
+GSurf gBlend( float w[ ${NL} ], vec2 xz, vec2 off, float rnd, vec2 trA, vec2 trB, vec2 trP, float trTile ) {
   vec2 dxz = dFdx( xz ), dyz = dFdy( xz ), dtx = dFdx( trP ), dty = dFdy( trP );
+  xz += off;
+  trP += vec2( dot( off, trA ), dot( off, trB ) );
   vec4 cs[ ${NL} ]; vec4 ns[ ${NL} ]; float hs[ ${NL} ];
   float hmax = 0.0;
   for ( int i = 0; i < ${NL}; i ++ ) {
@@ -191,6 +197,77 @@ GSurf gBlend( float w[ ${NL} ], vec2 xz, float rnd, vec2 trA, vec2 trB, vec2 trP
   s.alb *= it; s.nd *= it; s.rough *= it; s.ao *= it; s.h *= it; s.sand *= it;
   return s;
 }
+
+#ifdef HF_POM
+// --- parallax occlusion (?gfx=pom:1, docs/visual-next-steps.md C3) -----------------------------------
+// The layers' heights (alpha of ground_c) as real relief near the camera: the view ray is marched through
+// the height field of the dominant layer, and every layer is then looked up where it hits, so ripples,
+// gravel, paving and the track's grooves hide what is behind them at grazing angles. A second short march
+// towards the sun shades the troughs on the side away from it (the sun is low: long, crisp ripple shadows).
+// Depth of each layer's relief in metres (ripple, soft, gravel, hardpan, packed, slickrock, paving):
+const float gDepth[ ${NL} ] = float[]( ${POM_DEPTH.join(', ')} );
+// height of layer i, anti-tiled as gFetch does
+float gFetchH( int i, vec2 p, vec2 dpx, vec2 dpy, float rnd, float tile ) {
+  float inv = 1.0 / tile;
+  vec2 uv = p * inv, dx = dpx * inv, dy = dpy * inv;
+  float L = float( i ), l = rnd * 5.0 + float( i ) * 1.37, f = fract( l ), ia = floor( l );
+  vec2 oa = sin( vec2( 3.0, 7.0 ) * ia ), ob = sin( vec2( 3.0, 7.0 ) * ( ia + 1.0 ) );
+  float ha = textureGrad( gC, vec3( uv + oa, L ), dx, dy ).a, hb = textureGrad( gC, vec3( uv + ob, L ), dx, dy ).a;
+  return mix( ha, hb, smoothstep( 0.3, 0.7, f + ( hb - ha ) * 0.35 ) );
+}
+// world-xz offset at which the surface is seen; sh: its self-shadow from the sun (1 = lit).
+// d*: screen derivatives of xz and of the track frame trP, taken before any branch.
+vec2 gParallax( float w[ ${NL} ], vec2 xz, float rnd, vec2 trA, vec2 trB, vec2 trP, float trTile, vec3 N,
+                vec2 dxz, vec2 dyz, vec2 dtx, vec2 dty, out float sh ) {
+  sh = 1.0;
+  int im = 0;
+  float wm = 0.0;
+  for ( int i = 0; i < ${NL}; i ++ ) if ( w[ i ] > wm ) { wm = w[ i ]; im = i; }
+  vec3 V = cameraPosition - vHfWorld;
+  float camD = length( V );
+  V /= camD;
+  // fades out where layers mix (no single relief to follow), and once a pixel covers more than ~1 cm of
+  // ground (by then the relief is a few pixels, and a march that coarse only blurs it)
+  float foot = max( length( dxz ), length( dyz ) );
+  float fade = smoothstep( 0.4, 0.7, wm ) * ( 1.0 - smoothstep( 0.005, 0.016, foot ) ) * step( camD, 60.0 );
+  float D = gDepth[ im ] * fade;
+  if ( D < 1e-3 ) return vec2( 0.0 );
+  // the dominant layer's frame: the track's own (lateral, along) for the packed layer
+  bool tr = im == 4;
+  vec2 b = tr ? trB : gAxis[ im ], a = vec2( - b.y, b.x );
+  vec2 p0 = tr ? trP : vec2( dot( xz, a ), dot( xz, b ) );
+  vec2 dpx = tr ? dtx : vec2( dot( dxz, a ), dot( dxz, b ) ), dpy = tr ? dty : vec2( dot( dyz, a ), dot( dyz, b ) );
+  float tile = tr ? trTile : gTile[ im ];
+  // down the view ray: xz moves by -V.xz / (V.N) per metre of depth
+  float vn = max( dot( V, N ), 0.2 );           // (offset limiting at grazing angles)
+  vec2 dirW = - V.xz / vn * D, dirP = vec2( dot( dirW, a ), dot( dirW, b ) );
+  int n = int( mix( 14.0, 6.0, ( vn - 0.2 ) * 1.25 ) );
+  float st = 1.0 / float( n ), d = 0.0, dPrev = 0.0;
+  float h = gFetchH( im, p0, dpx, dpy, rnd, tile ), hPrev = h;
+  for ( int k = 0; k < 14; k ++ ) {
+    if ( k >= n || d >= 1.0 - h ) break;
+    dPrev = d; hPrev = h;
+    d += st;
+    h = gFetchH( im, p0 + dirP * d, dpx, dpy, rnd, tile );
+  }
+  // where the ray crosses the surface between the last two samples
+  float fp = 1.0 - hPrev - dPrev, fc = 1.0 - h - d;
+  float dh = mix( dPrev, d, clamp( fp / max( fp - fc, 1e-4 ), 0.0, 1.0 ) );
+  // up towards the sun from there: a sample above the ray shades it, less the further out it is
+  vec3 L = hfSunDir;
+  float ln = max( dot( L, N ), 0.05 );
+  vec2 sunW = L.xz / ln * D, sunP = vec2( dot( sunW, a ), dot( sunW, b ) );
+  vec2 ph = p0 + dirP * dh;
+  float hh = 1.0 - dh, occ = 0.0;
+  for ( int k = 1; k <= 5; k ++ ) {
+    float r = ( 1.0 - hh ) * float( k ) * 0.2;
+    float hs = gFetchH( im, ph + sunP * r, dpx, dpy, rnd, tile );
+    occ = max( occ, ( hs - hh - r - 0.04 ) * ( 1.0 - float( k ) * 0.12 ) );
+  }
+  sh = 1.0 - clamp( occ * 6.0, 0.0, 1.0 ) * fade * 0.8;
+  return dirW * dh;
+}
+#endif
 
 // what the open desert looks like at a point: shared by the terrain and the track's berm
 // N = world normal, tD = metres from the track edge
@@ -299,10 +376,11 @@ const AO = /* glsl */`
 #endif
 `;
 
-function lightsBegin() {
+function lightsBegin(pom = false) {
   const src = THREE.ShaderChunk.lights_fragment_begin;
   const mark = 'directLight.color *= hfSunVis( vHfWorld, geometryNormal );';
-  return src.includes(mark) ? src.replace(mark, mark + '\n\t\tgSun += directLight.color;') : src;
+  // (pom: the relief's own shadow, gParallax)
+  return src.includes(mark) ? src.replace(mark, mark + (pom ? '\n\t\tdirectLight.color *= gPomSh;' : '') + '\n\t\tgSun += directLight.color;') : src;
 }
 
 export const GROUND_MATS = [];
@@ -328,8 +406,8 @@ function patch(material, key, defines, uniforms, frag, vert) {
   return material;
 }
 
-const LIGHT_CHUNKS = (extra = '') => ({
-  lights_fragment_begin: 'vec3 gSun = vec3( 0.0 );\n' + lightsBegin(),
+const LIGHT_CHUNKS = (extra = '', pom = false) => ({
+  lights_fragment_begin: 'vec3 gSun = vec3( 0.0 );\n' + lightsBegin(pom),
   lights_fragment_end: '#include <lights_fragment_end>\n' + GLINT + extra,
   aomap_fragment: AO,
 });
@@ -340,7 +418,8 @@ const LIGHT_CHUNKS = (extra = '') => ({
 export function terrainMaterial(Q) {
   if (GPU) return N.terrainNodeMaterial(Q);
   const m = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 });
-  return patch(m, 'hf-terrain2', { GQ: Q.groundQ ?? 2 }, {}, {
+  const pom = !!Q.pom && (Q.groundQ ?? 2) > 1;
+  return patch(m, 'hf-terrain2', pom ? { GQ: Q.groundQ ?? 2, HF_POM: 1 } : { GQ: Q.groundQ ?? 2 }, {}, {
     pars: /* glsl */`varying float vTrackD;`,
     chunks: {
       map_fragment: GEO_N + /* glsl */`
@@ -350,7 +429,13 @@ export function terrainMaterial(Q) {
         float w[ ${NL} ];
         gDesertWeights( xz, hfGN, vTrackD, mac, mac2, w );
         float rnd = texture2D( hfCloudTex, xz / 61.0 ).r;
-        GSurf gS = gBlend( w, xz, rnd, vec2( 1.0, 0.0 ), vec2( 0.0, 1.0 ), xz, 1.0 );
+        vec2 gOff = vec2( 0.0 );
+        float gPomSh = 1.0;
+        #ifdef HF_POM
+          vec2 gdx = dFdx( xz ), gdy = dFdy( xz );
+          gOff = gParallax( w, xz, rnd, vec2( 1.0, 0.0 ), vec2( 0.0, 1.0 ), xz, 1.0, hfGN, gdx, gdy, gdx, gdy, gPomSh );
+        #endif
+        GSurf gS = gBlend( w, xz, gOff, rnd, vec2( 1.0, 0.0 ), vec2( 0.0, 1.0 ), xz, 1.0 );
         diffuseColor.rgb = gS.alb * gDesertTint( xz, mac );
         // larger wind ripples where the texture's own have blurred away (from ~30 m): the ripple layer
         // again at 7x the size, broken up by noise so its repeat does not show
@@ -374,7 +459,7 @@ export function terrainMaterial(Q) {
         vec3 gNW = hfGN;`,
       roughnessmap_fragment: /* glsl */`float roughnessFactor = clamp( gS.rough, 0.3, 1.0 );`,
       normal_fragment_maps: NORMAL,
-      ...LIGHT_CHUNKS(),
+      ...LIGHT_CHUNKS('', pom),
     },
   }, (sh) => {
     sh.vertexShader = sh.vertexShader
@@ -396,7 +481,8 @@ export function trackMaterial(Q, trackLength) {
   const u = { kL: U(trackLength), kTile: U(trackLength / reps), kTrail: T(null), kTrailOn: U(0) };
   if (GPU) return N.trackNodeMaterial(Q, trackLength, u);
   const m = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2 });
-  return patch(m, 'hf-track2', { GQ: Q.groundQ ?? 2 }, u, {
+  const pom = !!Q.pom && (Q.groundQ ?? 2) > 1;
+  return patch(m, 'hf-track2', pom ? { GQ: Q.groundQ ?? 2, HF_POM: 1 } : { GQ: Q.groundQ ?? 2 }, u, {
     pars: /* glsl */`uniform sampler2D kTrail; uniform float kL, kTile, kTrailOn; varying vec4 vTr; varying vec2 vDir, vZone;`,
     chunks: {
       map_fragment: GEO_N + /* glsl */`
@@ -436,7 +522,12 @@ export function trackMaterial(Q, trackLength) {
         for ( int i = 0; i < ${NL}; i ++ ) ws += w[ i ];
         for ( int i = 0; i < ${NL}; i ++ ) w[ i ] /= max( ws, 1e-4 );
         float rnd = texture2D( hfCloudTex, xz / 61.0 ).r;
-        GSurf gS = gBlend( w, xz, rnd, lat, fwd, vec2( d, s ), kTile );
+        vec2 gOff = vec2( 0.0 );
+        float gPomSh = 1.0;
+        #ifdef HF_POM
+          gOff = gParallax( w, xz, rnd, lat, fwd, vec2( d, s ), kTile, hfGN, dFdx( xz ), dFdy( xz ), dFdx( vec2( d, s ) ), dFdy( vec2( d, s ) ), gPomSh );
+        #endif
+        GSurf gS = gBlend( w, xz, gOff, rnd, lat, fwd, vec2( d, s ), kTile );
         vec3 col = gS.alb;
         // the racing line: packed hard, darker, with jet scorch
         float ld = ( d - vTr.z ) / 5.5;
@@ -485,7 +576,7 @@ export function trackMaterial(Q, trackLength) {
         vec3 gNW = hfGN;`,
       roughnessmap_fragment: /* glsl */`float roughnessFactor = clamp( gS.rough - polish, 0.25, 1.0 );`,
       normal_fragment_maps: NORMAL,
-      ...LIGHT_CHUNKS(),
+      ...LIGHT_CHUNKS('', pom),
     },
   }, (sh) => {
     sh.vertexShader = sh.vertexShader

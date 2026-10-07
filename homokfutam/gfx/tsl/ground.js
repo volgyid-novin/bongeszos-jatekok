@@ -1,11 +1,12 @@
 import * as THREE from 'three/webgpu';
 import {
-  If, float, int, vec2, vec3, vec4, mix, max, min, clamp, abs, pow, sqrt, exp, dot, normalize, length, fract, floor, sin, cos,
-  select, smoothstep, saturate, dFdx, dFdy, property, attribute, positionWorld, cameraPosition, cameraViewMatrix,
+  Fn, If, Loop, Break, float, int, vec2, vec3, vec4, mix, max, min, clamp, abs, pow, sqrt, exp, dot, normalize, length, fract, floor, sin, cos,
+  uniformArray,
+  select, smoothstep, step, saturate, dFdx, dFdy, property, attribute, positionWorld, cameraPosition, cameraViewMatrix,
   normalWorldGeometry, faceDirection, materialColor, vertexColor, normalView, positionViewDirection, roughness,
 } from 'three/tsl';
 import { ATMO } from '../atmosphere.js';
-import { GU } from '../ground.js';
+import { GU, POM_DEPTH } from '../ground.js';
 import { ss, lum, hash4, oneMinus } from './common.js';
 
 // ============================================================
@@ -21,7 +22,7 @@ const V2 = (v) => vec2(v.x, v.y);
 
 // per-fragment results of the surface function
 const sAlb = property('vec3', 'gAlb'), sNW = property('vec3', 'gNW'), sRough = property('float', 'gRough');
-const sAO = property('float', 'gAO'), sGlint = property('vec3', 'gGlintK');
+const sAO = property('float', 'gAO'), sGlint = property('vec3', 'gGlintK'), sPomSh = property('float', 'gPomSh');
 
 const cloud = (uv) => ATMO.hfCloudTex.sample(uv).r;
 const macUv = (xz) => xz.sub(GU.gMacXf.xy).mul(GU.gMacXf.z);
@@ -54,9 +55,14 @@ function gFetch(i, p, dpx, dpy, rnd, tile, GQ) {
 
 // blended surface of the layers with weight > 0 (w: one node per layer, null = never used)
 // tr: the track's own frame { a, b, p, tile } for the packed layer (4), so its grooves follow the track
-function gBlend(w, xz, rnd, tr, GQ) {
+// off: world-xz offset to look the layers up at (parallax occlusion, gParallax); the mip level stays the surface's own
+function gBlend(w, xz, rnd, tr, GQ, off = null) {
   const dxz = dFdx(xz).toVar(), dyz = dFdy(xz).toVar();
   const dtx = tr ? dFdx(tr.p).toVar() : null, dty = tr ? dFdy(tr.p).toVar() : null;
+  if (off) {
+    xz = xz.add(off).toVar();
+    if (tr) tr = { ...tr, p: tr.p.add(vec2(dot(off, tr.a), dot(off, tr.b))).toVar() };
+  }
   const cs = [], ns = [], hs = [];
   const hmax = float(0).toVar();
   for (let i = 0; i < NL; i++) {
@@ -93,6 +99,70 @@ function gBlend(w, xz, rnd, tr, GQ) {
   const it = float(1).div(max(tot, 1e-4)).toVar();
   for (const k of Object.keys(s)) s[k].mulAssign(it);
   return s;
+}
+
+// --- parallax occlusion (?gfx=pom:1; GLSL version and notes: gfx/ground.js, gParallax) ------------------
+const AXU = uniformArray(AXIS.map((v) => v.clone()), 'vec2'), TLU = uniformArray(TILE.slice(), 'float'), DPU = uniformArray(POM_DEPTH.slice(), 'float');
+// height of layer i (int node), anti-tiled as gFetch does (inlined where it is called: the march calls it from
+// two loops and once before them, three copies)
+function gFetchH(i, p, dpx, dpy, rnd, tile) {
+  const inv = float(1).div(tile);
+  const uv = p.mul(inv), dx = dpx.mul(inv), dy = dpy.mul(inv);
+  const l = rnd.mul(5).add(float(i).mul(1.37)), f = fract(l), ia = floor(l);
+  const oa = sin(vec2(3, 7).mul(ia)), ob = sin(vec2(3, 7).mul(ia.add(1)));
+  const ha = GU.gC.sample(uv.add(oa)).depth(i).grad(dx, dy).a.toVar(), hb = GU.gC.sample(uv.add(ob)).depth(i).grad(dx, dy).a.toVar();
+  return mix(ha, hb, smoothstep(0.3, 0.7, f.add(hb.sub(ha).mul(0.35))));
+}
+// world-xz offset at which the surface is seen; assigns sPomSh, its self-shadow from the sun.
+// tr: the track frame or null; d*: derivatives of xz and of the track frame, taken before any branch
+function gParallax(w, xz, rnd, tr, N, dxz, dyz, dtx, dty) {
+  const im = int(0).toVar(), wm = float(0).toVar();
+  w.forEach((x, i) => { if (x) If(x.greaterThan(wm), () => { wm.assign(x); im.assign(i); }); });
+  const toCam = cameraPosition.sub(positionWorld).toVar();
+  const camD = length(toCam).toVar();
+  const V = toCam.div(camD).toVar();
+  // fades out where layers mix, and once a pixel covers more than ~1 cm of ground
+  const foot = max(length(dxz), length(dyz));
+  const fade = smoothstep(0.4, 0.7, wm).mul(oneMinus(smoothstep(0.005, 0.016, foot))).mul(step(camD, 60)).toVar();
+  const D = DPU.element(im).mul(fade).toVar();
+  const off = vec2(0).toVar();
+  sPomSh.assign(1);
+  If(D.greaterThan(1e-3), () => {
+    const isTr = tr ? im.equal(4) : null;
+    const pick = (a, b) => (tr ? select(isTr, a, b) : b);
+    const b = pick(tr?.b, AXU.element(im)).toVar(), a = vec2(b.y.negate(), b.x).toVar();
+    const p0 = pick(tr?.p, vec2(dot(xz, a), dot(xz, b))).toVar();
+    const dpx = pick(dtx, vec2(dot(dxz, a), dot(dxz, b))).toVar(), dpy = pick(dty, vec2(dot(dyz, a), dot(dyz, b))).toVar();
+    const tile = pick(tr?.tile, TLU.element(im)).toVar();
+    // down the view ray: xz moves by -V.xz / (V.N) per metre of depth
+    const vn = max(dot(V, N), 0.2);           // (offset limiting at grazing angles)
+    const dirW = V.xz.negate().div(vn).mul(D).toVar(), dirP = vec2(dot(dirW, a), dot(dirW, b)).toVar();
+    const n = int(mix(14, 6, vn.sub(0.2).mul(1.25))).toVar();
+    const st = float(1).div(float(n)).toVar(), d = float(0).toVar(), dPrev = float(0).toVar();
+    const h = gFetchH(im, p0, dpx, dpy, rnd, tile).toVar(), hPrev = h.toVar();
+    Loop(14, ({ i }) => {
+      If(i.greaterThanEqual(n).or(d.greaterThanEqual(oneMinus(h))), () => { Break(); });
+      dPrev.assign(d); hPrev.assign(h);
+      d.addAssign(st);
+      h.assign(gFetchH(im, p0.add(dirP.mul(d)), dpx, dpy, rnd, tile));
+    });
+    // where the ray crosses the surface between the last two samples
+    const fp = oneMinus(hPrev).sub(dPrev), fc = oneMinus(h).sub(d);
+    const dh = mix(dPrev, d, clamp(fp.div(max(fp.sub(fc), 1e-4)), 0, 1)).toVar();
+    // up towards the sun from there: a sample above the ray shades it, less the further out it is
+    const ln = max(dot(ATMO.hfSunDir, N), 0.05);
+    const sunW = ATMO.hfSunDir.xz.div(ln).mul(D), sunP = vec2(dot(sunW, a), dot(sunW, b)).toVar();
+    const ph = p0.add(dirP.mul(dh)).toVar(), hh = oneMinus(dh).toVar(), occ = float(0).toVar();
+    Loop({ start: 1, end: 6 }, ({ i }) => {
+      const k = float(i);
+      const r = oneMinus(hh).mul(k.mul(0.2));
+      const hs = gFetchH(im, ph.add(sunP.mul(r)), dpx, dpy, rnd, tile);
+      occ.assign(max(occ, hs.sub(hh).sub(r).sub(0.04).mul(oneMinus(k.mul(0.12)))));
+    });
+    sPomSh.assign(oneMinus(clamp(occ.mul(6), 0, 1).mul(fade).mul(0.8)));
+    off.assign(dirW.mul(dh));
+  });
+  return off;
 }
 
 // what the open desert looks like at a point (shared by the terrain and the track's berm)
@@ -159,8 +229,10 @@ function glint(gNW, sand) {
 // lightColor), and the surface's occlusion on the indirect light. (Through material.aoNode it does not
 // arrive: the lighting context brings its own ambientOcclusion, fixed at 1.)
 class GroundLighting extends THREE.PhysicalLightingModel {
-  constructor(glint) { super(); this.glint = glint; }
+  constructor(glint, pom) { super(); this.glint = glint; this.pom = pom; }
   direct(params, builder) {
+    // the relief's own shadow (parallax occlusion) on the sun
+    if (this.pom && params.lightNode?.light?.isDirectionalLight) params = { ...params, lightColor: params.lightColor.mul(sPomSh) };
     super.direct(params, builder);
     if (this.glint && params.lightNode?.light?.isDirectionalLight) params.reflectedLight.directSpecular.addAssign(params.lightColor.mul(sGlint));
   }
@@ -176,10 +248,11 @@ class GroundLighting extends THREE.PhysicalLightingModel {
 // A MeshStandardNodeMaterial whose surface comes from surface(material): runs once at the start of
 // the fragment shader and assigns the s* properties.
 class SurfaceMaterial extends THREE.MeshStandardNodeMaterial {
-  constructor(params, surface, glintOn) {
+  constructor(params, surface, glintOn, pom = false) {
     super(params);
     this.surface = surface;
     this.glintOn = glintOn;
+    this.pom = pom;
     this.vertexColors = false;            // the surface multiplies them in itself (before blending in sand)
     this.colorNode = sAlb;
     this.normalNode = normalize(cameraViewMatrix.mul(vec4(sNW, 0)).xyz);
@@ -189,15 +262,15 @@ class SurfaceMaterial extends THREE.MeshStandardNodeMaterial {
     this.surface(this);                   // TSL statements go onto the fragment stack being built
     super.setupDiffuseColor(builder);
   }
-  setupLightingModel() { return new GroundLighting(this.glintOn); }
-  copy(source) { this.surface = source.surface; this.glintOn = source.glintOn; return super.copy(source); }
+  setupLightingModel() { return new GroundLighting(this.glintOn, this.pom); }
+  copy(source) { this.surface = source.surface; this.glintOn = source.glintOn; this.pom = source.pom; return super.copy(source); }
 }
 
 // ---------------------------------------------------------------------------
 //  Terrain (dunes). aTrackD = metres from the track edge
 // ---------------------------------------------------------------------------
 export function terrainNodeMaterial(Q) {
-  const GQ = Q.groundQ ?? 2;
+  const GQ = Q.groundQ ?? 2, pom = !!Q.pom && GQ > 1;
   const m = new SurfaceMaterial({ roughness: 1, metalness: 0 }, (mat) => {
     const hfGN = geoNormal(mat);
     const xz = positionWorld.xz.toVar();
@@ -205,7 +278,9 @@ export function terrainNodeMaterial(Q) {
     const mac = gMacro(xz).toVar(), mac2 = gMacro2(xz).toVar();
     const w = gDesertWeights(xz, hfGN, attribute('aTrackD', 'float'), mac, mac2);
     const rnd = cloud(xz.div(61)).toVar();
-    const gS = gBlend(w, xz, rnd, null, GQ);
+    let off = null;
+    if (pom) { const dx = dFdx(xz).toVar(), dy = dFdy(xz).toVar(); off = gParallax(w, xz, rnd, null, hfGN, dx, dy, null, null); }
+    const gS = gBlend(w, xz, rnd, null, GQ, off);
     const col = gS.alb.mul(gDesertTint(xz, mac)).toVar();
     // larger wind ripples where the texture's own have blurred away (from ~30 m)
     const midK = smoothstep(25, 110, camD).mul(oneMinus(smoothstep(500, 1400, camD))).mul(w[0].add(w[1].mul(0.6))).mul(rnd.add(0.35)).toVar();
@@ -225,7 +300,7 @@ export function terrainNodeMaterial(Q) {
     const gNK = oneMinus(smoothstep(120, 1100, camD).mul(0.7)).mul(1.25);
     sNW.assign(bendNormal(hfGN, gS.nd.mul(gNK)));
     if (GQ > 1) sGlint.assign(glint(sNW, gS.sand));
-  }, GQ > 1);
+  }, GQ > 1, pom);
   m.userData.uniforms = {};
   return m;
 }
@@ -235,7 +310,7 @@ export function terrainNodeMaterial(Q) {
 //  direction (x, z), aZone = (arena, canyon)
 // ---------------------------------------------------------------------------
 export function trackNodeMaterial(Q, trackLength, u) {
-  const GQ = Q.groundQ ?? 2;
+  const GQ = Q.groundQ ?? 2, pom = !!Q.pom && GQ > 1;
   const m = new SurfaceMaterial({ roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2 }, (mat) => {
     const hfGN = geoNormal(mat);
     const xz = positionWorld.xz.toVar();
@@ -274,7 +349,9 @@ export function trackNodeMaterial(Q, trackLength, u) {
     const ws = w.reduce((a, b) => a.add(b), float(0)).toVar();
     const wn = w.map((x) => x.div(max(ws, 1e-4)).toVar());
     const rnd = cloud(xz.div(61)).toVar();
-    const gS = gBlend(wn, xz, rnd, { a: lat, b: fwd, p: ds, tile: u.kTile }, GQ);
+    const trf = { a: lat, b: fwd, p: ds, tile: u.kTile };
+    const off = pom ? gParallax(wn, xz, rnd, trf, hfGN, dFdx(xz).toVar(), dFdy(xz).toVar(), dFdx(ds).toVar(), dFdy(ds).toVar()) : null;
+    const gS = gBlend(wn, xz, rnd, trf, GQ, off);
     const col = gS.alb.toVar();
     // the racing line: packed hard, darker, with jet scorch
     const ld = d.sub(tr.z).div(5.5);
@@ -330,7 +407,7 @@ export function trackNodeMaterial(Q, trackLength, u) {
     const gNK = oneMinus(smoothstep(80, 600, camD).mul(0.7)).mul(oneMinus(groove.mul(0.4)));
     sNW.assign(bendNormal(hfGN, gS.nd.mul(gNK)));
     if (GQ > 1) sGlint.assign(glint(sNW, gS.sand));
-  }, GQ > 1);
+  }, GQ > 1, pom);
   m.userData.uniforms = u;
   return m;
 }

@@ -55,3 +55,65 @@ export function podEnvPatch(shader, uniforms) {
     #endif
     ${chunk}`);
 }
+
+// --- live reflections for the player's pod (?gfx=refl:1, docs/visual-next-steps.md C4) ----------------
+// The probes are baked once and hold no pods: here a cube camera at the player's pod renders one face at a
+// time of what is round it (ground, rock, buildings, sky and the other pods; no particles or effects:
+// see-through things stay out), and once all six are new the cube is prefiltered (PMREM) into an environment
+// the size of the probes', so it drops into the pod materials in their place (setPodEnv). The cube is at
+// most 6 * every frames stale. size: per face (the probes' size); every: frames per face (each face costs a
+// render pass of its own, ~50-140 draws: on WebGPU ~1.5 ms of CPU); far: what is further is left to the sky.
+const LAYER_REFL = 9;
+export function createLiveEnv(renderer, scene, { size = 256, far = 3000, every = 1 } = {}) {
+  const cubeRT = new (GPU ? W.CubeRenderTarget : THREE.WebGLCubeRenderTarget)(size, { type: THREE.HalfFloatType, generateMipmaps: false });
+  const cc = new THREE.CubeCamera(0.5, far, cubeRT);
+  for (const c of cc.children) c.layers.set(LAYER_REFL);
+  const pmrem = new (GPU ? W.PMREMGenerator : THREE.PMREMGenerator)(renderer);
+  const tagged = new WeakSet();
+  let out = null, face = 0, tick = 0, lights = [];
+  const tag = (root) => {
+    if (tagged.has(root)) return;
+    tagged.add(root);
+    root.traverse((o) => {
+      const m = o.material, see = m && !Array.isArray(m) && m.transparent;
+      if (o.isLight || ((o.isMesh || o.isInstancedMesh) && !o.isPoints && (!see || o.userData.inProbe))) o.layers.enable(LAYER_REFL);
+    });
+  };
+  const drawFace = (pos, hide, f) => {
+    if (cc.coordinateSystem !== renderer.coordinateSystem) { cc.coordinateSystem = renderer.coordinateSystem; cc.updateCoordinateSystem(); }
+    cc.position.copy(pos);
+    cc.updateMatrixWorld(true);
+    const prevRt = renderer.getRenderTarget(), prevFace = renderer.getActiveCubeFace?.() ?? 0, prevMip = renderer.getActiveMipmapLevel?.() ?? 0;
+    const prevAuto = renderer.shadowMap.autoUpdate, wasVisible = hide?.visible;
+    // the shadow maps follow the main camera and stay as they are; the pod does not see itself
+    renderer.shadowMap.autoUpdate = false;
+    for (const l of lights) l.shadow.autoUpdate = false;
+    if (hide) hide.visible = false;
+    renderer.setRenderTarget(cubeRT, f);
+    renderer.render(scene, cc.children[f]);
+    renderer.setRenderTarget(prevRt, prevFace, prevMip);
+    if (hide) hide.visible = wasVisible;
+    for (const l of lights) l.shadow.autoUpdate = true;
+    renderer.shadowMap.autoUpdate = prevAuto;
+  };
+  const filter = () => { out = pmrem.fromCubemap(cubeRT.texture, out); };
+  return {
+    get texture() { return out?.texture ?? null; },
+    // the static scene and the lights (call once the world is built); pods are tagged as they come
+    collect() {
+      tag(scene);
+      lights = [];
+      scene.traverse((o) => { if (o.isLight && o.castShadow) lights.push(o); });
+    },
+    // all six faces at once (at load: builds the pipelines and the first environment)
+    warm(pos, hide) { for (let f = 0; f < 6; f++) drawFace(pos, hide, f); filter(); },
+    // per frame: pos = the pod's centre, hide = the pod itself, pods = the other pods' roots
+    update(pos, hide, pods) {
+      for (const p of pods) if (p) tag(p);
+      if (++tick % every) return;
+      drawFace(pos, hide, face);
+      face = (face + 1) % 6;
+      if (face === 0) filter();
+    },
+  };
+}

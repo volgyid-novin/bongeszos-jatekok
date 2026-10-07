@@ -176,3 +176,25 @@ export function flameGlowMaterial(map) {
   m.opacityNode = tx.a;
   return m;
 }
+
+// --- dry grass (world/grass.js): the tips sway with the wind; positionLocal is already the copy's
+// position in the world when this runs (the instanced mesh itself sits at the origin) ---
+class GrassMaterial extends THREE.MeshStandardNodeMaterial {
+  setupPosition(builder) {
+    super.setupPosition(builder);
+    const U = this.grass;
+    const y = positionGeometry.y, wp = positionLocal.xz;
+    const k = y.mul(y).mul(2);
+    const gust = sin(dot(wp, U.uWind).mul(0.06).sub(U.uTime.mul(1.9))).mul(0.5).add(0.5);
+    const flick = sin(U.uTime.mul(7.3).add(wp.x.mul(1.7)).add(wp.y.mul(2.3)).add(positionGeometry.x.mul(9))).mul(0.25);
+    const d = U.uWind.mul(gust.add(0.35)).add(vec2(U.uWind.y.negate(), U.uWind.x).mul(flick)).mul(U.uAmp).mul(k);
+    positionLocal.addAssign(vec3(d.x, U.uAmp.mul(k).mul(gust).mul(-0.15), d.y));
+    return positionLocal;
+  }
+  copy(source) { this.grass = source.grass; return super.copy(source); }
+}
+export function grassNodeMaterial(params, U) {
+  const m = new GrassMaterial(params);
+  m.grass = U;
+  return m;
+}

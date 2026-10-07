@@ -41,9 +41,10 @@ const FRAG = /* glsl */`
   }`;
 
 export function buildHaze({ scene, TR, rangeWhere, arch, Q }) {
-  const mat = GPU ? N.hazeMaterial({ uK: U(0.16 * (Q.particles ?? 1)) }) : new THREE.ShaderMaterial({
+  const k0 = 0.16 * (Q.particles ?? 1), uK = U(k0);
+  const mat = GPU ? N.hazeMaterial({ uK }) : new THREE.ShaderMaterial({
     vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true,
-    uniforms: Object.assign({}, ATMO, { uK: { value: 0.16 * (Q.particles ?? 1) } }),
+    uniforms: Object.assign({}, ATMO, { uK }),
   });
   const geos = [];
   const sheet = (x, y, z, yaw, w, h) => {
@@ -79,6 +80,7 @@ export function buildHaze({ scene, TR, rangeWhere, arch, Q }) {
   const m = new THREE.Mesh(merged, mat);
   m.userData.noBake = true;
   m.userData.dynamic = true;
+  m.userData.uK = uK; m.userData.k0 = k0;        // (main.js fades them where the volumetric light takes over)
   m.renderOrder = 2;
   scene.add(m);
   return m;

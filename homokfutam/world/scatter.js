@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { LodInstances } from './rocks.js';
 import { MACRO, macroAt } from './macro.js';
+import { buildGrass } from './grass.js';
 
 // ============================================================
 //  Ground clutter from assets/world/props.glb (models/world/build_props.py): pebbles and
@@ -39,6 +40,12 @@ export function buildScatter({ scene, TR, Q, groundQuery, rng, models, rockMat, 
     if (!p || rand() > 0.3 + 0.7 * gravelish(p.x, p.z)) continue;
     pebbles.push(item(k % 3, p.x, p.z, 0.6 + rand() * 1.6, 0.02, 0.6));
   }
+  // ?gfx=grass:1 (docs/visual-next-steps.md C8): the near band gets twice the pebbles (same draws)
+  if (Q.grass) for (let k = 0, n = Math.round(5200 * D); k < n; k++) {
+    const p = beside(1.2 + 70 * Math.pow(rand(), 1.6));
+    if (!p || rand() > 0.35 + 0.65 * gravelish(p.x, p.z)) continue;
+    pebbles.push(item(k % 3, p.x, p.z, 0.5 + rand() * 1.4, 0.02, 0.6));
+  }
   for (let k = 0, n = Math.round(1900 * D); k < n; k++) {
     const p = beside(3 + 190 * Math.pow(rand(), 2));
     if (!p || rand() > 0.25 + 0.75 * gravelish(p.x, p.z)) continue;
@@ -60,6 +67,27 @@ export function buildScatter({ scene, TR, Q, groundQuery, rng, models, rockMat, 
     bushes.push(item(k % 2, p.x, p.z, s, 0.1, 0.2, s * (0.8 + rand() * 0.4)));
   }
   field([models.get('bush0'), models.get('bush1')], bushes, bushMat, 320);
+
+  // ?gfx=grass:1: tufts of dry grass on the sand by the track, thickest along the berm, none on gravel,
+  // slopes or in the canyon; drawn within ~75 m (they are small, and a pixel or less further out)
+  if (Q.grass) {
+    const tufts = [];
+    for (let k = 0, n = Math.round(26000 * D); k < n; k++) {
+      const p = beside(2.2 + 60 * Math.pow(rand(), 2.2));
+      if (!p || TR.canyon[p.i] > 0.2 || rand() < gravelish(p.x, p.z) * 0.85) continue;
+      const y0 = groundQuery(p.x, p.z);
+      if (Math.abs(groundQuery(p.x + 1, p.z) - y0) + Math.abs(groundQuery(p.x, p.z + 1) - y0) > 0.45) continue;
+      // in loose clumps: a few more tufts round each one
+      const m = rand() < 0.5 ? 1 + Math.floor(rand() * 4) : 1;
+      for (let j = 0; j < m; j++) {
+        const x = p.x + (j ? (rand() - 0.5) * 2.5 : 0), z = p.z + (j ? (rand() - 0.5) * 2.5 : 0), s = 0.9 + rand() * 0.9;
+        const y = (j ? groundQuery(x, z) : y0) - 0.03;
+        const sx = s * (0.75 + rand() * 0.5), sz = s * (0.75 + rand() * 0.5);
+        tufts.push({ s: TR.s[p.i], x, y, z, m: new THREE.Matrix4().compose(P.set(x, y, z), QQ.identity(), S.set(sx, s * (0.8 + rand() * 0.5), sz)) });
+      }
+    }
+    out.push(buildGrass(scene, tufts, TR.L, 75 * (Q.lod ?? 1)));
+  }
 
   // the remains of animals that didn't make it across
   const boneMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 });

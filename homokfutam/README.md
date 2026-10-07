@@ -63,6 +63,8 @@ Nyisd meg a kiírt `https://….trycloudflare.com/homokfutam/` linket (ne a loca
 | Esc / P | szünet (többjátékos módban csak menü) |
 | M | hang ki/be |
 | N | zene ki/be |
+| I | FPS-mérő ki/be (a képkockaszám, a képkockaidő, a renderelő és a fokozat a képernyő tetején) |
+| G | filmszemcse ki/be |
 | bármelyik gomb | a rajt előtti bemutató átugrása |
 
 Szünetben a **FOTÓ MÓD** gombbal (csak egyedül) szabadon körbe lehet járni a podot: egérrel forgatod, görgővel közelítesz, Q / E a magasság, F kapcsolja az élességállítást, H elrejti a súgót, Enter elmenti a képet, Esc visszavisz a szünetmenübe.
@@ -84,12 +86,12 @@ A menüben a **GRAFIKA** sorban négy fokozat van. Az első indításkor a ját�
 |---|---|
 | ALACSONY | utófeldolgozás nélkül, kisebb árnyéktérkép, ritkább részletek és kevesebb néző, a riválisok az egyszerű podot kapják, a sziklák és a tereptárgyak hamarabb váltanak egyszerűbb modellre, és csak a mozgó dolgok (podok, törmelék) vetnek éles árnyékot, a többi árnyéka a betöltéskor sült |
 | KÖZEPES | bloom, lencsefény, sebességelmosás, színkorrekció, SMAA |
-| MAGAS | plusz MSAA, árnyékolás a sarkokban (N8AO), fénysugarak, hőremegés, mélységélesség a menüben |
-| ULTRA | nagyobb árnyéktérképek, sűrűbb terep, több részecske |
+| MAGAS | plusz MSAA, árnyékolás a sarkokban (N8AO), fénysugarak, hőremegés, mélységélesség a menüben; élesebb árnyékok több száz méterre előre (a távoli podoké is), napfénnyel átvilágított por a kanyonban és a sziklaív alatt, térbeli felhők, lakkréteg a podok festésén, száraz fűcsomók és több kavics a pálya mellett, sűrűbb por és füst |
+| ULTRA | nagyobb árnyéktérképek, sűrűbb terep, több részecske; fizikai alapú égbolt és légköri perspektíva (a távoli sziklák kékes párába vesznek), domborzat a talaj mintázatán közelről, valós idejű tükröződés a saját pododon, részletesebb kanyonfalak és sziklatűk |
 
 Ha a gép nem bírja a tempót, a felbontás magától lejjebb megy, és amikor van tartalék, visszaáll.
 
-Teszteléshez az URL-ben is meg lehet adni: `?q=low|medium|high|ultra`, egyes beállítások pedig felülírhatók, például `?gfx=ao:0,heat:0,shadow:1024`.
+Teszteléshez az URL-ben is meg lehet adni: `?q=low|medium|high|ultra`, egyes beállítások pedig felülírhatók, például `?gfx=ao:0,heat:0,shadow:1024`. A MAGAS és az ULTRA fokozat grafikai bővítései egyenként is ki-be kapcsolhatók: `sky`, `csm`, `pom`, `refl`, `vol`, `aoq`, `coat`, `grass`, `geo`, `clouds`, `parts` (például `?gfx=sky:1,grass:0`; mit csinálnak és mennyibe kerülnek: `docs/visual-next-steps.md`, C).
 
 A **RENDERELŐ** sorban WEBGPU és WEBGL közül lehet választani; a váltás újratölti az oldalt, a választást a böngésző megjegyzi. Asztali gépen alapból WebGPU, ha a böngésző támogatja, különben WebGL; telefonon és tableten alapból WebGL. WebGPU-n a three.js WebGPURenderer rajzol, TSL-ben írt anyagokkal és utófeldolgozással. Az élsimítás itt időbeli (TRAA): a homok csillogása, a távoli vezetékek és a kőlapok mozgás közben jóval kevésbé vibrálnak, és nincs szükség MSAA-ra; az árnyékolás a sarkokban GTAO. A WebGPU-s rész csak ilyenkor töltődik le. Cserébe képkockánként kb. háromszor annyi processzoridőt visz el, és lassabban tölt be (a részletek: `docs/visual-next-steps.md`, B), ezért gyengébb gépen a WEBGL lehet a gyorsabb (telefonon ezért az az alapértelmezés). Az URL-ben is megadható: `?renderer=webgpu|webgl`; `?renderer=webgpu-gl` a WebGPURenderer saját WebGL2-es ágát kényszeríti (csak összehasonlításhoz, lassú).
 
@@ -125,12 +127,14 @@ homokfutam/
   gfx/quality.js    grafikai fokozatok, dinamikus felbontás
   gfx/backend.js    melyik renderelő rajzol (?renderer=webgpu), a közös uniformok, a WebGPU-s rész késleltetett betöltése
   gfx/tsl/          a WebGPU-s ág anyagai és utófeldolgozása TSL-ben (ugyanaz, mint a GLSL-es, a fájlnevek megegyeznek)
-  gfx/atmosphere.js köd, ég, felhők, környezeti fény, az egész pálya árnyéka
+  gfx/atmosphere.js köd, ég, felhők, környezeti fény, az egész pálya árnyéka, a közepes távolság gyorsítótárazott árnyéka
+  gfx/skylut.js     a fizikai alapú égbolt táblázatai (Hillaire), betöltéskor sütve, külön szálon (skylut.worker.js)
   gfx/ground.js     talaj-, pálya- és sziklaanyagok: a KTX2-textúratömbök, a felületek keverése, csillogás,
                     homok a sziklákon, nyomok a pályán
   gfx/surfaces.js   triplanáris kőanyag a régi kőtextúrával (csak tartalék)
   gfx/post.js       utófeldolgozás (pmndrs/postprocessing + N8AO)
-  gfx/probes.js     a podok fénypróbái: a pálya néhány pontjáról sütött környezeti fény, és a keverésük a podok anyagaiban
+  gfx/probes.js     a podok fénypróbái: a pálya néhány pontjáról sütött környezeti fény, és a keverésük a podok anyagaiban;
+                    a saját pod valós idejű környezete (tükröződés)
   gfx/particles.js  részecskék: por, füst, szikra, tűz, konfetti, szimulált füst- és tűzképsorok
   gfx/podfx.js      lángcsóva, fúvókaizzás, boost- és visszalövés-effektek, hőremegés, talajfény, lökéshullám, nyomok a pályán, törmelék
   gfx/beam.js       energianyaláb a hajtóművek között, és a fény, amit vet
@@ -139,6 +143,7 @@ homokfutam/
   world/macro.js    a betöltéskor sütött nagy léptékű talajtérkép (árnyékolás, gerincek, mélyedések, sziklák környéke)
   world/rocks.js    a szikla- és arénamodellek betöltése, részletességi szintek
   world/scatter.js  kavicsok, kövek, cserjék, csontok, roncsdarabok
+  world/grass.js    száraz fűcsomók a pálya mentén, szélben ringatózva
   world/horizon.js  a láthatár hegyláncai
   world/haze.js     por és fénynyalábok a kanyonban és az ív alatt
   assets/           a részletes pod modellje és festésmaszkja, assets/tex/ a felületek textúrái,
@@ -184,7 +189,7 @@ A mozgó részeket a `playerPod.js` mozgatja: a beömlő ventilátora a gázzal 
 Minden Blenderben, kódból készül, a forrás a `models/world/` mappa:
 
 - `build_textures.py`: a talaj, a sziklák és az aréna felületei. A domborzatot, a színt és az érdességet numpy rajzolja meg (ismétlődő, varratmentes mintákkal, a kavicsok valódi 3D kövek), a Cycles pedig ráégeti egy síkra: szín, érdesség, normál, árnyékolás, magasság. Az eredmény 1024 pixeles KTX2-textúratömb: a szín ETC1S, a normál UASTC tömörítésű (a KTX-Software `toktx` eszközével).
-- `build_rocks.py`: sziklatűk, buttek, a sziklaív, a kanyon sziklahídja, kövek és kőtörmelék-kupacok (`assets/world/rocks.glb`).
+- `build_rocks.py`: sziklatűk, buttek, a sziklaív, a kanyon sziklahídja, kövek és kőtörmelék-kupacok (`assets/world/rocks.glb`). A `-- --hi 1` kapcsolóval csak a sziklatűket készíti el, egy részletességi szinttel feljebb (`assets/world/rocks_spires_hi.glb`, ULTRA fokozaton tölt be).
 - `build_arena.py`: a lelátók mellvédje, a vászontetők, a pártázat, a kapubástyák és a rajtkapu (`assets/world/arena.glb`).
 - `build_props.py`: kavicsok, kövek, cserjék, csontváz, csontok, roncsdarabok (`assets/world/props.glb`).
 - `build_crowd.py`: a közönség alakjai egy képsorban (`assets/crowd_atlas.png`), négy testalkat és három karállás.
@@ -196,6 +201,7 @@ Minden Blenderben, kódból készül, a forrás a `models/world/` mappa:
 ```bash
 blender -b --factory-startup --python homokfutam/models/world/build_textures.py
 blender -b --factory-startup --python homokfutam/models/world/build_rocks.py
+blender -b --factory-startup --python homokfutam/models/world/build_rocks.py -- --hi 1
 blender -b --factory-startup --python homokfutam/models/world/build_arena.py
 blender -b --factory-startup --python homokfutam/models/world/build_props.py
 blender -b --factory-startup --python homokfutam/models/world/build_panorama.py

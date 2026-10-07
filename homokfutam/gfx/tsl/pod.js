@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
   Fn, vec3, uniform, uv, texture, materialColor, materialEmissive, diffuseColor, roughness, pmremTexture,
-  mix, clamp, dot, smoothstep,
+  mix, clamp, dot, smoothstep, max, float,
 } from 'three/tsl';
 
 // ============================================================
@@ -16,8 +16,7 @@ const NODE_CLASS = {
 };
 const SKIP = new Set(['id', 'uuid', 'type', 'version', '_listeners', 'onBeforeCompile', 'customProgramCacheKey', 'onBeforeRender', 'onBuild']);
 // a node material with the classic material's settings (maps, colours, flags), or the material itself
-export function toNodeMaterial(m) {
-  const C = NODE_CLASS[m.type];
+export function toNodeMaterial(m, C = NODE_CLASS[m.type]) {
   if (!C) return m;
   const n = new C();
   for (const k in m) {
@@ -30,14 +29,19 @@ export function toNodeMaterial(m) {
 
 // the livery map says where the primary (R) and accent (G) paint is still intact; B is the heat mask:
 // as the engines heat up the metal glows, from the nozzles creeping forward (heat: x level, y backfire flash)
-export function podLiveryMaterial(m, liveryMap, paint, trim, heat) {
-  const n = toNodeMaterial(m);
+// coat: the roughness of a clear coat over the paint that is still intact, or 0 (?gfx=coat:1, playerPod.js)
+export function podLiveryMaterial(m, liveryMap, paint, trim, heat, coat = 0) {
+  const n = toNodeMaterial(m, coat ? THREE.MeshPhysicalNodeMaterial : NODE_CLASS[m.type]);
   n.userData.liveryMap = liveryMap;
   // the livery shares the base map's uvs, including its transform (gltfpack dequantizes uvs through it)
   let luv = uv(m.map?.channel ?? 0);
   if (m.map) { m.map.updateMatrix(); luv = uniform(m.map.matrix).mul(vec3(luv, 1)).xy; }
   const liv = texture(liveryMap, luv).rgb;
   n.colorNode = materialColor.mul(mix(vec3(1), uniform(paint), liv.r)).mul(mix(vec3(1), uniform(trim), liv.g));
+  if (coat) {
+    n.clearcoatNode = smoothstep(0.35, 0.8, max(liv.r, liv.g));
+    n.clearcoatRoughnessNode = float(coat);
+  }
   n.emissiveNode = Fn(() => {
     const lv = heat.x, edge = lv.mul(-0.9).add(1);
     const g = smoothstep(edge, edge.add(0.5), liv.b).mul(lv).mul(liv.b).toVar();
