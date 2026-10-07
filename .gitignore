@@ -7,3 +7,5 @@ homokfutam/models/fx/build/
 __pycache__/
 waveletNoiseTile.bin
 homokfutam/models/world/build/
+
+homokfutam/tools/out/

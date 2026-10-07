@@ -1,0 +1,52 @@
+# HOMOKFUTAM tools
+
+The measurement harness behind `docs/visual-next-steps.md` (sections B, C, D), and the light bake. Headless Chrome
+driven by `puppeteer-core`, against the game on a local Vite dev server. Dev only: nothing here ships.
+
+## Setup
+
+```
+cd homokfutam/tools && npm install          # puppeteer-core, pngjs (no browser download)
+npx vite --host 127.0.0.1 --port 5199       # from the repo root, in another terminal
+```
+
+- The game must be served on `127.0.0.1` (its `window.__homok` hooks exist only on localhost). Without `--host`
+  Vite may listen on `::1` only.
+- `HF_BASE` picks the server (default `http://127.0.0.1:5199/homokfutam/`), `HF_CHROME` the Chrome binary (default
+  the Windows install path), `HF_ARGS` adds Chrome flags (`--enable-dawn-features=allow_unsafe_apis` for
+  `?gputime`).
+- Every page is silenced (`speechSynthesis` stubbed, `AudioContext` suspended): `--mute-audio` alone still lets the
+  announcer speak.
+- Captures and logs go to `out/` (not in git). `views.json` holds the fixed world-space cameras.
+
+## Scripts
+
+| Script | What |
+|---|---|
+| `bench.mjs [--size WxH] [--dpr n] [--rounds n] "query A" "query B" …` | `perf()` at grid / dunes / canyon / arena for each query, interleaved (A, B, A, B); fps, JS ms, draws, triangles, and GPU ms with `&gputime` on WebGPU |
+| `batch.mjs jobs.txt [--name n] [--port p]` | freezes the tree into a snapshot, serves it on its own port and runs a list of `bench.mjs` jobs against it (edits made meanwhile cannot reload the pages); logs in `out/<name>_<label>.log` |
+| `deltas.mjs out/<log>` | per spot and round, each variant's change against the first one in a `bench.mjs` log |
+| `shots.mjs name [--views a,b] [--size WxH] [--js snippet] "query" …` | the same fixed views for each query, paused, shader time and grain frozen, tiled side by side in `out/` |
+| `lum.mjs tag "query"` | HDR brightness of the scene pass per view (EV, centre-weighted EV, median, percentiles); WebGPU |
+| `trace.mjs tag "query" [--from s] [--until s] [--shots t,…] [--every a:b:step]` | a race in real time through the canyon with the chase camera, logging the eye adaptation every 100 ms, screenshots at race times |
+| `eyecheck.mjs "query"` | the eye's metered EV, target and exposure at a few points of a race |
+| `canyontime.mjs` | seconds and metres the player spends in the canyon and under the arch at race speed |
+| `bakegi.mjs ["query"]` | runs the light bake (`__homok.bakeGI()`, ~2 minutes) and writes `../assets/world/gi.bin` |
+| `gidecode.mjs x,y,z …` | the baked light at world points, as E(n) / E_open(n) for the six axis normals |
+| `nanscan.mjs ["query"] [view]` | WebGL: NaN / Inf in the post chain's buffers after each pass (one NaN pixel blacks out the frame through the bloom) |
+
+Examples:
+
+```
+node bench.mjs --size 2560x1440 --rounds 2 "q=high&renderer=webgpu&gputime&gfx=sss:0" "q=high&renderer=webgpu&gputime"
+node shots.mjs canyon --views canyonFwd,archIn "q=high&renderer=webgpu&gfx=gi:0" "q=high&renderer=webgpu"
+node trace.mjs exit "q=high&renderer=webgpu" --from 15 --until 30 --every 25:28:0.25
+```
+
+## Notes
+
+- Headless WebGPU needs `--disable-gpu-vsync --disable-frame-rate-limit` (set by `lib.mjs`): with vsync on,
+  presentation stalls at 7–12 fps.
+- Headless Chrome sometimes drops a request (`ERR_NO_BUFFER_SPACE`); `open()` retries the page load.
+- Check for other GPU load before benchmarking (a game tab, another dev server's browser): it skews whole runs.
+- Noise on this machine (RTX 3080 Ti): about ±0.3 ms on WebGPU GPU time, ±0.5 ms on WebGL frame time at 1440p.

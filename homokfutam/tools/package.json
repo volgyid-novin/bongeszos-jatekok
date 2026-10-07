@@ -1,0 +1,10 @@
+{
+  "name": "homokfutam-tools",
+  "private": true,
+  "type": "module",
+  "description": "Measurement and bake harness for HOMOKFUTAM (headless Chrome via puppeteer-core). See README.md.",
+  "dependencies": {
+    "pngjs": "^7.0.0",
+    "puppeteer-core": "^25.12.0"
+  }
+}
