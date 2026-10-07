@@ -3,7 +3,7 @@
 Working notes for the next round of visual work on HOMOKFUTAM, written so a new session can pick
 them up cold. Three parts:
 
-1. **Two deferred items:** batching the exhaust plumes, and moving to WebGPU (three's `WebGPURenderer` with TSL node materials).
+1. **Two deferred items:** batching the exhaust plumes, and moving to WebGPU (three's `WebGPURenderer` with TSL node materials). The WebGPU move is now done behind `?renderer=webgpu`; section B has the results and what is left.
 2. **Optional upgrades:** improvements that cost performance. Measure each one on its own, then decide whether it is worth it.
 3. **How to measure:** the harness used so far, and the numbers to compare against.
 
@@ -104,61 +104,128 @@ The other effect pieces (throats, flames, flares, ground glow and shadow) are al
 
 ---
 
-## B. Moving to `WebGPURenderer` and TSL
+## B. `WebGPURenderer` and TSL: done, behind a switch
 
-### What it would unlock
+**Status (October 2026).** Every material, effect and the whole post chain now also exists as TSL node code, and three's `WebGPURenderer` draws the game.
 
-- **TRAA, temporal anti-aliasing.** This is the single biggest image-quality gain left. It removes the shimmer on the sand glints, rock strata, thin cables and the crowd's alpha edges, and it would let MSAA go away.
-- **GTAO and SSGI** as node passes: better AO than N8AO, and screen-space bounce light, e.g. red light in the canyon on everything, not only the pods.
-- **Per-object motion blur** from a velocity buffer, replacing the radial speed blur.
-- **Compute shaders** for particles: move the 8 pools' CPU update loop (`gfx/particles.js` `update`) to the GPU.
-- **Indirect, multi-draw `BatchedMesh`** for the rock LOD sets.
+- **Default:** WebGPU on desktops, wherever the browser hands out a WebGPU adapter; otherwise the classic `WebGLRenderer`. Phones and tablets (`pointer: coarse`, as the quality guess detects them) default to WebGL because of the CPU cost.
+- **Menu:** the RENDERELŐ row (WEBGPU / WEBGL) switches; the choice is saved in `localStorage` (`homokfutam:renderer`) and the page reloads.
+- **URL:** `?renderer=webgpu|webgl` overrides both; `?renderer=webgpu-gl` forces WebGPURenderer's WebGL2 backend, for comparisons only.
+- **Cost:** the WebGPU path takes about three times the CPU per frame (see the measurements below). The default was switched anyway, for the image quality; WEBGL in the menu is the faster choice on weak CPUs.
 
-### What has to be rewritten
+### What it gives
 
-Every shader customization is GLSL injected through `onBeforeCompile` or `ShaderMaterial`, and none of it carries over. TSL compiles to WGSL, or to GLSL on the WebGL2 fallback. The sites:
+- **TRAA** replaces MSAA and SMAA on Medium, High and Ultra. Temporal flicker under a slow pan, as the mean second difference |f(k+1) − 2f(k) + f(k−1)| in the frame centre (lower is steadier), WebGL High with MSAA vs WebGPU High with TRAA:
 
-| File | What | Notes |
+  | Spot | WebGL (MSAA 4×) | WebGPU (TRAA) | WebGPU, no AA |
+  |---|---|---|---|
+  | Sand glints | 0.80 | 0.38 | 0.44 |
+  | Power line, distant | 0.16 | 0.08 | 0.10 |
+  | Grid paving | 1.58 | 1.30 | 2.05 |
+  | Crowd | 4.75 | 4.41 | 4.75 |
+
+  The crowd number is dominated by the sprites turning towards the camera, not by aliasing. No ghosting was visible behind pods or plumes at full boost.
+- **GTAO** (half resolution, depth-aware denoise) instead of N8AO.
+- **No compile stutter.** Race start on WebGPU: worst frame 25 ms; on WebGL there is a 258 ms hitch.
+- **What it unlocks next:** SSGI, per-object motion blur from the velocity buffer, compute shaders for the particle pools, and the GPU-side work for item A.
+
+### How it is built
+
+| File | What |
+|---|---|
+| `gfx/backend.js` | The switch (`GPU`, `FORCE_GL`). Lazy loading: `W` = `three/webgpu` and `TSL` = `three/tsl`, loaded with a top-level `await` only when needed; `N` = the node materials, filled by `loadNodes()` (main.js awaits it first). Shared uniforms: `U(v)` / `T(tex)` give `{ value }` objects for GLSL and uniform / texture nodes for TSL, so the CPU code that drives them (`.value = …`) is the same on both renderers. |
+| `gfx/tsl/atmosphere.js` | Height fog as `scene.fogNode`. `SunLight`, a `DirectionalLight` whose registered light node multiplies the sun by `hfSunVis()` (baked world shadow × cloud shadow) for every lit material: the equivalent of the old `lights_fragment_begin` patch. The sky. `smoothPCF`, the near shadow filter. |
+| `gfx/tsl/ground.js` | Terrain, track, rock and triplanar materials. `SurfaceMaterial` computes the surface once per fragment, in `setupDiffuseColor`, into property nodes that the colour, normal and roughness nodes read. `GroundLighting` adds the sand glint to the sun's direct light and applies the surface occlusion. |
+| `gfx/tsl/podfx.js`, `beam.js`, `particles.js`, `dressing.js`, `pod.js` | The effects, crowd, cloth, haze, arena interiors, flame glows, and the pods' livery and probe blend. |
+| `gfx/tsl/post.js` | Scene pass with an MRT of colour + velocity → GTAO + denoise → TRAA → heat shimmer / exhaust distortion / speed blur / chromatic aberration → [DoF] → god rays, bloom, lens flare → AgX → grade → sRGB. There are two `RenderPipeline`s, with and without DoF, chosen per frame. |
+| `main.js` | `precompile()`: before the loading screen hides, one frame of each post graph is drawn with everything visible and unculled, then it waits for `queue.onSubmittedWorkDone()`. |
+
+The GLSL path is unchanged, apart from the shared uniform objects and two loaders:
+- WebGL output of the working tree vs the previous commit, from fixed cameras: within the run-to-run noise of the race sim.
+- The WebGL page's JS is 513 KB gzipped, against 506 KB before. The WebGPU chunks (~240 KB gzipped) load only with `?renderer=webgpu`.
+
+### Things that bit, and how they were solved
+
+These are worth knowing before touching the TSL path:
+
+- **`material.aoNode` never reached the lighting.** The lighting context brings its own `ambientOcclusion`, fixed at 1. The surface occlusion is applied in `GroundLighting.ambientOcclusion()` instead. Without it the canyon floor turned blue in the shade.
+- **Instanced matrices in uniform buffers.** TSL puts an `InstancedMesh` whose matrices fit in a uniform buffer into one. three then rewrites that buffer for every draw, every frame (~1,200 `writeBuffer` calls per frame). It also bakes the instance count into the shader, which made ~40 extra pipelines of the rock shader. Fix: `renderer.backend.capabilities.getUniformBufferLimit = () => 0`. Instancing then goes through vertex attributes, and skeletons through a bone texture.
+- **At most 8 vertex buffers per pipeline.** Attribute instancing plus the previous-frame matrix (for velocity) uses two buffers. The camera-facing batches (flame glows, beam flares) are therefore plain instanced geometry with a packed centre+size attribute (`FxBatch` `billboard` option).
+- **Pipeline compilation.**
+  - Pipelines are compiled the first time they are drawn, and the MRT scene pass needs its own variant of every material.
+  - Swapping a `RenderPipeline`'s `outputNode` rebuilds its passes. Hence two pipelines.
+  - `PassNode.compileAsync()` before the first render compiles for the wrong target (no MRT yet): ~115 wasted heavy pipelines. It is not used.
+  - The GPU process keeps compiling after the warm-up, so the boot waits for it.
+- **The TSL PCF filter rotates its taps by screen-space noise that does not change over frames.** It read as grain under the pods. `smoothPCF` is a 9-tap bilinear grid, like WebGL's PCF.
+- **GTAO noise.** TRAA alone left speckle under the pods, and on the glows drawn over them; hence `denoise()`.
+- **Transparent surfaces must not write velocity.** A plume's bounding box outlined itself as the ground inside it took the pod's motion. Velocity is written with alpha 1 by opaque materials and 0 by transparent ones, into a normally blended MRT attachment.
+- **Render bundles.** `BundleGroup` for the static scenery gave +20 % fps. But replayed bundles kept stale camera-dependent state: the scene froze to the recording camera after some bind-group rebuilds, and crowd sprites were mis-placed. Removed; worth another try after a three update.
+- **WGSL / WebGPU details:**
+  - Comparison sampling is not allowed in vertex shaders. The particle and crowd shadow lookup moved to the fragment stage, at the centre.
+  - `smoothstep` with low > high is undefined (`ss()` in `tsl/common.js` handles falling edges).
+  - Render-target textures are sampled with v running down (trail map, shadow matrices).
+  - `readRenderTargetPixelsAsync` returns rows top-down.
+  - An `<img>` is uploaded premultiplied: the pod livery mask, whose alpha is 0, now loads as an unpremultiplied `ImageBitmap`.
+  - The pod's UVs are dequantised by the map's texture transform. The livery has to use the same transform.
+- **TSL refreshes `InstancedMesh` colours once per frame, not per render.** The trail map is drawn many times per frame while `sim()` fast-forwards, so its stamps use plain per-instance attributes.
+- **The WebGL2 backend of `WebGPURenderer`.**
+  - Explicit-LOD sampling of a depth texture returns a `vec4` where TSL expects a float; plain `.sample()` is used instead.
+  - It is slow here (below), so the classic `WebGLRenderer` stays the fallback.
+
+### Measurements
+
+RTX 3080 Ti, headless Chrome with vsync and the frame-rate limit off, `perf(150)` at grid / dunes / canyon / arena. WebGPU needs those flags: with vsync on, headless WebGPU presentation stalls at 7–12 fps.
+
+| Preset, size | WebGL fps (JS ms) | WebGPU fps (JS ms) |
 |---|---|---|
-| `gfx/atmosphere.js` | global chunk replacement: `fog_*`, `lights_fragment_begin` (sun × `hfSunVis`), `Material.prototype.onBeforeCompile` | Hardest: the height fog becomes a `scene.fogNode`; the baked world shadow multiplying the sun needs a custom shadow or lighting node |
-| `gfx/ground.js` | terrain, track and rock/arena materials (~450 lines GLSL: 7-layer texture-array blend, macro map, glint, oil and burn, trails) | Mechanical but long; becomes `MeshStandardNodeMaterial` with `colorNode`, `normalNode`, `roughnessNode`, `aoNode` |
-| `gfx/post.js` | pmndrs `postprocessing` + N8AO, custom `SpeedEffect`, `FlareEffect`, `GradeEffect`, AgX tone mapping | pmndrs is WebGL-only. Rebuild with three's TSL post nodes (`pass`, `ao`/GTAO, `bloom`, `dof`, `traa`) and `Fn` nodes for the three custom effects |
-| `playerPod.js` | livery patch (paint, trim and heat masks), probe blend (`podEnvPatch` in `gfx/probes.js`) | The probe blend becomes a custom `envNode` mix |
-| `gfx/podfx.js` | volumetric plume, cone plume, throats, decals, heat-distortion layer, trail map RT | Raymarch as a TSL `Fn` loop |
-| `gfx/beam.js` | beam strands and flares | |
-| `gfx/particles.js` | 8 pools, flipbook "6-way" lighting, soft particles | Good fit for compute |
-| `gfx/fxbatch.js` and the `FLAMES` batch in `main.js` | instanced billboards | |
-| `world/dressing.js` | cloth vertex sway, crowd sprites (`CROWD_V` / `CROWD_F`), dust devils | |
-| `world/haze.js`, `world/horizon.js`, `world/macro.js` | haze sheets, horizon ring, macro-map bake | |
-| `main.js` | `interiorMaterial()` (arena openings), sky dome (`skyMaterial` in atmosphere.js), probe bake (PMREM is supported) | |
+| Low, 1920×1080 | 687–882 (1.0–1.3) | 269–353 (2.7–3.6) |
+| Medium, 1920×1080 | 566–622 (1.5–1.6) | 176–189 (4.8–5.3) |
+| High, 1920×1080 | 378–449 (1.9–2.4) | 162–176 (5.4–6.0) |
+| High, 2880×1620 | 218–262 | 151–175 |
+| Ultra, 3840×2160 | 117–140 | 92–129 |
 
-### Approach if we go ahead
+- **CPU, not GPU.**
+  - WebGPU High runs at about the same frame rate at 640×360 as at 1920×1080 (~190 fps in a quick check).
+  - At 4K it is close to WebGL. The GPU cost of the WebGPU chain (TRAA, GTAO + denoise, …) is about the same as the WebGL chain's.
+  - The gap is three's per-draw and per-pass CPU work in `WebGPURenderer`: render-object bookkeeping, node cache keys, and a uniform-buffer write per object.
+  - Costs on WebGPU High: the whole post chain ~1.2 ms, static casters in the near shadow map ~1 ms. The heat layer cost ~0.4 ms as 13 separate quads; it is now one instanced draw (not re-measured).
+- **Loading, High.**
 
-- **Spike branch with a renderer switch** (e.g. `?renderer=webgpu`). It uses `WebGPURenderer` with its automatic WebGL2 fallback, so there is still one code path.
-- **Port order:**
-  1. Renderer and post chain with TRAA, on unmodified materials. This alone shows what TRAA buys.
-  2. Atmosphere and fog.
-  3. Ground.
-  4. Pods.
-  5. Effects.
-  6. Dressing.
-- **Measure at each step,** especially on the WebGL2 fallback, and check shader compile times. TSL-generated programs can be larger, and the game already compiles about 85 programs.
-- **Effort:** several sessions; I'd expect 4–6 focused ones.
-- **Main risks:**
-  - The atmosphere and world-shadow integration.
-  - Feature parity of the post chain.
-  - Ghosting with TRAA at 500+ km/h. That needs good velocity vectors for the pods and particles, and a reactive mask for additive effects.
+  | Load | WebGL | WebGPU |
+  |---|---|---|
+  | First (cold profile) | 8.0 s | 11.4 s |
+  | Repeat (persistent profile) | 3.5 s | 8.0 s |
 
-### Alternative without changing renderer
+  - The WebGPU time is pipeline compilation: ~57 large shaders (>30 KB of WGSL), many of them variants of the rock material.
+  - The probe bake renders the scene into its own target format, so it needs a full second set.
+- **WebGL2 backend of `WebGPURenderer`:** Low 96–157 fps, Medium ~30, High without post ~65. Not usable as a fallback.
 
-A home-made TAA in the current WebGL stack. It needs:
-- a jittered projection
-- a velocity buffer: either an extra scene render with a velocity material (+~250 draws, so expensive on CPU) or MRT, which means touching every `onBeforeCompile` patch again
-- history reprojection with neighbourhood clamping, as a pmndrs `Effect`
+### Recommendation
 
-`realism-effects` (TRAA/SSGI for pmndrs postprocessing v6) exists, but it appears to be unmaintained. Evaluate it only as a quick experiment.
+The first recommendation was to keep `WebGLRenderer` as the default until the WebGPU path is cheaper. Instead, WebGPU was made the default (for the image quality), with WebGL one click away in the menu.
 
-**Recommendation:** run step 1 of the spike (renderer, post and TRAA on stock materials) before deciding. It's the cheapest way to see what TRAA would give.
+Targets for the WebGPU path:
+1. CPU per frame on High within ~1.5× of WebGL. That needs about −2.5 ms.
+2. Cold load within ~2 s of WebGL.
+
+Until then phones and tablets default to WEBGL (`pointer: coarse`, in `gfx/backend.js`); weak desktop CPUs may also be better off on WEBGL, but there is no reliable way to detect them up front.
+
+### Next steps for B, in order of expected payoff
+
+1. **CPU per frame:**
+   - Render bundles for the static scenery once replay is reliable (+20 % measured).
+   - A static-caster shadow map that is only redrawn when the shadow box moves by a texel row, instead of every frame (−1 ms).
+   - A cheaper bloom (BloomNode is 12 passes), and merging the quad passes that do not need their own target.
+   - Item A (one draw for all plumes and beams) is worth more here than on WebGL.
+   - Rock LOD sets as an indirect `BatchedMesh`.
+2. **Load time:**
+   - Turn the rock material's compile-time variants (arena, AO attribute, vertex colours) into uniforms, which collapses ~20 shaders into a few.
+   - Bake the probes with the cheaper ground shader (`groundQ` 0).
+3. **Use the unlocks:**
+   - Per-object motion blur instead of the radial speed blur.
+   - SSGI for red bounce light in the canyon.
+   - Compute particles.
+   - Drop the GLSL path once WebGPU is the default and WebGL is the fallback only.
 
 ---
 
@@ -272,7 +339,7 @@ The scripts used so far lived in the session scratchpad and are not in the repo.
 ### Browser
 
 - `puppeteer-core` driving the locally installed Chrome (`C:/Program Files/Google/Chrome/Application/chrome.exe`), `headless: 'new'`.
-- Args: `--mute-audio --use-angle=d3d11 --enable-gpu --ignore-gpu-blocklist --disable-gpu-vsync --disable-frame-rate-limit`. The last two give uncapped fps.
+- Args: `--mute-audio --use-angle=d3d11 --enable-gpu --ignore-gpu-blocklist --disable-gpu-vsync --disable-frame-rate-limit`. The last two give uncapped fps. For `?renderer=webgpu` add `--enable-unsafe-webgpu`, and always use the last two: with vsync on, headless WebGPU presentation stalls at 7–12 fps.
 - **Silence:** `--mute-audio` alone is not enough. In `page.evaluateOnNewDocument`, stub `speechSynthesis.speak` (the announcer plays through the OS speech engine) and keep every `AudioContext` suspended.
 - **Loading:**
   - Start Vite with `--host 127.0.0.1` (it otherwise listens on `::1` only here).
@@ -296,16 +363,20 @@ The scripts used so far lived in the session scratchpad and are not in the repo.
 | `rocks` | the rock lists, for framing spires |
 | `groundDebug(n)` | ground shader debug views |
 | `post`, `scene`, `renderer`, `camera` | for direct probing |
+| `ATMO`, `TSL`, `GPUTHREE`, `GPU`, `trails` | the shared atmosphere uniforms (freeze `ATMO.hfTime` to stop shader time on either renderer), three's TSL and WebGPU modules on the WebGPU path, the trail map |
+
+On the WebGPU path `post` has `grade` / `speed` / `flare` handles with the same `uniforms.get(...)` as the WebGL chain, and `post.ao.setAoOnly(true)` shows the AO alone.
 
 ### Benchmark
 
 - **Spots:** grid (`start` + 0 s), dunes (+10 s), canyon (+10 s), arena (+20 s). `perf(150)` at each.
 - **Two runs:** DPR 1, which is mostly CPU-bound and shows draw-call and JS changes, and DPR 2 (deviceScaleFactor 2), which is GPU-bound and shows shader and fill changes.
+- **Pass the renderer explicitly** (`renderer=webgl` or `renderer=webgpu`): without it the page uses the menu's saved choice or the WebGPU default.
 - **Interleave A and B** (A, B, A, B). Check for other GPU load first: in this session the user's own dev server and Chrome running the game skewed one run by ~35%.
 
 ### Draw-call census
 
-- Wrap `renderer.renderBufferDirect` for one frame and tally calls and triangles.
+- Wrap `renderer.renderBufferDirect` for one frame and tally calls and triangles. On `WebGPURenderer` wrap `renderer._renderObjectDirect` instead; `perf()` reports `info.render.drawCalls` there.
 - Split by pass: a `MeshDepthMaterial` or `MeshDistanceMaterial` means the shadow pass.
 - Split by object family: `userData.terrain`, `.rock`, `.scatter`, otherwise the nearest named ancestor and the material name.
 
@@ -321,6 +392,8 @@ The scripts used so far lived in the session scratchpad and are not in the repo.
 - **Freeze before each capture:**
   - pause the race (Escape)
   - set a static `view()`
-  - freeze the shared `uTime` uniform (find any material with `uniforms.uTime` and redefine `value` with a getter)
+  - freeze the shared `uTime` uniform: `ATMO.hfTime` (or, on older builds, any material with `uniforms.uTime`), by redefining `value` with a getter; restore it by redefining it as a plain writable value, not with `delete` (a node with no `value` breaks the next shader build)
+  - compare from fixed world-space cameras (`view({ eye, look, abs: true })`): the race sim is not deterministic, so pod-relative views land in different places on each run
+  - a WebGPU canvas can only be read (`drawImage`, screenshots) after the frame is presented: step one frame per `requestAnimationFrame`
   - set the grade's `uGrain` to 0
 - Then tile the variants side by side into one image.

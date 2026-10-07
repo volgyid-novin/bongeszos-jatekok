@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { atmoUniforms } from './atmosphere.js';
+import { GPU, U, T, maxAnisotropy, N } from './backend.js';
 
 // ============================================================
 //  Surface materials: PBR textures from Poly Haven (CC0), packed by hand:
@@ -12,7 +13,7 @@ export const SURF = {};
 
 export function loadSurfaces(renderer) {
   const loader = new THREE.TextureLoader();
-  const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  const aniso = Math.min(8, maxAnisotropy(renderer));
   const pending = [];
   const load = (f, srgb) => {
     let done;
@@ -68,11 +69,12 @@ function patch(material, key, uniforms, frag, vert) {
 //  (strata) or the material colour set the hue and the texture adds the detail.
 // ---------------------------------------------------------------------------
 export function triplanarMaterial(set, { scale = 1 / 10, chroma = 0.5, contrast = 1, normal = 1, rough = [0.55, 0.6], vertexColors = true, color = '#ffffff', macro = 0.3, side = THREE.FrontSide, flat = false } = {}) {
-  const m = new THREE.MeshStandardMaterial({ vertexColors, color, roughness: 1, metalness: 0, side, flatShading: flat });
   const u = {
-    tpC: { value: SURF[set].c }, tpN: { value: SURF[set].n }, tpScale: { value: scale }, tpChroma: { value: chroma }, tpContrast: { value: contrast },
-    tpNormal: { value: normal }, tpRough: { value: new THREE.Vector2(...rough) }, tpMacro: { value: macro },
+    tpC: T(SURF[set].c), tpN: T(SURF[set].n), tpScale: U(scale), tpChroma: U(chroma), tpContrast: U(contrast),
+    tpNormal: U(normal), tpRough: U(new THREE.Vector2(...rough)), tpMacro: U(macro),
   };
+  if (GPU) return N.triplanarNodeMaterial({ color, roughness: 1, metalness: 0, side, flatShading: flat }, u, vertexColors);
+  const m = new THREE.MeshStandardMaterial({ vertexColors, color, roughness: 1, metalness: 0, side, flatShading: flat });
   return patch(m, 'hf-tri', u, {
     pars: /* glsl */`uniform sampler2D tpC, tpN; uniform float tpScale, tpNormal, tpMacro, tpChroma, tpContrast; uniform vec2 tpRough;`,
     chunks: {

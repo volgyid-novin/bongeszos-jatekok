@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ATMO } from './atmosphere.js';
+import { GPU, U, T, N } from './backend.js';
 
 // ============================================================
 //  Particles: CPU-simulated, drawn as instanced camera-facing quads.
@@ -16,7 +17,7 @@ import { ATMO } from './atmosphere.js';
 
 // --- flipbooks: 8x8 cells; smoke = 2 variants x 32 frames, fire = 1 x 64 frames ---
 // RGB = sqrt(light from the right / left / above (smoke) or flame emission (fire)), A = coverage
-const FLIP = { smoke: { value: null }, fire: { value: null }, on: { value: 0 } };
+const FLIP = { smoke: T(null), fire: T(null), on: U(0) };
 const FLIP_URL = { smoke: new URL('../assets/fx/smoke.webp', import.meta.url).href, fire: new URL('../assets/fx/fire.webp', import.meta.url).href };
 export function loadFlipbooks() {
   // ImageBitmap without premultiplication: the colour channels are data, kept even where A is small
@@ -236,15 +237,23 @@ export class Particles {
     if (fire || o.flip) defines.FLIP = '';
     if (fire) defines.FIRE = '';
     const additive = o.kind === 'add' || o.kind === 'spark';
-    this.mat = new THREE.ShaderMaterial({
+    const uniforms = {
+      uMap: T(puffAtlas()), uStretch: U(o.stretch),
+      uAmbient: U(new THREE.Color(o.ambient || '#8f8172')), uSunCol: U(new THREE.Color(o.sun || '#ffd9b0')),
+      uFlip: fire ? FLIP.fire : FLIP.smoke, uFlipOn: FLIP.on, uFrames: U(fire ? 64 : 32), uVariants: U(fire ? 1 : 2),
+      uSpan: U(o.span ?? 1), uEmit: U(o.emit ?? 1),
+      uFlame0: U(new THREE.Color(o.flame0 || '#ff3c0a')), uFlame1: U(new THREE.Color(o.flame1 || '#ffc46a')),
+    };
+    if (GPU) {
+      // premultiplied fire: blend factors only (the shader writes premultiplied colour itself)
+      const blend = additive ? { blending: THREE.AdditiveBlending } : fire
+        ? { blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor }
+        : { blending: THREE.NormalBlending };
+      this.mat = N.particleMaterial({ spark: o.kind === 'spark', add: o.kind === 'add', confetti: o.kind === 'confetti', flip: fire || !!o.flip, fire }, uniforms,
+        { transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, ...blend });
+    } else this.mat = new THREE.ShaderMaterial({
       vertexShader: VERT, fragmentShader: FRAG, defines,
-      uniforms: Object.assign({
-        uMap: { value: puffAtlas() }, uStretch: { value: o.stretch },
-        uAmbient: { value: new THREE.Color(o.ambient || '#8f8172') }, uSunCol: { value: new THREE.Color(o.sun || '#ffd9b0') },
-        uFlip: fire ? FLIP.fire : FLIP.smoke, uFlipOn: FLIP.on, uFrames: { value: fire ? 64 : 32 }, uVariants: { value: fire ? 1 : 2 },
-        uSpan: { value: o.span ?? 1 }, uEmit: { value: o.emit ?? 1 },
-        uFlame0: { value: new THREE.Color(o.flame0 || '#ff3c0a') }, uFlame1: { value: new THREE.Color(o.flame1 || '#ffc46a') },
-      }, THREE.UniformsUtils.clone(THREE.UniformsLib.fog), ATMO),
+      uniforms: Object.assign(uniforms, THREE.UniformsUtils.clone(THREE.UniformsLib.fog), ATMO),
       transparent: true, depthWrite: false, fog: true, premultipliedAlpha: fire,
       blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
       side: THREE.DoubleSide, forceSinglePass: true,

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { GPU, FORCE_GL, W, TSL, N, loadNodes, RENDERER, WEBGPU_MISSING, saveRenderer } from './gfx/backend.js';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RaceRoom, selfId } from './net.js';
@@ -22,7 +23,8 @@ import { buildDressing } from './world/dressing.js';
 import { createAudio } from './audio.js';
 
 const Q = pickQuality();
-installAtmosphere();
+await loadNodes();             // WebGPURenderer: the node materials (gfx/tsl/), before anything is built
+if (!GPU) installAtmosphere();
 
 // ============================================================
 //  Utilities
@@ -307,7 +309,21 @@ TEX.checker.magFilter = THREE.NearestFilter;
 //  Renderer, scene, sky, light
 // ============================================================
 const canvas = document.getElementById('view');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: !Q.post, powerPreference: 'high-performance', stencil: false });
+// WebGPURenderer (?renderer=webgpu, gfx/backend.js): WebGPU, or its own WebGL2 backend; it has to finish
+// initialising before anything renders or asks for its features (the KTX2 loader does)
+const renderer = GPU
+  ? new W.WebGPURenderer({ canvas, antialias: !Q.post, powerPreference: 'high-performance', stencil: false, forceWebGL: FORCE_GL })
+  : new THREE.WebGLRenderer({ canvas, antialias: !Q.post, powerPreference: 'high-performance', stencil: false });
+if (GPU) {
+  await renderer.init();
+  console.log(`HOMOKFUTAM: WebGPURenderer on ${renderer.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL2'}`);
+  // TSL puts the matrices of an InstancedMesh that fits in a uniform buffer into one: three then rewrites
+  // that buffer for every draw, every frame, and the instance count is baked into the shader, so every
+  // count is another pipeline to compile (~40 extra copies of the rock shader). With no uniform-buffer
+  // budget, instance matrices go into vertex attributes (uploaded when they change) and the pods'
+  // skeletons into a bone texture.
+  renderer.backend.capabilities.getUniformBufferLimit = () => 0;
+}
 // with post-processing on, tone mapping happens in the effect chain (gfx/post.js)
 // With post-processing the tone mapping is AgX at the end of the post chain (gfx/post.js, like Blender's
 // view transform), and it takes this exposure. Without it (LOW) the materials tone map with ACES: it needs
@@ -322,6 +338,7 @@ const SURF = loadSurfaces(renderer);
 const GROUND_READY = loadGround(renderer, Q);
 
 const scene = new THREE.Scene();
+if (GPU) installAtmosphere(renderer, scene);
 // Only switches USE_FOG on: the real fog is ATMO's height fog and the scene's shaders ignore near/far.
 // N8AO does read them, to fade the AO out with distance (with 1..2 m it faded out all of it).
 scene.fog = new THREE.Fog(PALETTE.fog, 200, 2500);
@@ -341,11 +358,12 @@ scene.environment = buildEnvironment(renderer);
 scene.environmentIntensity = 0.6;
 // warm bounce from the sand and rock that the sky-only environment does not have
 scene.add(new THREE.HemisphereLight('#9db4d2', '#c98b52', 0.55));
-const sun = new THREE.DirectionalLight(PALETTE.sun, 3.1);
+const sun = new (GPU ? N.SunLight : THREE.DirectionalLight)(PALETTE.sun, 3.1);
 sun.castShadow = true;
 sun.shadow.mapSize.set(Q.shadow, Q.shadow);
 Object.assign(sun.shadow.camera, { left: -Q.shadowBox / 2, right: Q.shadowBox / 2, top: Q.shadowBox / 2, bottom: -Q.shadowBox / 2, near: 10, far: 1600 });
 sun.shadow.bias = -0.0003; sun.shadow.normalBias = 0.5; sun.shadow.radius = 2.5;
+if (GPU) sun.shadow.filterNode = N.smoothPCF;
 scene.add(sun, sun.target);
 
 let post = null;    // gfx/post.js, created at boot when the preset asks for it
@@ -664,6 +682,7 @@ const AM = (layer, o = {}) => rockMaterial(Q, layer, Object.assign({ arena: true
 // space: the openings face +z, the floor is at y = 0); sunlight pools on the floor near the entrance
 // and fades into warm darkness at the back. No textures, no extra geometry.
 function interiorMaterial() {
+  if (GPU) return N.interiorNodeMaterial();         // gfx/tsl/dressing.js: needs the module's z axis per instance (iZ)
   const m = new THREE.MeshStandardMaterial({ color: '#0d0907', roughness: 1 });
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, ATMO);
@@ -800,7 +819,13 @@ function buildArenaVisuals(models) {
   const parts = (name) => MATN.map((m) => [m, models.get(`${name}_${m}`)]).filter(([, g]) => g);
   const instances = (name, list) => {
     if (!list.length) return;
-    for (const [m, g] of parts(name)) {
+    for (const [m, g0] of parts(name)) {
+      let g = g0;
+      if (GPU && m === 'dark') {
+        // the interior mapping's module frame (it turns only about y): its z axis in world xz
+        g = g0.clone();
+        g.setAttribute('iZ', new THREE.InstancedBufferAttribute(new Float32Array(list.flatMap((mx) => [mx.elements[8], mx.elements[10]])), 2));
+      }
       const im = new THREE.InstancedMesh(g, ARENA_MATS[m], list.length);
       list.forEach((mx, n) => im.setMatrixAt(n, mx));
       im.computeBoundingSphere();
@@ -1170,7 +1195,7 @@ function buildEngine(paint, hot) {
 }
 // the emitter flares of all beams, and the flame glows at all nozzles, one draw each (gfx/fxbatch.js)
 const BEAM_FLARES = createBeamFlares(scene);
-const FLAMES = new FxBatch(scene, new THREE.PlaneGeometry(1, 1), new THREE.ShaderMaterial({
+const FLAMES = new FxBatch(scene, new THREE.PlaneGeometry(1, 1), GPU ? N.flameGlowMaterial(TEX.glow) : new THREE.ShaderMaterial({
   uniforms: { map: { value: TEX.glow } },
   vertexShader: /* glsl */`
     attribute vec3 aCol;
@@ -1191,7 +1216,7 @@ const FLAMES = new FxBatch(scene, new THREE.PlaneGeometry(1, 1), new THREE.Shade
       #include <colorspace_fragment>
     }`,
   transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-}), 24, { aCol: 3 });
+}), 24, { aCol: 3 }, 0, { billboard: true });
 // after every racer's racerFx: upload the effect batches
 function endFxFrame() {
   podFx.endFrame();
@@ -2458,6 +2483,21 @@ bindSeg('gfxSeg', (v) => {
   $('gfxNote').hidden = false;
   setTimeout(() => { const u = new URL(location.href); u.searchParams.delete('q'); location.replace(u.href); }, 350);
 });
+// renderer (gfx/backend.js): WebGPU by default where the browser supports it; saved, then the page reloads
+const RENDERERS = ['webgpu', 'webgl'];
+syncSeg('rendererSeg', RENDERERS.indexOf(RENDERER));
+if (WEBGPU_MISSING || !navigator.gpu) {
+  $('rendererSeg').querySelector('[data-v="0"]').disabled = true;
+  $('rendererNote').textContent = 'Ez a böngésző nem támogatja a WebGPU-t, ezért WebGL-lel fut.';
+  $('rendererNote').hidden = false;
+}
+bindSeg('rendererSeg', (v) => {
+  if (RENDERERS[v] === RENDERER) return;
+  saveRenderer(RENDERERS[v]);
+  $('rendererNote').textContent = 'A váltás újratölti az oldalt.';
+  $('rendererNote').hidden = false;
+  setTimeout(() => { const u = new URL(location.href); u.searchParams.delete('renderer'); location.replace(u.href); }, 350);
+});
 $('startBtn').addEventListener('click', () => { initAudio(); newRace(); });
 $('resumeBtn').addEventListener('click', togglePause);
 $('photoBtn').addEventListener('click', enterPhoto);
@@ -2952,14 +2992,14 @@ function renderFrame(dt) {
 // local testing hook (only on localhost): fast-forward the race without rendering every frame
 if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
   window.__homok = {
-    THREE, scene, renderer, camera, rocks: ROCKS, fx: () => ({ DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST }), get post() { return post; }, set post(v) { post = v; },
+    THREE, scene, renderer, camera, rocks: ROCKS, TSL, GPUTHREE: W, ATMO, GPU, trails: TRAILS, fx: () => ({ DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST }), get post() { return post; }, set post(v) { post = v; },
     start(l = 1, d = 1, intro = false) { laps = l; diff = d; newRace(); if (!intro) endIntro(); return this.info(); },
     cine: CINE, photo: PHOTO,
     perf(frames = 120) {
       return new Promise((res) => {
         let n = 0; const t0 = performance.now();
         const tick = () => {
-          if (++n >= frames) res({ fps: +(frames * 1000 / (performance.now() - t0)).toFixed(1), jsMs: +PERF.js.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, ratio: renderer.getPixelRatio(), q: Q.name });
+          if (++n >= frames) res({ fps: +(frames * 1000 / (performance.now() - t0)).toFixed(1), jsMs: +PERF.js.toFixed(2), calls: GPU ? renderer.info.render.drawCalls : renderer.info.render.calls, tris: renderer.info.render.triangles, ratio: renderer.getPixelRatio(), q: Q.name });
           else requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
@@ -3037,10 +3077,35 @@ function podProbe(r) {
   return c >= h ? [PROBES.canyon, c] : [PROBES.arch, h];
 }
 
+// WebGPURenderer builds a pipeline the first time it draws an object with a material, and the post
+// chain's scene pass (colour + velocity) needs its own variant of every one: without this the race
+// start stutters for seconds. Build them all behind the loading screen by drawing a frame of each post
+// graph (with and without depth of field) with everything briefly visible and exempt from frustum
+// culling; that also builds the shadow pass's pipelines. The pods get their probe lighting first (it
+// rebuilds their materials).
+async function precompile() {
+  const t0 = performance.now(), saved = [];
+  if (PROBES) for (const r of racers) { const p = r.mesh.userData.pod; if (p) { const [b, w] = podProbe(r); setPodEnv(p, PROBES.desert, b, w, PROBE_K); } }
+  scene.traverse((o) => { saved.push([o, o.visible, o.frustumCulled]); o.visible = true; o.frustumCulled = false; });
+  try {
+    // (no compileAsync: before the post chain has drawn once its scene pass has no MRT targets yet, and
+    // compileAsync would build ~100 heavy pipelines for a target format nothing uses)
+    heatLayer?.render(renderer, camera);
+    for (const on of [true, false]) {
+      if (post) { post.update(0.016, { ...FX, dof: { on, focus: camera.position.clone().add(new THREE.Vector3(0, 0, -20)), range: 14 } }); post.render(); }
+      else renderer.render(scene, camera);
+    }
+  } catch (e) { console.warn('HOMOKFUTAM: precompile failed', e); }
+  for (const [o, v, f] of saved) { o.visible = v; o.frustumCulled = f; }
+  // the GPU process compiles those pipelines in the background: wait for it, or the first frames stall
+  await renderer.backend.device?.queue.onSubmittedWorkDone();
+  console.log(`HOMOKFUTAM: pipelines compiled in ${Math.round(performance.now() - t0)} ms`);
+}
+
 // static sun shadow for the whole world, rendered once everything static exists
 const WORLD_BOUNDS = new THREE.Box3(new THREE.Vector3(-1850, -70, -2450), new THREE.Vector3(2050, 270, 1000));
-function boot(data) {
-  try { bakeMacro(renderer, scene, { x0: TERRAIN.cx - TERRAIN.size / 2, z0: TERRAIN.cz - TERRAIN.size / 2, size: TERRAIN.size, res: 1024 }); }
+async function boot(data) {
+  try { await bakeMacro(renderer, scene, { x0: TERRAIN.cx - TERRAIN.size / 2, z0: TERRAIN.cz - TERRAIN.size / 2, size: TERRAIN.size, res: 1024 }); }
   catch (e) { console.warn('HOMOKFUTAM: macro map failed', e); }
   if (PROPS_MODELS) {
     try { ROCKS.scatter = buildScatter({ scene, TR, Q, groundQuery, rng, models: PROPS_MODELS, rockMat: boulderMatAO, metalMat: ARENA_MATS.metal }); }
@@ -3048,7 +3113,7 @@ function boot(data) {
   }
   bakeWorldShadow(renderer, scene, WORLD_BOUNDS, Q.staticShadow);
   try { PROBES = bakePodProbes(); } catch (e) { console.warn('HOMOKFUTAM: light probes failed', e); }
-  if (PROBES?.canyon) canyonMat.envMap = PROBES.canyon;         // sky through the slot, red rock all round
+  if (PROBES?.canyon) { canyonMat.envMap = PROBES.canyon; canyonMat.needsUpdate = true; }        // sky through the slot, red rock all round
   // LOW: only the things that move (pods, debris) draw into the near shadow map every frame; the
   // static world keeps just its baked shadow
   if (Q.casters === false) {
@@ -3058,12 +3123,13 @@ function boot(data) {
   try { buildHaze({ scene, TR, rangeWhere, arch: ROCKS.arch, Q }); } catch (e) { console.warn('HOMOKFUTAM: haze failed', e); }
   if (Q.post) {
     try {
-      post = createPost(renderer, scene, camera, Q, SUN_DIR);
-      if (heatLayer) { post.speed.uniforms.get('uDistort').value = heatLayer.rt.texture; post.speed.uniforms.get('uDistortOn').value = 1; }
+      post = GPU ? N.createNodePost(renderer, scene, camera, Q, SUN_DIR, heatLayer) : createPost(renderer, scene, camera, Q, SUN_DIR);
+      if (heatLayer && !GPU) { post.speed.uniforms.get('uDistort').value = heatLayer.rt.texture; post.speed.uniforms.get('uDistortOn').value = 1; }
       resize();
     }
     catch (e) { console.warn('HOMOKFUTAM: post-processing failed, rendering without it', e); post = null; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0; }
   }
+  if (GPU) await precompile();
   if (data && data.laps) { laps = data.laps; syncSeg('lapsSeg', laps); }
   if (data && data.diff != null) { diff = data.diff; syncSeg('diffSeg', diff); }
   if (data && data.muted) setMuted(true);
@@ -3073,7 +3139,7 @@ function boot(data) {
   requestAnimationFrame((t) => { lastT = t; frame(t); $('loading').hidden = true; });
 }
 // show the game once the surface textures are in (or after 10 s, whatever happens first)
-const texturesReady = Promise.race([Promise.all([SURF.ready, GROUND_READY, ROCKS_READY, ARENA_READY, PROPS_READY]), new Promise((r) => setTimeout(r, 15000))]);
+const texturesReady = Promise.race([Promise.all([SURF.ready, GROUND_READY, ROCKS_READY, ARENA_READY, PROPS_READY, DRESS.ready]), new Promise((r) => setTimeout(r, 15000))]);
 const hot = window.claude && window.claude.hot;
 if (hot && typeof hot.snapshot === 'function') { try { hot.snapshot(() => ({ laps, diff, muted: SND.muted })); } catch { /* ignore */ } }
 if (hot && typeof hot.ready === 'function') hot.ready((d) => texturesReady.then(() => boot(d)));

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { GPU, W } from './backend.js';
 
 // ============================================================
 //  Light probes: the real scene rendered into a few prefiltered cube maps at load, from where the pods
@@ -26,7 +27,7 @@ export function bakeProbes(renderer, scene, points, prepare) {
   const autoShadow = renderer.shadowMap.autoUpdate;
   renderer.shadowMap.autoUpdate = false;
   renderer.shadowMap.needsUpdate = true;
-  const pmrem = new THREE.PMREMGenerator(renderer);
+  const pmrem = new (GPU ? W.PMREMGenerator : THREE.PMREMGenerator)(renderer);
   const out = {};
   for (const [name, pos] of Object.entries(points)) {
     prepare?.(pos);

@@ -91,6 +91,8 @@ Ha a gép nem bírja a tempót, a felbontás magától lejjebb megy, és amikor 
 
 Teszteléshez az URL-ben is meg lehet adni: `?q=low|medium|high|ultra`, egyes beállítások pedig felülírhatók, például `?gfx=ao:0,heat:0,shadow:1024`.
 
+A **RENDERELŐ** sorban WEBGPU és WEBGL közül lehet választani; a váltás újratölti az oldalt, a választást a böngésző megjegyzi. Asztali gépen alapból WebGPU, ha a böngésző támogatja, különben WebGL; telefonon és tableten alapból WebGL. WebGPU-n a three.js WebGPURenderer rajzol, TSL-ben írt anyagokkal és utófeldolgozással. Az élsimítás itt időbeli (TRAA): a homok csillogása, a távoli vezetékek és a kőlapok mozgás közben jóval kevésbé vibrálnak, és nincs szükség MSAA-ra; az árnyékolás a sarkokban GTAO. A WebGPU-s rész csak ilyenkor töltődik le. Cserébe képkockánként kb. háromszor annyi processzoridőt visz el, és lassabban tölt be (a részletek: `docs/visual-next-steps.md`, B), ezért gyengébb gépen a WEBGL lehet a gyorsabb (telefonon ezért az az alapértelmezés). Az URL-ben is megadható: `?renderer=webgpu|webgl`; `?renderer=webgpu-gl` a WebGPURenderer saját WebGL2-es ágát kényszeríti (csak összehasonlításhoz, lassú).
+
 Mi van a képen:
 
 - **Fény:** alacsonyan álló, aranyórás nap. A visszaverődések az égboltból számolódnak, a podok viszont a betöltéskor a pályán sütött fénypróbákból kapják a fényt és a tükröződést (nyílt sivatag, aréna, kanyon, a sziklaív alatt), mindig annak a helynek a próbájából, ahol épp járnak: a kanyonban vörösen verődik vissza rájuk a szikla, az arénában a lelátók tükröződnek rajtuk. Az egész pálya árnyéka betöltéskor egyszer elkészül, a kamera közelében pedig a podoknak és a részleteknek külön, éles árnyéka van. A felhők árnyéka végigvonul a homokon.
@@ -121,6 +123,8 @@ homokfutam/
   net.js            P2P szoba (Trystero), üzenettípusok
   playerPod.js      a részletes pod: betöltés, podonkénti festés, mozgó részek
   gfx/quality.js    grafikai fokozatok, dinamikus felbontás
+  gfx/backend.js    melyik renderelő rajzol (?renderer=webgpu), a közös uniformok, a WebGPU-s rész késleltetett betöltése
+  gfx/tsl/          a WebGPU-s ág anyagai és utófeldolgozása TSL-ben (ugyanaz, mint a GLSL-es, a fájlnevek megegyeznek)
   gfx/atmosphere.js köd, ég, felhők, környezeti fény, az egész pálya árnyéka
   gfx/ground.js     talaj-, pálya- és sziklaanyagok: a KTX2-textúratömbök, a felületek keverése, csillogás,
                     homok a sziklákon, nyomok a pályán

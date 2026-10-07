@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { GPU, U, T, maxTextureSize, N, W } from './backend.js';
 
 // ============================================================
 //  Atmosphere: height fog with sun in-scatter, cloud layer + cloud shadows,
@@ -23,24 +24,28 @@ export const PALETTE = {
   ground: new THREE.Color('#b58556'),
 };
 
+// the node materials build against a depth texture before the world shadow is baked (bakeWorldShadow)
+const SHADOW_PLACEHOLDER = new THREE.DepthTexture(1, 1, THREE.FloatType);
+SHADOW_PLACEHOLDER.compareFunction = THREE.LessEqualCompare;
+// { value } uniforms for the GLSL materials, uniform / texture nodes for the node materials (gfx/backend.js)
 export const ATMO = {
-  hfSunDir: { value: SUN_DIR },
-  hfSunCol: { value: PALETTE.sun },
-  hfFogCol: { value: PALETTE.fog },
-  hfFogSunCol: { value: PALETTE.fogSun },
-  hfFogDensity: { value: 0.0002 },
-  hfFogFalloff: { value: 0.0055 },
-  hfTime: { value: 0 },
-  hfCloudTex: { value: null },
-  hfCloudCover: { value: 0.56 },
-  hfCloudH: { value: 1400 },
-  hfWind: { value: new THREE.Vector2(0.0041, 0.0017) },
-  hfCloudShadow: { value: 0.0 },
-  hfShadowMap: { value: null },
-  hfShadowMatrix: { value: new THREE.Matrix4() },
-  hfShadowOn: { value: 0 },
-  hfShadowTexel: { value: new THREE.Vector2(1 / 4096, 1 / 4096) },
-  hfShadowBias: { value: 0.0006 },
+  hfSunDir: U(SUN_DIR),
+  hfSunCol: U(PALETTE.sun),
+  hfFogCol: U(PALETTE.fog),
+  hfFogSunCol: U(PALETTE.fogSun),
+  hfFogDensity: U(0.0002),
+  hfFogFalloff: U(0.0055),
+  hfTime: U(0),
+  hfCloudTex: T(null),
+  hfCloudCover: U(0.56),
+  hfCloudH: U(1400),
+  hfWind: U(new THREE.Vector2(0.0041, 0.0017)),
+  hfCloudShadow: U(0.0),
+  hfShadowMap: GPU ? T(SHADOW_PLACEHOLDER) : { value: null },
+  hfShadowMatrix: U(new THREE.Matrix4()),
+  hfShadowOn: U(0),
+  hfShadowTexel: U(new THREE.Vector2(1 / 4096, 1 / 4096)),
+  hfShadowBias: U(0.0006),
 };
 export function atmoUniforms(shader) { Object.assign(shader.uniforms, ATMO); }
 
@@ -129,9 +134,12 @@ const FRAG = /* glsl */`
 `;
 
 let installed = false;
-export function installAtmosphere() {
+// renderer / scene are for the node materials (WebGPURenderer): they get the fog and the sun's world
+// shadow from the scene's fog node and the SunLight's light node instead (gfx/tsl/atmosphere.js)
+export function installAtmosphere(renderer, scene) {
   if (installed) return;
   installed = true;
+  if (GPU) { N.installNodeAtmosphere(renderer, scene); return; }
   const C = THREE.ShaderChunk;
   C.fog_pars_vertex = PARS_V;
   C.fog_vertex = VERT;
@@ -176,6 +184,7 @@ export function cloudTexture(size = 256) {
 
 // --- sky -----------------------------------------------------------------
 export function skyMaterial() {
+  if (GPU) return N.skyNodeMaterial();
   return new THREE.ShaderMaterial({
     side: THREE.BackSide, depthWrite: false, fog: false,
     uniforms: { hfZenith: { value: PALETTE.zenith }, hfSkyHorizon: { value: PALETTE.skyHorizon }, hfSkyMid: { value: PALETTE.skyMid }, hfGround: { value: PALETTE.ground }, hfEnv: { value: 0 } },
@@ -248,7 +257,7 @@ export function buildEnvironment(renderer) {
   const m = skyMaterial();
   m.uniforms.hfEnv.value = 1;
   s.add(new THREE.Mesh(new THREE.SphereGeometry(100, 64, 32), m));
-  const pm = new THREE.PMREMGenerator(renderer);
+  const pm = new (GPU ? W.PMREMGenerator : THREE.PMREMGenerator)(renderer);
   const rt = pm.fromScene(s, 0.02, 0.1, 1000);
   pm.dispose();
   m.dispose();
@@ -261,6 +270,7 @@ export function buildEnvironment(renderer) {
 // camera adds the pods and crisp local detail on top.
 export function bakeWorldShadow(renderer, scene, bounds, size) {
   const cam = new THREE.OrthographicCamera();
+  if (GPU) cam.coordinateSystem = renderer.coordinateSystem;
   const center = bounds.getCenter(new THREE.Vector3());
   const R = bounds.getSize(new THREE.Vector3()).length() * 0.5;
   cam.position.copy(center).addScaledVector(SUN_DIR, R * 2);
@@ -276,12 +286,11 @@ export function bakeWorldShadow(renderer, scene, bounds, size) {
   Object.assign(cam, { left: x0, right: x1, bottom: y0, top: y1, near: -z1 - 10, far: -z0 + 10 });
   cam.updateProjectionMatrix();
 
-  const max = renderer.capabilities.maxTextureSize;
-  size = Math.min(size, max);
+  size = Math.min(size, maxTextureSize(renderer));
   const depth = new THREE.DepthTexture(size, size, THREE.FloatType);
   depth.compareFunction = THREE.LessEqualCompare;
   depth.minFilter = depth.magFilter = THREE.LinearFilter;
-  const rt = new THREE.WebGLRenderTarget(size, size, { depthTexture: depth, depthBuffer: true, samples: 0 });
+  const rt = new (GPU ? THREE.RenderTarget : THREE.WebGLRenderTarget)(size, size, { depthTexture: depth, depthBuffer: true, samples: 0 });
   rt.texture.generateMipmaps = false;
 
   // only static casters: everything flagged dynamic, transparent or unlit is hidden
@@ -294,7 +303,9 @@ export function bakeWorldShadow(renderer, scene, bounds, size) {
   });
   const prevOverride = scene.overrideMaterial, prevBg = scene.background, prevRt = renderer.getRenderTarget();
   const prevAuto = renderer.shadowMap.autoUpdate;
-  const depthMat = new THREE.MeshDepthMaterial({ side: THREE.DoubleSide });
+  // (WebGPURenderer has no MeshDepthMaterial: any material that writes depth only does)
+  const depthMat = GPU ? new W.MeshBasicNodeMaterial({ side: THREE.DoubleSide, colorWrite: false, fog: false })
+    : new THREE.MeshDepthMaterial({ side: THREE.DoubleSide });
   scene.overrideMaterial = depthMat;
   scene.background = null;
   renderer.shadowMap.autoUpdate = false;
@@ -308,8 +319,10 @@ export function bakeWorldShadow(renderer, scene, bounds, size) {
   for (const o of hidden) o.visible = true;
   depthMat.dispose();
 
-  // world -> [0,1] shadow texture space
-  const bias = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
+  // world -> [0,1] shadow texture space. WebGPURenderer: texture v runs down from the top (on its WebGL2
+  // backend as well), and WebGPU's clip space already has the depth in 0..1
+  const zk = GPU && renderer.coordinateSystem === THREE.WebGPUCoordinateSystem ? [1, 0] : [0.5, 0.5];
+  const bias = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, GPU ? -0.5 : 0.5, 0, 0.5, 0, 0, zk[0], zk[1], 0, 0, 0, 1);
   ATMO.hfShadowMatrix.value.copy(bias).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
   ATMO.hfShadowMap.value = depth;
   ATMO.hfShadowTexel.value.set(1 / size, 1 / size);

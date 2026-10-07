@@ -3,6 +3,7 @@ import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import basisJs from 'three/addons/libs/basis/basis_transcoder.js?url';
 import basisWasm from 'three/addons/libs/basis/basis_transcoder.wasm?url';
 import { atmoUniforms } from './atmosphere.js';
+import { GPU, U, T, maxAnisotropy, N } from './backend.js';
 
 // ============================================================
 //  Ground and rock surfaces.
@@ -35,19 +36,20 @@ function placeholder(layers, rgba) {
 }
 
 // shared uniforms: every ground/rock material references these objects, so swapping a
-// texture (placeholder -> KTX2, macro map at boot) needs no recompiles
+// texture (placeholder -> KTX2, macro map at boot) needs no recompiles. Texture and uniform nodes
+// for the node materials (gfx/backend.js); the per-layer constants below stay plain values.
 export const GU = {
-  gC: { value: placeholder(NL, [200, 160, 110, 128]) },
-  gN: { value: placeholder(NL, [128, 128, 230, 255]) },
-  gRC: { value: placeholder(2, [190, 130, 85, 128]) },
-  gRN: { value: placeholder(2, [128, 128, 220, 255]) },
-  gAC: { value: placeholder(5, [215, 190, 150, 128]) },
-  gAN: { value: placeholder(5, [128, 128, 220, 255]) },
-  gGlint: { value: null },
-  gMac: { value: null },
-  gMac2: { value: null },
-  gMacH: { value: null },
-  gMacXf: { value: new THREE.Vector4(0, 0, 1, 0) },     // (x0, z0, 1/size, on)
+  gC: T(placeholder(NL, [200, 160, 110, 128])),
+  gN: T(placeholder(NL, [128, 128, 230, 255])),
+  gRC: T(placeholder(2, [190, 130, 85, 128])),
+  gRN: T(placeholder(2, [128, 128, 220, 255])),
+  gAC: T(placeholder(5, [215, 190, 150, 128])),
+  gAN: T(placeholder(5, [128, 128, 220, 255])),
+  gGlint: T(null),
+  gMac: T(null),
+  gMac2: T(null),
+  gMacH: T(null),
+  gMacXf: U(new THREE.Vector4(0, 0, 1, 0)),     // (x0, z0, 1/size, on)
   gWind: { value: WIND_DIR },
   gTile: { value: TILE.slice() },
   gAxis: { value: [] },
@@ -87,7 +89,7 @@ export function ktx2Loader(renderer) {
 export function loadGround(renderer, Q) {
   GU.gGlint.value = glintTexture();
   const loader = ktx2Loader(renderer);
-  const aniso = Math.min(Q.aniso ?? 8, renderer.capabilities.getMaxAnisotropy());
+  const aniso = Math.min(Q.aniso ?? 8, maxAnisotropy(renderer));
   const jobs = [['gC', 'ground_c'], ['gN', 'ground_n'], ['gRC', 'rock_c'], ['gRN', 'rock_n'], ['gAC', 'arena_c'], ['gAN', 'arena_n']].map(([key, file]) => {
     const attempt = (n) => loader.loadAsync(url(file)).then((tex) => {
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
@@ -336,6 +338,7 @@ const LIGHT_CHUNKS = (extra = '') => ({
 //  Terrain (dunes). aTrackD = metres from the track edge (vertex attribute)
 // ---------------------------------------------------------------------------
 export function terrainMaterial(Q) {
+  if (GPU) return N.terrainNodeMaterial(Q);
   const m = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 });
   return patch(m, 'hf-terrain2', { GQ: Q.groundQ ?? 2 }, {}, {
     pars: /* glsl */`varying float vTrackD;`,
@@ -389,9 +392,10 @@ export function terrainMaterial(Q) {
 //  aDir = track direction (x, z), aZone = (arena, canyon)
 // ---------------------------------------------------------------------------
 export function trackMaterial(Q, trackLength) {
-  const m = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2 });
   const reps = Math.max(1, Math.round(trackLength / TILE[4]));
-  const u = { kL: { value: trackLength }, kTile: { value: trackLength / reps }, kTrail: { value: null }, kTrailOn: { value: 0 } };
+  const u = { kL: U(trackLength), kTile: U(trackLength / reps), kTrail: T(null), kTrailOn: U(0) };
+  if (GPU) return N.trackNodeMaterial(Q, trackLength, u);
+  const m = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2 });
   return patch(m, 'hf-track2', { GQ: Q.groundQ ?? 2 }, u, {
     pars: /* glsl */`uniform sampler2D kTrail; uniform float kL, kTile, kTrailOn; varying vec4 vTr; varying vec2 vDir, vZone;`,
     chunks: {
@@ -497,14 +501,15 @@ export function trackMaterial(Q, trackLength) {
 // ---------------------------------------------------------------------------
 export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast = 1, normal = 1, rough = [0.55, 0.6], vertexColors = true, color = '#ffffff',
   macro = 0.3, side = THREE.FrontSide, flat = false, sand = 1, foot = 2.5, varnish = 0, ao = false, aoAlbedo = 0.45, arena = false, metalness = 0 } = {}) {
-  const m = new THREE.MeshStandardMaterial({ vertexColors, color, roughness: 1, metalness, side, flatShading: flat });
   const u = {
     // arena: the building texture set, used for its own colour (not relative to its mean)
     gRC: arena ? GU.gAC : GU.gRC, gRN: arena ? GU.gAN : GU.gRN,
-    rLayer: { value: layer }, rScale: { value: scale }, rChroma: { value: chroma }, rContrast: { value: contrast },
-    rNormal: { value: normal }, rRough: { value: new THREE.Vector2(...rough) }, rMacro: { value: macro },
-    rSand: { value: sand }, rFoot: { value: foot }, rVarnish: { value: varnish }, rAOAlb: { value: aoAlbedo },
+    rLayer: U(layer), rScale: U(scale), rChroma: U(chroma), rContrast: U(contrast),
+    rNormal: U(normal), rRough: U(new THREE.Vector2(...rough)), rMacro: U(macro),
+    rSand: U(sand), rFoot: U(foot), rVarnish: U(varnish), rAOAlb: U(aoAlbedo),
   };
+  if (GPU) return N.rockNodeMaterial(Q, { color, roughness: 1, metalness, side, flatShading: flat }, u, { vertexColors, ao, arena });
+  const m = new THREE.MeshStandardMaterial({ vertexColors, color, roughness: 1, metalness, side, flatShading: flat });
   const defs = { GQ: Q.groundQ ?? 2 };
   if (ao) defs.ROCK_AO = 1;          // the geometry carries the occlusion baked in Blender (aAO)
   if (arena) defs.ABSOLUTE = 1;

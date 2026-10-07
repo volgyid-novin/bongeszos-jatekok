@@ -4,6 +4,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { atmoUniforms } from './gfx/atmosphere.js';
 import { podEnvPatch } from './gfx/probes.js';
+import { GPU, U, maxAnisotropy, N } from './gfx/backend.js';
 
 // Detailed pod, used by every racer in its own livery. The model is generated in Blender by models/pod/*.py:
 // build_pod.py builds it, bake_export.py bakes the textures and writes the two assets below.
@@ -46,10 +47,9 @@ function patchLivery(m, map, paint, trim, heat) {
 export async function loadPodModel(renderer) {
   const [gltf, livery] = await Promise.all([
     new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(POD_URL),
-    new THREE.TextureLoader().loadAsync(LIVERY_URL),
+    loadLivery(),
   ]);
-  livery.flipY = false;   // glTF UV convention
-  const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  const aniso = Math.min(8, maxAnisotropy(renderer));
   const src = gltf.scene.getObjectByName('Pod');
   src.traverse((o) => {
     if (!o.isMesh) return;
@@ -59,6 +59,18 @@ export async function loadPodModel(renderer) {
   });
   mergeParts(src);
   return () => makePod(src, livery);
+}
+
+// The livery's channels are masks, and its alpha is not coverage: load it unpremultiplied (WebGPU
+// uploads an <img> premultiplied, which would wipe out the masks where alpha is 0).
+function loadLivery() {
+  return new THREE.ImageBitmapLoader().setOptions({ premultiplyAlpha: 'none', colorSpaceConversion: 'none', imageOrientation: 'none' }).loadAsync(LIVERY_URL)
+    .then((bmp) => {
+      const t = new THREE.Texture(bmp);
+      t.flipY = false;   // glTF UV convention
+      t.needsUpdate = true;
+      return t;
+    });
 }
 
 // float copy of a (possibly quantized, gltfpack) attribute
@@ -141,7 +153,7 @@ function cloneRig(src) {
 
 function makePod(src, livery) {
   const root = cloneRig(src);
-  const paint = new THREE.Color(), trim = new THREE.Color(), heat = { value: new THREE.Vector2() };
+  const paint = new THREE.Color(), trim = new THREE.Color(), heat = U(new THREE.Vector2());
   const parts = [], mats = new Map();
   const env = { envMapB: { value: null }, envMapMix: { value: 0 } };
   let glow = null, beamMat = null;
@@ -149,6 +161,12 @@ function makePod(src, livery) {
     if (o.userData.anim) parts.push(o);
     if (!o.isMesh) return;
     let m = mats.get(o.material);
+    if (!m && GPU) {
+      // node materials (gfx/tsl/pod.js); the probe blend is set up by setPodEnv
+      m = o.material.name.startsWith('PodAtlas') ? N.podLiveryMaterial(o.material, livery, paint, trim, heat) : N.toNodeMaterial(o.material);
+      if (m.transparent && m.side === THREE.DoubleSide) m.forceSinglePass = true;
+      mats.set(o.material, m);
+    }
     if (!m) {
       m = o.material.clone();
       if (m.name.startsWith('PodAtlas')) patchLivery(m, livery, paint, trim, heat);
@@ -212,6 +230,19 @@ export function podLift(pod, r, groundAt, dt) {
 
 // Light probes (gfx/probes.js): the pod is lit by base, with b faded in by mix; intensity scales both.
 export function setPodEnv(pod, base, b, mix, intensity) {
+  if (GPU) {
+    // one environment node per pod: probe base with b faded in (gfx/tsl/pod.js)
+    if (!pod.envNodes) {
+      pod.envNodes = N.podEnvNodes(base, b);
+      for (const m of pod.mats) { m.envNode = pod.envNodes.node; m.needsUpdate = true; }
+    }
+    const E = pod.envNodes;
+    if (E.A.value !== base) E.A.value = base;
+    if (E.B.value !== (b || base)) E.B.value = b || base;
+    E.k.value = b ? mix : 0;
+    for (const m of pod.mats) m.envMapIntensity = intensity;
+    return;
+  }
   if (pod.envBase !== base) { pod.envBase = base; for (const m of pod.mats) m.envMap = base; }
   for (const m of pod.mats) m.envMapIntensity = intensity;
   pod.env.envMapB.value = b || null;

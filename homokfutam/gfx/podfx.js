@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ATMO } from './atmosphere.js';
 import { FxBatch } from './fxbatch.js';
+import { GPU, U, N } from './backend.js';
 
 // ============================================================
 //  Pod effects: exhaust plumes (raymarched volume with shock diamonds on boost, or a cheap cone
@@ -145,13 +146,34 @@ void main() {
   vec2 off = uRing > 0.5 ? normalize( c + 1e-4 ) * 0.5 : ( n - 0.5 );
   gl_FragColor = vec4( off * 0.5 + 0.5, 0.0, a * uK );
 }`;
+// On WebGPURenderer the quads are anchors (an Object3D with the same .material.uniforms the CPU side
+// drives) and all of them go out in one instanced draw (heatBatchMaterial): one draw instead of a dozen.
+const HEAT_MAX = 32;
 export class HeatLayer {
   constructor() {
     this.scene = new THREE.Scene();
-    this.rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, depthBuffer: false });
+    this.rt = new (GPU ? THREE.RenderTarget : THREE.WebGLRenderTarget)(4, 4, { type: THREE.HalfFloatType, depthBuffer: false });
     this.items = [];
+    if (GPU) {
+      const g = new THREE.InstancedBufferGeometry(), quad = new THREE.PlaneGeometry(1, 1);
+      g.index = quad.index; g.attributes.position = quad.attributes.position; g.attributes.uv = quad.attributes.uv;
+      this.iHeat = new THREE.InstancedBufferAttribute(new Float32Array(HEAT_MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+      this.iHeatK = new THREE.InstancedBufferAttribute(new Float32Array(HEAT_MAX * 2), 2).setUsage(THREE.DynamicDrawUsage);
+      g.setAttribute('iHeat', this.iHeat); g.setAttribute('iHeatK', this.iHeatK);
+      g.instanceCount = 0;
+      this.batch = new THREE.Mesh(g, N.heatBatchMaterial(ATMO.hfTime));
+      this.batch.frustumCulled = false;
+      this.anchors = new THREE.Group();          // the anchors live here, outside the drawn scene
+      this.scene.add(this.batch);
+    }
   }
   quad(ring = false) {
+    if (GPU) {
+      const o = new THREE.Object3D();
+      o.material = { uniforms: { uK: { value: 0 }, uRing: { value: ring ? 1 : 0 } } };
+      this.anchors.add(o);
+      return o;
+    }
     const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.ShaderMaterial({
       vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; vec4 mv = modelViewMatrix * vec4(0.0,0.0,0.0,1.0); mv.xy += position.xy * vec2(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz)); gl_Position = projectionMatrix * mv; }',
       fragmentShader: HEAT_F, transparent: true, depthTest: false, depthWrite: false,
@@ -164,6 +186,19 @@ export class HeatLayer {
   }
   setSize(w, h) { this.rt.setSize(Math.max(4, w >> 1), Math.max(4, h >> 1)); }
   render(renderer, camera) {
+    if (GPU) {
+      let n = 0;
+      for (const o of this.anchors.children) {
+        const k = o.material.uniforms.uK.value;
+        if (!o.visible || k <= 0 || n >= HEAT_MAX) continue;
+        this.iHeat.array.set([o.position.x, o.position.y, o.position.z, o.scale.x], n * 4);
+        this.iHeatK.array.set([k, o.material.uniforms.uRing.value], n * 2);
+        n++;
+      }
+      this.batch.geometry.instanceCount = n;
+      this.batch.visible = n > 0;
+      if (n) for (const a of [this.iHeat, this.iHeatK]) { a.clearUpdateRanges(); a.addUpdateRange(0, n * a.itemSize); a.needsUpdate = true; }
+    }
     const prev = renderer.getRenderTarget(), cc = renderer.getClearColor(new THREE.Color()), ca = renderer.getClearAlpha();
     renderer.setRenderTarget(this.rt);
     renderer.setClearColor(0x808000, 0);
@@ -214,14 +249,15 @@ export function createPodFx(scene, heat, opts = {}) {
   // fx live on the pod mesh (so replays and mesh swaps reuse them); the heat quads live in another
   // scene, so pods that were not updated this frame get them hidden. The throats and the ground
   // decals of all pods are drawn by three batches, filled as each pod is updated.
-  const batch = (geo, frag, uniforms, cap, renderOrder, extra = {}) => new FxBatch(scene, geo, new THREE.ShaderMaterial({
-    vertexShader: BATCH_V, fragmentShader: frag, transparent: true, depthWrite: false, uniforms, ...extra,
-  }), cap, { aFx: 3 }, renderOrder);
-  const THROATS = batch(THROAT_GEO, THROAT_F, { uTime: ATMO.hfTime, uRing: { value: new THREE.Color('#ff8a3a') }, uCore: { value: new THREE.Color('#a8c8ff') } },
-    PODS_MAX * 2, 4, { blending: THREE.AdditiveBlending });
-  const GLOWS = batch(GLOW_GEO, GLOW_F, { uTime: ATMO.hfTime, uCol: { value: new THREE.Color('#d46bff') } }, PODS_MAX, 1,
-    { blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -4 });
-  const SHADOWS = batch(SHADOW_GEO, SHADOW_F, {}, PODS_MAX, 1, { polygonOffset: true, polygonOffsetFactor: -3 });
+  // (node materials on WebGPURenderer: gfx/tsl/podfx.js)
+  const shader = (frag, uniforms, extra = {}) => new THREE.ShaderMaterial({ vertexShader: BATCH_V, fragmentShader: frag, transparent: true, depthWrite: false, uniforms, ...extra });
+  const batch = (geo, mat, cap, renderOrder) => new FxBatch(scene, geo, mat, cap, { aFx: 3 }, renderOrder);
+  const throatU = { uTime: ATMO.hfTime, uRing: U(new THREE.Color('#ff8a3a')), uCore: U(new THREE.Color('#a8c8ff')) };
+  const THROATS = batch(THROAT_GEO, GPU ? N.throatMaterial(throatU) : shader(THROAT_F, throatU, { blending: THREE.AdditiveBlending }), PODS_MAX * 2, 4);
+  const glowU = { uTime: ATMO.hfTime, uCol: U(new THREE.Color('#d46bff')) }, glowP = { blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -4 };
+  const GLOWS = batch(GLOW_GEO, GPU ? N.glowDecalMaterial(glowU, glowP) : shader(GLOW_F, glowU, glowP), PODS_MAX, 1);
+  const shadowP = { polygonOffset: true, polygonOffsetFactor: -3 };
+  const SHADOWS = batch(SHADOW_GEO, GPU ? N.shadowDecalMaterial(shadowP) : shader(SHADOW_F, {}, shadowP), PODS_MAX, 1);
   const decal = new THREE.Matrix4(), dpos = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
   const fxv = [0, 0, 0], vals = (a, b = 0, c = 0) => { fxv[0] = a; fxv[1] = b; fxv[2] = c; return fxv; };
 
@@ -231,14 +267,16 @@ export function createPodFx(scene, heat, opts = {}) {
     const root = r.mesh, ud = root.userData;
     if (ud.fx) return ud.fx;
     const common = {
-      uThr: { value: 0 }, uBoost: { value: 0 }, uOver: { value: 0 }, uTime: ATMO.hfTime, uSeed: { value: Math.random() * 10 },
-      uHot: { value: new THREE.Color('#fff4dc') }, uMid: { value: new THREE.Color('#ffa04a') }, uCool: { value: new THREE.Color('#ff3c12') },
+      uThr: U(0), uBoost: U(0), uOver: U(0), uTime: ATMO.hfTime, uSeed: U(Math.random() * 10),
+      uHot: U(new THREE.Color('#fff4dc')), uMid: U(new THREE.Color('#ffa04a')), uCool: U(new THREE.Color('#ff3c12')),
     };
-    const mat = volume
+    const volU = () => Object.assign(common, { uIgn: U(0), uSput: U(0), uCore: U(new THREE.Color('#b9d4ff')), uScale: U(new THREE.Vector3(1, 1, 1)) });
+    const mat = GPU ? (volume ? N.volumePlumeMaterial(volU(), opts.steps || 14) : N.conePlumeMaterial(common))
+      : volume
       ? new THREE.ShaderMaterial({
         vertexShader: VOL_V, fragmentShader: VOL_F, defines: { STEPS: opts.steps || 14 }, transparent: true, depthWrite: false,
         blending: THREE.AdditiveBlending, side: THREE.FrontSide,
-        uniforms: Object.assign(common, { uIgn: { value: 0 }, uSput: { value: 0 }, uCore: { value: new THREE.Color('#b9d4ff') }, uScale: { value: new THREE.Vector3(1, 1, 1) } }),
+        uniforms: volU(),
       })
       : new THREE.ShaderMaterial({
         vertexShader: PLUME_V, fragmentShader: PLUME_F, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, forceSinglePass: true,
@@ -472,14 +510,25 @@ export function createPodFx(scene, heat, opts = {}) {
 // u = lateral position across 2.6 half-widths, v = arc length / track length. Stamps add,
 // a full-screen pass subtracts a little every frame so the marks fade over ~half a minute.
 export function createTrailMap(renderer, trackLength, W = 128, H = 2048) {
-  const rt = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: false });
+  const rt = new (GPU ? THREE.RenderTarget : THREE.WebGLRenderTarget)(W, H, { type: THREE.HalfFloatType, depthBuffer: false });
   rt.texture.wrapT = THREE.RepeatWrapping;
   const scene = new THREE.Scene(), cam = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
   const MAX = 64;
   const quad = new THREE.PlaneGeometry(1, 1).translate(0.5, 0.5, 0);
-  const stamps = new THREE.InstancedMesh(quad, new THREE.MeshBasicMaterial({ color: '#ffffff', blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, transparent: true }), MAX);
+  let stamps, iRect = null, iCol = null;
+  if (GPU) {
+    const g = new THREE.InstancedBufferGeometry();
+    g.index = quad.index; g.attributes.position = quad.attributes.position;
+    iRect = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    iCol = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 2), 2).setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('iRect', iRect); g.setAttribute('iCol', iCol);
+    g.instanceCount = 0;
+    stamps = new THREE.Mesh(g, N.trailStampMaterial());
+  } else {
+    stamps = new THREE.InstancedMesh(quad, new THREE.MeshBasicMaterial({ color: '#ffffff', blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, transparent: true }), MAX);
+    stamps.count = 0;
+  }
   stamps.frustumCulled = false;
-  stamps.count = 0;
   const fade = new THREE.Mesh(quad, new THREE.MeshBasicMaterial({ color: new THREE.Color(0, 0, 0), depthTest: false, depthWrite: false, transparent: true,
     blending: THREE.CustomBlending, blendEquation: THREE.ReverseSubtractEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor }));
   fade.frustumCulled = false;
@@ -489,13 +538,14 @@ export function createTrailMap(renderer, trackLength, W = 128, H = 2048) {
   let n = 0, cleared = false;
   const add = (u0, v0, du, dv, groove, scorch) => {
     if (n >= MAX) return;
+    if (GPU) { iRect.array.set([u0 - du / 2, v0, du, dv], n * 4); iCol.array.set([groove, scorch], n * 2); n++; return; }
     m.makeScale(du, dv, 1).setPosition(u0 - du / 2, v0, 0);
     stamps.setMatrixAt(n, m);
     stamps.setColorAt(n, col.setRGB(groove, scorch, 0));
     n++;
   };
   return {
-    texture: rt.texture,
+    texture: rt.texture, rt,
     // r: a racer with loc (s, d, hw), y, prevTrailS; dt: frame time
     stamp(r, groundY) {
       const s = r.loc.s, prev = r.trailS ?? s;
@@ -510,8 +560,14 @@ export function createTrailMap(renderer, trackLength, W = 128, H = 2048) {
     },
     render(dt) {
       fade.material.color.setScalar(0.012 * dt);
-      stamps.count = n;
-      if (n) { stamps.instanceMatrix.needsUpdate = true; if (stamps.instanceColor) stamps.instanceColor.needsUpdate = true; }
+      if (GPU) {
+        stamps.geometry.instanceCount = n;
+        stamps.visible = n > 0;
+        if (n) for (const a of [iRect, iCol]) { a.clearUpdateRanges(); a.addUpdateRange(0, n * a.itemSize); a.needsUpdate = true; }
+      } else {
+        stamps.count = n;
+        if (n) { stamps.instanceMatrix.needsUpdate = true; if (stamps.instanceColor) stamps.instanceColor.needsUpdate = true; }
+      }
       const prev = renderer.getRenderTarget(), auto = renderer.autoClear;
       renderer.autoClear = false;
       renderer.setRenderTarget(rt);

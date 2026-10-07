@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ATMO, SUN_DIR } from '../gfx/atmosphere.js';
 import { WIND_DIR } from '../gfx/ground.js';
+import { GPU, U, T, N } from '../gfx/backend.js';
 
 // ============================================================
 //  World dressing: everything that makes the place feel inhabited.
@@ -85,8 +86,9 @@ void main() {
 
 // --- cloth: vertex displacement on a standard material (lit, shadowed) ---
 function clothMaterial(params, { amp = 0.4, freq = 1.2, speed = 3.5, fixedEdge = 'x', length = 3 } = {}) {
+  const u = { uTime: ATMO.hfTime, uAmp: U(amp), uFreq: U(freq), uSpeed: U(speed), uLen: U(length) };
+  if (GPU) return N.clothNodeMaterial({ side: THREE.DoubleSide, roughness: 0.85, ...params }, { ...u, fixedEdge });
   const m = new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, roughness: 0.85, ...params });
-  const u = { uTime: ATMO.hfTime, uAmp: { value: amp }, uFreq: { value: freq }, uSpeed: { value: speed }, uLen: { value: length } };
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, ATMO, u);
     sh.vertexShader = sh.vertexShader
@@ -107,8 +109,9 @@ function clothMaterial(params, { amp = 0.4, freq = 1.2, speed = 3.5, fixedEdge =
 }
 
 // the crowd's sprites (models/world/build_crowd.py): masks and shading, not colour, so linear
-function crowdAtlas() {
-  const t = new THREE.TextureLoader().load(new URL('../assets/crowd_atlas.png', import.meta.url).href);
+// (ready: resolves once it is in; the loading screen waits for it, so the crowd does not pop in)
+function crowdAtlas(ready) {
+  const t = new THREE.TextureLoader().load(new URL('../assets/crowd_atlas.png', import.meta.url).href, () => ready(), undefined, () => ready());
   t.colorSpace = THREE.NoColorSpace;
   t.anisotropy = 4;
   return t;
@@ -127,7 +130,8 @@ export function buildDressing(ctx) {
   const metalI = metal.clone();
   const metalLight = new THREE.MeshStandardMaterial({ color: '#8c857c', metalness: 0.8, roughness: 0.35 });
   const stoneMat = ctx.stoneMat || triplanarMaterial('blocks', { scale: 1 / 4, chroma: 0.25, vertexColors: false, color: '#d8c3a0', rough: [0.55, 0.45], macro: 0.15 });
-  const out = { update: null, setStandings: null, cheer: 0, wave: 0 };
+  let atlasReady;
+  const out = { update: null, setStandings: null, cheer: 0, wave: 0, ready: new Promise((r) => { atlasReady = r; }) };
 
   // ---------------- arena ----------------
   const ar = rangeWhere(TR.arena, 0.55);
@@ -136,8 +140,8 @@ export function buildDressing(ctx) {
   const side = (i, s, o, y) => P.set(TR.px[i] - TR.tz[i] * s * o, y, TR.pz[i] + TR.tx[i] * s * o);
 
   // crowd
-  const crowdU = { uTime: ATMO.hfTime, uCheer: { value: 0 }, uWave: { value: 0 }, uAmbient: { value: C('#7d6f63') }, uSunCol: { value: C('#ffd9b0') },
-    uAtlas: { value: crowdAtlas() } };
+  const crowdU = { uTime: ATMO.hfTime, uCheer: U(0), uWave: U(0), uAmbient: U(C('#7d6f63')), uSunCol: U(C('#ffd9b0')),
+    uAtlas: T(crowdAtlas(atlasReady)) };
   if (arenaSamples.length && Q.crowd > 0) {
     const pos = [], col = [];
     const shirts = ['#c8342c', '#2f6fd0', '#e8772e', '#efe6d4', '#e2b93b', '#3c8f6a', '#7a4fc0', '#1d1a18', '#9c4a2a', '#5a7da8'].map(C);
@@ -160,7 +164,7 @@ export function buildDressing(ctx) {
     g.setAttribute('iPos', new THREE.InstancedBufferAttribute(new Float32Array(pos), 4));
     g.setAttribute('iCol', new THREE.InstancedBufferAttribute(new Float32Array(col), 4));
     g.instanceCount = pos.length / 4;
-    const mat = new THREE.ShaderMaterial({
+    const mat = GPU ? N.crowdMaterial(crowdU) : new THREE.ShaderMaterial({
       vertexShader: CROWD_V, fragmentShader: CROWD_F, side: THREE.DoubleSide, fog: true,
       uniforms: Object.assign({}, THREE.UniformsUtils.clone(THREE.UniformsLib.fog), ATMO, crowdU),
     });
@@ -411,7 +415,7 @@ export function buildDressing(ctx) {
     });
     lampGeo.setAttribute('iPos', new THREE.InstancedBufferAttribute(lp, 4));
     lampGeo.instanceCount = list.length;
-    const lampMat = new THREE.ShaderMaterial({
+    const lampMat = GPU ? N.chaseLampMaterial({ uTime: ATMO.hfTime, uK: U(Q.post ? 7 : 1.5) }) : new THREE.ShaderMaterial({
       uniforms: { uTime: ATMO.hfTime, uK: { value: Q.post ? 7 : 1.5 } },
       vertexShader: `attribute vec4 iPos; uniform float uTime; varying float vI;
         void main(){ float ph = fract( iPos.w / 60.0 - uTime * 1.6 ); vI = 0.12 + pow( smoothstep( 0.86, 1.0, ph ), 2.0 ) * 1.0;
@@ -713,7 +717,7 @@ export function buildDressing(ctx) {
   // dust devils wandering across the dunes
   const devils = [];
   {
-    const mat = new THREE.ShaderMaterial({
+    const mat = GPU ? N.dustDevilMaterial({ uCol: U(C('#d7b58a')) }) : new THREE.ShaderMaterial({
       transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, fog: true,
       uniforms: Object.assign({}, THREE.UniformsUtils.clone(THREE.UniformsLib.fog), ATMO, { uCol: { value: C('#d7b58a') } }),
       vertexShader: `varying vec2 vUv; varying vec3 vN, vV;

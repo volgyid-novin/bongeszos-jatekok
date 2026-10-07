@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { FxBatch, shown } from './fxbatch.js';
+import { GPU, U as Uni, N } from './backend.js';
 
 // ============================================================
 //  Energy beam between the two engines. One instanced draw per pod; every strand is a
@@ -175,9 +176,9 @@ const FLARE_GEO = new THREE.PlaneGeometry(1, 1);
 
 // the batch that draws the emitter flares of every beam (two per pod)
 export function createBeamFlares(scene, maxBeams = 12) {
-  return new FxBatch(scene, FLARE_GEO, new THREE.ShaderMaterial({
+  return new FxBatch(scene, FLARE_GEO, GPU ? N.beamFlareMaterial() : new THREE.ShaderMaterial({
     vertexShader: FLARE_V, fragmentShader: FLARE_F, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-  }), maxBeams * 2, { aFx: 3, aCol: 3, aHot: 3 }, 5);
+  }), maxBeams * 2, { aFx: 3, aCol: 3, aHot: 3 }, 5, { billboard: true });
 }
 
 const damp = (a, b, k, dt) => a + (b - a) * (1 - Math.exp(-k * dt));
@@ -187,13 +188,13 @@ export function createBeam(opts = {}) {
   const hdr = opts.hdr ?? 1;
   const col = new THREE.Color(opts.color ?? '#ff3ad2'), hot = new THREE.Color(opts.hot ?? '#ffe6fb');
   const U = {
-    uA: { value: new THREE.Vector3() }, uB: { value: new THREE.Vector3() },
-    uTime: { value: 0 }, uRate: { value: 14 }, uArc: { value: 1 }, uWobble: { value: 0.05 }, uThick: { value: 1 },
-    uWhip: { value: 0 }, uPx: { value: 0.001 }, uArcs: { value: 0.6 },
-    uCol: { value: col.clone() }, uHot: { value: hot.clone() }, uI: { value: hdr }, uOn: { value: 1 },
-    uPulse: { value: 1.6 }, uReach: { value: 1 }, uFlicker: { value: 1 },
+    uA: Uni(new THREE.Vector3()), uB: Uni(new THREE.Vector3()),
+    uTime: Uni(0), uRate: Uni(14), uArc: Uni(1), uWobble: Uni(0.05), uThick: Uni(1),
+    uWhip: Uni(0), uPx: Uni(0.001), uArcs: Uni(0.6),
+    uCol: Uni(col.clone()), uHot: Uni(hot.clone()), uI: Uni(hdr), uOn: Uni(1),
+    uPulse: Uni(1.6), uReach: Uni(1), uFlicker: Uni(1),
   };
-  const mesh = new THREE.Mesh(strandGeometry(), new THREE.ShaderMaterial({
+  const mesh = new THREE.Mesh(strandGeometry(), GPU ? N.beamStrandMaterial(U) : new THREE.ShaderMaterial({
     vertexShader: BEAM_V, fragmentShader: BEAM_F, uniforms: U,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, forceSinglePass: true,
   }));

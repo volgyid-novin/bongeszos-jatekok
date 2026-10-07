@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GU, WIND_DIR } from '../gfx/ground.js';
+import { GPU, W, TSL } from '../gfx/backend.js';
 
 // ============================================================
 //  Macro map, baked once at load over the whole terrain square.
@@ -13,7 +14,7 @@ import { GU, WIND_DIR } from '../gfx/ground.js';
 // ============================================================
 export const MACRO = { ready: false, res: 0, x0: 0, z0: 0, size: 1, H: null, top: null, crest: null, basin: null, apron: null, tail: null, bedrock: null };
 
-const HEIGHT_MAT = new THREE.ShaderMaterial({
+const HEIGHT_MAT = GPU ? new W.MeshBasicNodeMaterial({ side: THREE.DoubleSide, fog: false, colorNode: TSL.vec4(TSL.positionWorld.y, 0, 0, 1) }) : new THREE.ShaderMaterial({
   side: THREE.DoubleSide,
   vertexShader: /* glsl */`
     varying float vY;
@@ -31,8 +32,9 @@ const HEIGHT_MAT = new THREE.ShaderMaterial({
     void main() { gl_FragColor = vec4( vY, 0.0, 0.0, 1.0 ); }`,
 });
 
+// returns the heights, or (WebGPURenderer, whose read-back is asynchronous) a promise of them
 function renderHeights(renderer, scene, cam, res, pick) {
-  const rt = new THREE.WebGLRenderTarget(res, res, { type: THREE.FloatType, depthBuffer: true, samples: 0 });
+  const rt = new (GPU ? THREE.RenderTarget : THREE.WebGLRenderTarget)(res, res, { type: THREE.FloatType, depthBuffer: true, samples: 0 });
   rt.texture.generateMipmaps = false;
   rt.texture.minFilter = rt.texture.magFilter = THREE.NearestFilter;
   const hidden = [];
@@ -49,22 +51,27 @@ function renderHeights(renderer, scene, cam, res, pick) {
   renderer.setClearColor(0x000000, 0);        // alpha 0 = nothing drawn there
   renderer.clear();
   renderer.render(scene, cam);
-  const out = new Float32Array(res * res * 4);
-  renderer.readRenderTargetPixels(rt, 0, 0, res, res, out);
+  let out = null;
+  if (GPU) out = renderer.readRenderTargetPixelsAsync(rt, 0, 0, res, res);
+  else { out = new Float32Array(res * res * 4); renderer.readRenderTargetPixels(rt, 0, 0, res, res, out); }
   renderer.setRenderTarget(prev.rt);
   renderer.setClearColor(prev.cc, prev.ca);
   renderer.shadowMap.autoUpdate = prev.auto;
   scene.overrideMaterial = prev.o;
   scene.background = prev.bg;
   for (const o of hidden) o.visible = true;
-  rt.dispose();
-  // rows come bottom-up from the screen, whose top is -z: flip so row 0 = z min. Alpha = covered.
-  const H = new Float32Array(res * res), A = new Uint8Array(res * res);
-  for (let r = 0; r < res; r++) {
-    const src = (res - 1 - r) * res;
-    for (let c = 0; c < res; c++) { H[r * res + c] = out[(src + c) * 4]; A[r * res + c] = out[(src + c) * 4 + 3] > 0.5 ? 1 : 0; }
-  }
-  return { H, A };
+  // rows come bottom-up from WebGL, top-down from WebGPURenderer; the screen's top is -z. Store
+  // row 0 = z min. Alpha = covered.
+  const unpack = (px) => {
+    rt.dispose();
+    const H = new Float32Array(res * res), A = new Uint8Array(res * res);
+    for (let r = 0; r < res; r++) {
+      const src = (GPU ? r : res - 1 - r) * res;
+      for (let c = 0; c < res; c++) { H[r * res + c] = px[(src + c) * 4]; A[r * res + c] = px[(src + c) * 4 + 3] > 0.5 ? 1 : 0; }
+    }
+    return { H, A };
+  };
+  return GPU ? out.then(unpack) : unpack(out);
 }
 
 // separable box blur (running sums), clamped edges; `passes` box passes ~ gaussian
@@ -96,16 +103,24 @@ function blur(src, n, r, passes = 2) {
 
 const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
-export function bakeMacro(renderer, scene, { x0, z0, size, res = 1024 }) {
-  const t0 = performance.now();
+// returns MACRO, or on WebGPURenderer a promise of it
+export function bakeMacro(renderer, scene, opts) {
+  if (!GPU) return finishMacro(opts, renderHeightPair(renderer, scene, opts));
+  return Promise.all(renderHeightPair(renderer, scene, opts)).then((pair) => finishMacro(opts, pair));
+}
+function renderHeightPair(renderer, scene, { x0, z0, size, res = 1024 }) {
   const cx = x0 + size / 2, cz = z0 + size / 2;
   const cam = new THREE.OrthographicCamera(-size / 2, size / 2, size / 2, -size / 2, 1, 5000);
   cam.position.set(cx, 2500, cz);
   cam.up.set(0, 0, -1);                       // screen right = +x, screen top = -z
   cam.lookAt(cx, 0, cz);
+  if (GPU) cam.coordinateSystem = renderer.coordinateSystem;
+  cam.updateProjectionMatrix();
   cam.updateMatrixWorld();
-  const ter = renderHeights(renderer, scene, cam, res, (o) => o.userData.terrain);
-  const all = renderHeights(renderer, scene, cam, res, (o) => o.userData.terrain || o.userData.rock);
+  return [renderHeights(renderer, scene, cam, res, (o) => o.userData.terrain), renderHeights(renderer, scene, cam, res, (o) => o.userData.terrain || o.userData.rock)];
+}
+function finishMacro({ x0, z0, size, res = 1024 }, [ter, all]) {
+  const t0 = performance.now();
   const n = res, N = n * n, px = size / n;
   const H = ter.H;
   for (let i = 0; i < N; i++) if (!ter.A[i]) H[i] = 0;

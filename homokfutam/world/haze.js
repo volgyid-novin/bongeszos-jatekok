@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ATMO, ATMO_FUNCS } from '../gfx/atmosphere.js';
+import { GPU, U, N } from '../gfx/backend.js';
 
 // ============================================================
 //  Dust hanging in the canyon and under the arch. Thin sheets across the track, drifting noise,
@@ -40,7 +41,7 @@ const FRAG = /* glsl */`
   }`;
 
 export function buildHaze({ scene, TR, rangeWhere, arch, Q }) {
-  const mat = new THREE.ShaderMaterial({
+  const mat = GPU ? N.hazeMaterial({ uK: U(0.16 * (Q.particles ?? 1)) }) : new THREE.ShaderMaterial({
     vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true,
     uniforms: Object.assign({}, ATMO, { uK: { value: 0.16 * (Q.particles ?? 1) } }),
   });
