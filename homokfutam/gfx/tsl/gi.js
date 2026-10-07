@@ -1,4 +1,4 @@
-import { Fn, If, float, vec2, vec3, min, max, clamp, dot, exp2, mix, step } from 'three/tsl';
+import { Fn, If, float, vec2, vec3, min, max, clamp, dot, exp2, mix, step, smoothstep } from 'three/tsl';
 import { GIU } from '../gi.js';
 
 // The baked light (?gfx=gi:1, docs/visual-next-steps.md D4) for the node materials: E(n) / E_open(n)
@@ -29,8 +29,10 @@ export const hfGI = Fn(([wp, n]) => {
         ws.addAssign(w);
       });
     }
-    const T = sum.div(max(ws, 1e-4));
-    out.assign(mix(vec3(1), min(T, vec3(4)), min(ws, 1).mul(GIU.hfGIK)));
+    const T = min(sum.div(max(ws, 1e-4)), vec3(4)).toVar();
+    // enclosed shade deepened (GIU.hfGIShade, gfx/gi.js), easing back to the bake towards open ground
+    T.mulAssign(mix(GIU.hfGIShade, 1, smoothstep(0.7, 1, dot(T, vec3(0.2126, 0.7152, 0.0722)))));
+    out.assign(mix(vec3(1), T, min(ws, 1).mul(GIU.hfGIK)));
   });
   return out;
 });

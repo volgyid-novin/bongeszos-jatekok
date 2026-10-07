@@ -440,7 +440,10 @@ const rockMat = rockMaterial(Q, ROCKL.cliff, CLIFF);
 const rockMatI = rockMaterial(Q, ROCKL.cliff, CLIFF);      // instanced copies (fallback spires), see rockMatAOSolo
 // the canyon walls: their own sky occlusion (aAO), and the canyon's light probe once it is baked
 // (the texture only adds grain here: its cracks and spots read as drawn on at this scale)
-const canyonMat = rockMaterial(Q, ROCKL.cliff, { ...CLIFF, contrast: 0.7, chroma: 0.25, ao: true, aoAlbedo: 0.2, aoGI: 0.4 });
+// (giHue: under the baked light the walls take its colour, the warm bounce, but mostly their own occlusion, aAO, for
+// how bright their shade is. The bake's cells are 6 m along the track: it blurred the tunnel slabs' shade and the
+// sunlit gaps between them into one dark run and flattened the slot; aAO has them sharp, and so had MEDIUM)
+const canyonMat = rockMaterial(Q, ROCKL.cliff, { ...CLIFF, contrast: 0.7, chroma: 0.25, ao: true, aoAlbedo: 0.2, aoGI: 0.4, giHue: 0.85 });
 const boulderMat = rockMaterial(Q, ROCKL.boulder, { scale: 1 / 6, chroma: 0.45, contrast: 1.05, rough: [0.6, 0.35], foot: 1.2 });
 function rangeWhere(arr, thr) {         // contiguous index range where arr > thr (handles wrap)
   let start = -1;
@@ -3363,7 +3366,8 @@ function volZone() {
   FX.vol.y = TR.py[i];
   // the canyon's dust fills the slot round the camera; the arch's hangs under and round it
   if (arch > canyon && ROCKS.arch) { FX.vol.center.set(ROCKS.arch.x, 0, ROCKS.arch.z); FX.vol.radius = 75; FX.vol.density = 0.013; }
-  else { FX.vol.center.copy(camera.position); FX.vol.radius = 260; FX.vol.density = 0.009; }
+  // (thinner than it was, 0.009: with the bounce light it hazed the slot milky and washed its shadows out)
+  else { FX.vol.center.copy(camera.position); FX.vol.radius = 260; FX.vol.density = 0.0045; }
   if (HAZE) HAZE.userData.uK.value = HAZE.userData.k0 * (1 - FX.vol.k);
 }
 // eye adaptation without a meter (?gfx=eye:2, LOW / MEDIUM): the EV to open up by where the camera is, about what

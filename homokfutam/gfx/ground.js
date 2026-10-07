@@ -362,6 +362,14 @@ const AO = /* glsl */`
   #ifdef HF_GI
     // the baked light (?gfx=gi:1, gfx/gi.js): sky visibility and bounce, over the open desert's
     vec3 gGI = hfGI( vHfWorld, gNW );
+    #ifdef GI_HUE
+      // (rockMaterial giHue: the bake's colour, but mostly the surface's own, sharper occlusion for how bright. Less
+      // saturated: deep in the shade the bake is nearly all red bounce, and without its darkness that read as a dark
+      // red glow where the shade should be near black. Where the bake is near nothing its colour is noise: bounded)
+      gGI = max( gGI, vec3( 0.0 ) );
+      float gGIL = max( dot( gGI, vec3( 0.2126, 0.7152, 0.0722 ) ), 0.02 );
+      gGI = mix( vec3( 1.0 ), min( gGI / gGIL, vec3( 3.0 ) ), 1.0 - 0.7 * GI_HUE ) * pow( gGIL, 1.0 - GI_HUE );
+    #endif
     reflectedLight.indirectDiffuse *= gGI;
     ambientOcclusion *= min( dot( gGI, vec3( 0.2126, 0.7152, 0.0722 ) ), 1.0 );
   #endif
@@ -494,7 +502,8 @@ export function trackMaterial(Q, trackLength, roof = [], drift = []) {
   if (GPU) return N.trackNodeMaterial(Q, trackLength, u, drift.length > 0);
   const m = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2 });
   const pom = !!Q.pom && (Q.groundQ ?? 2) > 1;
-  const defs = { GQ: Q.groundQ ?? 2, ...(pom ? { HF_POM: 1 } : {}), ...(drift.length ? { HF_DRIFT: 1 } : {}) };
+  // (GI_HUE: in the canyon the baked light gives only its colour, see below)
+  const defs = { GQ: Q.groundQ ?? 2, GI_HUE: 'gGIHue', ...(pom ? { HF_POM: 1 } : {}), ...(drift.length ? { HF_DRIFT: 1 } : {}) };
   return patch(m, 'hf-track2', defs, u, {
     pars: /* glsl */`uniform sampler2D kTrail; uniform float kL, kTile, kTrailOn; uniform vec2 kRoof0, kRoof1, kRoof2, kDrift0, kDrift1, kDrift2, kDrift3; varying vec4 vTr; varying vec2 vDir, vZone;
       float kRoofK( vec2 r, float s ) { return smoothstep( r.x - 4.0, r.x + 4.0, s ) * ( 1.0 - smoothstep( r.y - 4.0, r.y + 4.0, s ) ); }
@@ -595,11 +604,17 @@ export function trackMaterial(Q, trackLength, roof = [], drift = []) {
         float gAO = mix( 1.0, gS.ao, 0.85 ) * mix( 1.0, mac.r, out_ );
         // down in the canyon the floor sees only a strip of sky, less still by the walls
         // (hfShade, D2: deeper, as the floor of a real slot sees ~10-25 % of the sky)
-        // (the baked light, gi, has the real thing)
+        // and under the tunnel's roof (D7), the slabs as arc-length ranges with a sharp edge to each
+        float gRoof = max( kRoofK( kRoof0, s ), max( kRoofK( kRoof1, s ), kRoofK( kRoof2, s ) ) );
+        float gOcc = ( 1.0 - canyon * ( mix( 0.35, 0.62, hfShade ) + mix( 0.25, 0.2, hfShade ) * smoothstep( 0.55, 1.0, edge ) ) )
+          * ( 1.0 - 0.8 * gRoof );
         #ifndef HF_GI
-          gAO *= 1.0 - canyon * ( mix( 0.35, 0.62, hfShade ) + mix( 0.25, 0.2, hfShade ) * smoothstep( 0.55, 1.0, edge ) );
-          // under the tunnel's roof (D7)
-          gAO *= 1.0 - 0.8 * max( kRoofK( kRoof0, s ), max( kRoofK( kRoof1, s ), kRoofK( kRoof2, s ) ) );
+          gAO *= gOcc;
+        #else
+          // with the baked light, in the canyon: its colour (the warm bounce), but this for how bright (GI_HUE in AO).
+          // Its 6 m cells blur the slabs' shade and the 10-12 m sunlit gaps between them into one dark run
+          float gGIHue = 0.85 * canyon;
+          gAO *= pow( max( gOcc, 1e-4 ), gGIHue );
         #endif
         diffuseColor.rgb *= mix( 1.0, gS.ao, 0.35 );
         float polish = groove * 0.2 + trail.r * 0.1 + oil * 0.42;
@@ -623,7 +638,7 @@ export function trackMaterial(Q, trackLength, roof = [], drift = []) {
 // ---------------------------------------------------------------------------
 export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast = 1, normal = 1, rough = [0.55, 0.6], vertexColors = true, color = '#ffffff',
   macro = 0.3, side = THREE.FrontSide, flat = false, sand = 1, foot = 2.5, varnish = 0, ao = false, aoAlbedo = 0.45, aoGI = 1, arena = false, metalness = 0,
-  fade = null } = {}) {
+  fade = null, giHue = 0 } = {}) {
   const u = {
     // arena: the building texture set, used for its own colour (not relative to its mean)
     gRC: arena ? GU.gAC : GU.gRC, gRN: arena ? GU.gAN : GU.gRN,
@@ -637,9 +652,13 @@ export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast 
     // ~28 % of its draw distance instead of popping in (sunk by depth metres at far)
     rFadeFar: U(fade?.far ?? 1e6), rFadeDepth: U(fade?.depth ?? 0),
   };
-  if (GPU) return N.rockNodeMaterial(Q, { color, roughness: 1, metalness, side, flatShading: flat }, u, { vertexColors, ao, arena, fade: !!fade });
+  // giHue (0..1, with the baked light): how much of the brightness of the indirect light comes from the geometry's own
+  // occlusion (aAO, as without the bake) rather than the bake, which then gives only its colour. The canyon walls: the
+  // bake's 6 m cells blur the tunnel slabs' shade and the gaps between them, which aAO has sharp
+  if (GPU) return N.rockNodeMaterial(Q, { color, roughness: 1, metalness, side, flatShading: flat }, u, { vertexColors, ao, arena, fade: !!fade, giHue });
   const m = new THREE.MeshStandardMaterial({ vertexColors, color, roughness: 1, metalness, side, flatShading: flat });
   const defs = { GQ: Q.groundQ ?? 2 };
+  if (giHue > 0) defs.GI_HUE = giHue.toFixed(3);
   if (ao) defs.ROCK_AO = 1;          // the geometry carries the occlusion baked in Blender (aAO)
   if (arena) defs.ABSOLUTE = 1;
   if (fade) defs.HF_FADE = 1;        // (also keeps the program apart in three's cache: the vertex shader differs)
@@ -692,7 +711,9 @@ export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast 
         float gAO = mix( mix( 1.0, tpAO, 0.9 ), sN.a, sandK );
         diffuseColor.rgb *= mix( 1.0, tpAO, 0.3 * ( 1.0 - sandK ) );
         #ifdef ROCK_AO
-          #ifdef HF_GI
+          #if defined( HF_GI ) && defined( GI_HUE )
+            gAO *= pow( max( vRockAO, 0.0 ), mix( rAOgi, 1.0 + 0.7 * hfShade, float( GI_HUE ) ) );
+          #elif defined( HF_GI )
             gAO *= pow( max( vRockAO, 0.0 ), rAOgi );          // (the baked light has the large-scale part)
           #else
             // (max: with MSAA an edge pixel extrapolates the attribute, and pow of a negative is NaN)

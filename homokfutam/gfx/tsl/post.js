@@ -95,7 +95,8 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
         const sunL = ATMO.hfSunCol.mul(phase.mul(3.1));
         // dust in shadow still glows with the sky and the sunlit rock round it: about the shaded walls' level
         // (less where the shade is darker, D2: the eye opens up to it, and bright dust turns the slot milky)
-        const amb = ATMO.hfFogCol.mul(oneMinus(ATMO.hfShade.mul(0.55)).mul(0.32)).mul(VOL.amb);
+        // (0.32 before the baked light's enclosed shade was deepened, gfx/gi.js hfGIShade: the slot hazed over milky)
+        const amb = ATMO.hfFogCol.mul(oneMinus(ATMO.hfShade.mul(0.55)).mul(0.22)).mul(VOL.amb);
         const T = float(1).toVar(), acc = vec3(0).toVar();
         Loop(STEPS, () => {
           const q = VOL.camPos.add(rd.mul(t)).toVar();

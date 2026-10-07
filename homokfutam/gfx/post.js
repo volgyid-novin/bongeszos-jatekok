@@ -213,7 +213,7 @@ const VOL_F = /* glsl */`
     float ds = dist / float( STEPS ), t = ds * ign( gl_FragCoord.xy );
     float c = dot( rd, hfSunDir ), g = 0.55;
     float phase = ( 1.0 - g * g ) / ( 12.5663706 * pow( 1.0 + g * g - 2.0 * g * c, 1.5 ) ) * 0.75 + 0.25 / 12.5663706;
-    vec3 sunL = hfSunCol * phase * 3.1, amb = hfFogCol * 0.32 * ( 1.0 - 0.55 * hfShade ) * uAmb;
+    vec3 sunL = hfSunCol * phase * 3.1, amb = hfFogCol * 0.22 * ( 1.0 - 0.55 * hfShade ) * uAmb;
     vec2 drift = hfTime * vec2( 0.011, 0.004 );
     float T = 1.0;
     vec3 acc = vec3( 0.0 );

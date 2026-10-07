@@ -24,7 +24,7 @@ const V2 = (v) => vec2(v.x, v.y);
 
 // per-fragment results of the surface function
 const sAlb = property('vec3', 'gAlb'), sNW = property('vec3', 'gNW'), sRough = property('float', 'gRough');
-const sAO = property('float', 'gAO'), sGlint = property('vec3', 'gGlintK'), sPomSh = property('float', 'gPomSh');
+const sAO = property('float', 'gAO'), sGIHue = property('float', 'gGIHue'), sGlint = property('vec3', 'gGlintK'), sPomSh = property('float', 'gPomSh');
 
 const cloud = (uv) => ATMO.hfCloudTex.sample(uv).r;
 const macUv = (xz) => xz.sub(GU.gMacXf.xy).mul(GU.gMacXf.z);
@@ -245,6 +245,15 @@ class GroundLighting extends THREE.PhysicalLightingModel {
     if (GI_ON) {
       // the baked light (?gfx=gi:1, gfx/gi.js): sky visibility and bounce, over the open desert's
       const gi = hfGI(positionWorld, sNW).toVar();
+      // (rockMaterial giHue: the bake's colour, but mostly the surface's own, sharper occlusion for how bright. Less
+      // saturated: deep in the shade the bake is nearly all red bounce, and without its darkness that read as a dark
+      // red glow where the shade should be near black. 'surface': as much as the surface says, in sGIHue)
+      const hue = builder.material.giHue === 'surface' ? sGIHue : builder.material.giHue || 0;
+      if (hue !== 0) {
+        gi.assign(max(gi, vec3(0)));
+        const L = max(dot(gi, vec3(0.2126, 0.7152, 0.0722)), 0.02).toVar();
+        gi.assign(mix(vec3(1), min(gi.div(L), vec3(3)), oneMinus(float(hue).mul(0.7))).mul(pow(L, oneMinus(hue))));
+      }
       reflectedLight.indirectDiffuse.mulAssign(gi);
       ao = sAO.mul(min(dot(gi, vec3(0.2126, 0.7152, 0.0722)), 1));
     }
@@ -272,7 +281,7 @@ class SurfaceMaterial extends THREE.MeshStandardNodeMaterial {
     super.setupDiffuseColor(builder);
   }
   setupLightingModel() { return new GroundLighting(this.glintOn, this.pom); }
-  copy(source) { this.surface = source.surface; this.glintOn = source.glintOn; this.pom = source.pom; return super.copy(source); }
+  copy(source) { this.surface = source.surface; this.glintOn = source.glintOn; this.pom = source.pom; this.giHue = source.giHue; return super.copy(source); }
 }
 
 // ---------------------------------------------------------------------------
@@ -418,12 +427,16 @@ export function trackNodeMaterial(Q, trackLength, u, hasDrift = false) {
     // down in the canyon the floor sees only a strip of sky, less still by the walls
     // (hfShade, D2: deeper, as the floor of a real slot sees ~10-25 % of the sky)
     const shade = ATMO.hfShade;
-    // (the baked light, gi, has the real thing)
-    if (!GI_ON) {
-      ao.mulAssign(oneMinus(canyon.mul(smoothstep(0.55, 1, edge).mul(mix(0.25, 0.2, shade)).add(mix(0.35, 0.62, shade)))));
-      // under the tunnel's roof (D7)
-      const roofK = (r) => smoothstep(r.x.sub(4), r.x.add(4), s).mul(oneMinus(smoothstep(r.y.sub(4), r.y.add(4), s)));
-      ao.mulAssign(oneMinus(max(roofK(u.kRoof0), max(roofK(u.kRoof1), roofK(u.kRoof2))).mul(0.8)));
+    // and under the tunnel's roof (D7), the slabs as arc-length ranges with a sharp edge to each
+    const roofK = (r) => smoothstep(r.x.sub(4), r.x.add(4), s).mul(oneMinus(smoothstep(r.y.sub(4), r.y.add(4), s)));
+    const roof = max(roofK(u.kRoof0), max(roofK(u.kRoof1), roofK(u.kRoof2)));
+    const occ = oneMinus(canyon.mul(smoothstep(0.55, 1, edge).mul(mix(0.25, 0.2, shade)).add(mix(0.35, 0.62, shade)))).mul(oneMinus(roof.mul(0.8)));
+    if (!GI_ON) ao.mulAssign(occ);
+    else {
+      // with the baked light, in the canyon: its colour (the warm bounce), but this for how bright (giHue in
+      // GroundLighting). Its 6 m cells blur the slabs' shade and the 10-12 m sunlit gaps between them into one dark run
+      sGIHue.assign(canyon.mul(0.85));
+      ao.mulAssign(pow(max(occ, 1e-4), sGIHue));
     }
     sAO.assign(ao);
     sAlb.assign(col.mul(mix(1, gS.ao, 0.35)));
@@ -433,6 +446,7 @@ export function trackNodeMaterial(Q, trackLength, u, hasDrift = false) {
     sNW.assign(bendNormal(hfGN, gS.nd.mul(gNK)));
     if (GQ > 1) sGlint.assign(glint(sNW, gS.sand));
   }, GQ > 1, pom);
+  m.giHue = 'surface';
   m.userData.uniforms = u;
   return m;
 }
@@ -445,7 +459,7 @@ const unpackN = (t, k) => {
   const xy = t.rg.mul(2).sub(1).mul(k).toVar();
   return vec3(xy, sqrt(max(oneMinus(dot(xy, xy)), 0)));
 };
-export function rockNodeMaterial(Q, params, u, { vertexColors, ao, arena, fade = false }) {
+export function rockNodeMaterial(Q, params, u, { vertexColors, ao, arena, fade = false, giHue = 0 }) {
   const m = new SurfaceMaterial(params, (mat) => {
     const hfGN = geoNormal(mat);
     const wp = positionWorld.toVar();
@@ -492,7 +506,7 @@ export function rockNodeMaterial(Q, params, u, { vertexColors, ao, arena, fade =
     if (ao) {
       const rockAO = attribute('aAO', 'float').toVar();
       // (with the baked light, gi, only part of it: rAOgi; gfx/ground.js)
-      occ.mulAssign(pow(max(rockAO, 0), GI_ON ? u.rAOgi : ATMO.hfShade.mul(0.7).add(1)));
+      occ.mulAssign(pow(max(rockAO, 0), GI_ON ? (giHue > 0 ? mix(u.rAOgi, ATMO.hfShade.mul(0.7).add(1), giHue) : u.rAOgi) : ATMO.hfShade.mul(0.7).add(1)));
       col.mulAssign(mix(1, rockAO, u.rAOAlb));         // deep cavities stay dark in sunlight too (aoAlbedo)
     }
     sAO.assign(occ);
@@ -511,6 +525,7 @@ export function rockNodeMaterial(Q, params, u, { vertexColors, ao, arena, fade =
     const nSand = normalize(vec3(nd.x, 1, nd.y));
     sNW.assign(normalize(mix(nRock, normalize(mix(wn, nSand, 0.6)), sandK)));
   }, false);
+  m.giHue = giHue;
   // fade (a culled scatter field, world/scatter.js): the copies rise out of the ground over the last ~28 % of its
   // draw distance (positionLocal is already in the world here: the instanced meshes sit at the origin)
   if (fade) m.positionNode = positionLocal.sub(vec3(0, smoothstep(u.rFadeFar.mul(0.72), u.rFadeFar, length(positionLocal.sub(cameraPosition))).mul(u.rFadeDepth), 0));

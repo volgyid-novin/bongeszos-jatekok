@@ -28,6 +28,11 @@ const v4 = () => new THREE.Vector4();
 export const GIU = {
   hfGIOn: U(0),
   hfGIK: U(1),                                  // strength (0 = off, 1 = as baked)
+  // the shade where the bake says a place is enclosed (its light under ~0.7 of the open desert's: the canyon floor,
+  // the walls, under the bridge and the arch) is taken down to this, easing back to the bake towards 1: the bounce
+  // filled the slot's shade almost to the open desert's level, and with the eye opened up the canyon read flat,
+  // its shadows (the bridge's, the walls') washed out; open ground inside a volume stays as it was
+  hfGIShade: U(0.62),
   hfGITex: GPU ? TSL.texture3D(placeholder()) : { value: placeholder() },
   hfGIDim: U(new THREE.Vector4(1, 3, 1, 1)),   // (cells across per channel block, atlas width, height, depth)
   hfGIRef0: U(new THREE.Vector3()), hfGIRef1: U(new THREE.Vector3()), hfGIRef2: U(new THREE.Vector3()),   // b_open / a_open per channel
@@ -35,7 +40,7 @@ export const GIU = {
 };
 // for the GLSL materials (Object.assign into shader.uniforms): the arrays as array uniforms
 export const GI_UNIFORMS = GPU ? {} : {
-  hfGIOn: GIU.hfGIOn, hfGIK: GIU.hfGIK, hfGITex: GIU.hfGITex, hfGIDim: GIU.hfGIDim, hfGIRef0: GIU.hfGIRef0, hfGIRef1: GIU.hfGIRef1, hfGIRef2: GIU.hfGIRef2,
+  hfGIOn: GIU.hfGIOn, hfGIK: GIU.hfGIK, hfGIShade: GIU.hfGIShade, hfGITex: GIU.hfGITex, hfGIDim: GIU.hfGIDim, hfGIRef0: GIU.hfGIRef0, hfGIRef1: GIU.hfGIRef1, hfGIRef2: GIU.hfGIRef2,
   hfGIO: { value: GIU.O.map((u) => u.value) }, hfGIA: { value: GIU.A.map((u) => u.value) }, hfGIS: { value: GIU.S.map((u) => u.value) },
 };
 
@@ -44,7 +49,7 @@ export const GI_FUNCS = /* glsl */`
 uniform highp sampler3D hfGITex;
 uniform vec4 hfGIO[ ${MAX} ], hfGIA[ ${MAX} ], hfGIS[ ${MAX} ], hfGIDim;
 uniform vec3 hfGIRef0, hfGIRef1, hfGIRef2;
-uniform float hfGIOn, hfGIK;
+uniform float hfGIOn, hfGIK, hfGIShade;
 // the baked light at world position wp for world normal n, over the open desert's (RGB)
 vec3 hfGI( vec3 wp, vec3 n ) {
   if ( hfGIOn < 0.5 ) return vec3( 1.0 );
@@ -70,8 +75,9 @@ vec3 hfGI( vec3 wp, vec3 n ) {
     sum += T * w;
     ws += w;
   }
-  vec3 T = ws > 0.0 ? sum / ws : vec3( 1.0 );
-  return mix( vec3( 1.0 ), min( T, vec3( 4.0 ) ), min( ws, 1.0 ) * hfGIK );
+  vec3 T = ws > 0.0 ? min( sum / ws, vec3( 4.0 ) ) : vec3( 1.0 );
+  T *= mix( hfGIShade, 1.0, smoothstep( 0.7, 1.0, dot( T, vec3( 0.2126, 0.7152, 0.0722 ) ) ) );
+  return mix( vec3( 1.0 ), T, min( ws, 1.0 ) * hfGIK );
 }
 `;
 
