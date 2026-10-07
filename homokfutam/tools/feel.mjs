@@ -2,7 +2,7 @@
 // mistakes cost. The game's own frame loop is held; the probes step the physics themselves (__homok.sim),
 // and the modelled keyboard drivers press the real keys through real 60 Hz frames (a synthetic clock).
 //
-//   node feel.mjs [--tag name] [--slide] [--bots] [--only steer,slide,sand,wall,lap,drivers]
+//   node feel.mjs [--tag name] [--slide] [--bots] [--only steer,slide,sand,wall,lap,drivers] [--query "col=0"]
 //
 // --slide: the build has the slide key (Space): also measure a slide and a driver who slides into tight corners
 // --bots: lap times of the bots at every difficulty (three 2-lap races, slow)
@@ -17,7 +17,7 @@ const TAG = arg('--tag', 'now'), SLIDE = has('--slide'), BOTS = has('--bots');
 const ONLY = arg('--only', 'steer,slide,sand,wall,lap,drivers').split(',');
 
 const browser = await launch({ w: 640, h: 360, webgpu: false });
-const page = await open(browser, 'q=low&renderer=webgl');
+const page = await open(browser, 'q=low&renderer=webgl' + (arg('--query', '') ? '&' + arg('--query') : ''));
 await page.evaluate(() => {
   window.__held = [];
   window.requestAnimationFrame = (cb) => { window.__held.push(cb); return 0; };

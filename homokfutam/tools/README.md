@@ -1,6 +1,6 @@
 # HOMOKFUTAM tools
 
-The measurement harness behind `docs/visual-next-steps.md` (sections B to E), and the light bake. Headless Chrome
+The measurement harness behind `docs/visual-next-steps.md` (sections B to F), and the light bake. Headless Chrome
 driven by `puppeteer-core`, against the game on a local Vite dev server. Dev only: nothing here ships.
 
 ## Setup
@@ -32,7 +32,8 @@ npx vite --host 127.0.0.1 --port 5199       # from the repo root, in another ter
 | `trace.mjs tag "query" [--from s] [--until s] [--shots t,…] [--every a:b:step]` | a race in real time through the canyon with the chase camera, logging the eye adaptation every 100 ms, screenshots at race times |
 | `eyecheck.mjs "query"` | the eye's metered EV, target and exposure at a few points of a race |
 | `canyontime.mjs` | seconds and metres the player spends in the canyon and under the arch at race speed |
-| `feel.mjs [--tag t] [--slide] [--bots] [--only steer,slide,sand,wall,lap,drivers]` | driving feel: full-lock turns (yaw, slide angle, speed kept), a slide and its exit, a second on the sand, wall hits at 3-60°, the autopilot's lap, and modelled keyboard drivers (real keys, 60 Hz frames, a reaction delay) with their lap times, time off the track and wall contacts; `--bots`: the bots' best laps per difficulty. Writes `out/feel_<tag>.json` |
+| `feel.mjs [--tag t] [--slide] [--bots] [--only steer,slide,sand,wall,lap,drivers] [--query q]` | driving feel: full-lock turns (yaw, slide angle, speed kept), a slide and its exit, a second on the sand, wall hits at 3-60°, the autopilot's lap, and modelled keyboard drivers (real keys, 60 Hz frames, a reaction delay) with their lap times, time off the track and wall contacts; `--bots`: the bots' best laps per difficulty. Writes `out/feel_<tag>.json` |
+| `hits.mjs [--tag t] ["query"]` | collisions (docs F): scripted hits at fixed starts, physics stepped at 120 Hz: the canyon wall at 5, 20 and 60°, the arena wall, a boulder and a spire head on, nose to tail, side by side. Per case: how deep the hull got into the solid field or the other pod (the clipping), the speed just after and at the end, the turn, the spin. `"col=0"` for the old collisions. Writes `out/hits_<tag>.json` |
 | `bakegi.mjs ["query"]` | runs the light bake (`__homok.bakeGI()`, ~2 minutes) and writes `../assets/world/gi.bin` |
 | `gidecode.mjs x,y,z …` | the baked light at world points, as E(n) / E_open(n) for the six axis normals |
 | `rtspike.mjs [--radius 300,700] [--views canyonFwd,dunes,grid] [--ordered]` | GPU ray tracing (`gfx/tsl/rt.js`) against the static world round fixed cameras: rays per second for primary, random and shadow rays, checked against the CPU BVH |

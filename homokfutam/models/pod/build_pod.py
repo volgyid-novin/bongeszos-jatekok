@@ -668,13 +668,7 @@ def build_engine_static(bm):
     for y in (-0.85, 0.35, 1.45):
         cyl(bm, 0.035, 0.035, 0.18, (0, y, 0.885), (0, 1, 0), 10, B)
 
-    # access hatch on the outboard side (+x), with bolts
-    hatch = [(0.69, -2.32), (0.728, -2.30), (0.728, -1.76), (0.69, -1.74), (0.69, -2.32)]
-    lathe(bm, [(r, y, T) for r, y in hatch], segs=6, a0=-radians(20), a1=radians(20), caps=True)
-    for a in (-17, 17):
-        for y in (-2.26, -2.03, -1.80):
-            v = cyl(bm, 0.017, 0.017, 0.02, (0, 0, 0), (1, 0, 0), 6, B)
-            bmesh.ops.transform(bm, matrix=radial(radians(a)) @ Matrix.Translation((0.735, y, 0)), verts=v)
+    # (the access hatch on the outboard side is a breakable part: build_engine)
 
     # louvres on the rear housing, top-outboard
     for i in range(6):
@@ -703,10 +697,7 @@ def build_engine_static(bm):
     cyl(bm, 0.092, 0.092, 0.26, (-0.77, 2.08, -0.06), (0, 1, 0), 12, BR)
     cyl(bm, 0.10, 0.10, 0.04, (-0.77, 2.20, -0.06), (0, 1, 0), 12, D)
 
-    # outboard stabiliser (the flap is a separate moving part)
-    stab = [(0.70, 1.42), (0.70, 2.33), (1.30, 2.33), (1.30, 1.95)]
-    prism(bm, stab, 0.06, lambda u, v, w: (u, v, w - 0.03), P, mats=(P, P, D))
-    box(bm, (0.035, 0.55, 0.30), (1.315, 2.13, 0.03), T)  # end plate
+    # (the outboard stabiliser and its flap are a breakable part: build_engine)
 
     # fuel lines along the rear housing
     for phi in (radians(28), radians(45)):
@@ -809,19 +800,56 @@ def build_engine(parent, side_name='L'):
     build_nozzle(bm)
     mesh_obj(f'Nozzle_{side_name}_mesh', bm, noz)
 
-    flap = empty(f'Flap_{side_name}', eng, (1.0, 2.33, 0), anim='flap', axis='x', sign=1.0, max=0.45)
+    # outboard stabiliser with its end plate and the flap (breakable); the stump is its root, torn off ragged
+    sp = Vector((0.70, 1.88, 0))
+    stab = empty(f'BREAK_Stab_{side_name}', eng, sp, brk=1)
+    stub = empty(f'STUMP_Stab_{side_name}', eng, sp)
+    bm = bmesh.new()
+    prism(bm, [(0.70, 1.42), (0.70, 2.33), (1.30, 2.33), (1.30, 1.95)], 0.06, lambda u, v, w: (u, v, w - 0.03), P, mats=(P, P, D))
+    box(bm, (0.035, 0.55, 0.30), (1.315, 2.13, 0.03), T)  # end plate
+    mesh_obj(f'Stab_{side_name}_mesh', bm, stab, -sp)
+    bm = bmesh.new()
+    torn = [(0.70, 1.45), (0.70, 2.31), (0.86, 2.30), (0.97, 2.12), (0.88, 1.98), (1.00, 1.86), (0.90, 1.72), (0.84, 1.60)]
+    prism(bm, torn, 0.06, lambda u, v, w: (u, v, w - 0.03), P, mats=(P, P, B))
+    mesh_obj(f'Stab_{side_name}_stump', bm, stub, -sp)
+    capsule(f'Fin_{side_name}', stab, Vector((1.03, 1.6, 0)) - sp, Vector((1.03, 2.45, 0)) - sp, 0.3)
+
+    flap = empty(f'Flap_{side_name}', stab, Vector((1.0, 2.33, 0)) - sp, anim='flap', axis='x', sign=1.0, max=0.45)
     bm = bmesh.new()
     build_flap(bm)
     mesh_obj(f'Flap_{side_name}_mesh', bm, flap, bevel=0.006)
 
-    # split dorsal air-brake: P/N = leaf on +x/-x; sign = three.js rotation.z that opens it outward
+    # access hatch on the outboard side (+x), with bolts (breakable); behind it, the dark opening with two pipes
+    hp = Vector((0.71, -2.03, 0))
+    hatch = empty(f'BREAK_Hatch_{side_name}', eng, hp, brk=1)
+    hole = empty(f'STUMP_Hatch_{side_name}', eng, hp)
+    bm = bmesh.new()
+    prof = [(0.69, -2.32), (0.728, -2.30), (0.728, -1.76), (0.69, -1.74), (0.69, -2.32)]
+    lathe(bm, [(r, y, T) for r, y in prof], segs=6, a0=-radians(20), a1=radians(20), caps=True)
+    for a in (-17, 17):
+        for y in (-2.26, -2.03, -1.80):
+            v = cyl(bm, 0.017, 0.017, 0.02, (0, 0, 0), (1, 0, 0), 6, B)
+            bmesh.ops.transform(bm, matrix=radial(radians(a)) @ Matrix.Translation((0.735, y, 0)), verts=v)
+    mesh_obj(f'Hatch_{side_name}_mesh', bm, hatch, -hp)
+    bm = bmesh.new()
+    lathe(bm, [(0.718, -2.29, D), (0.718, -1.77, D)], segs=6, a0=-radians(18.5), a1=radians(18.5))
+    rim = [(0.712, -2.31, B), (0.724, -2.31, B), (0.724, -2.29, B), (0.724, -1.77, B), (0.724, -1.75, B), (0.712, -1.75, B)]
+    for a0, a1 in ((-20, -18.5), (18.5, 20)):
+        lathe(bm, rim, segs=2, a0=radians(a0), a1=radians(a1), caps=True)
+    for a in (-8, 7):
+        sweep(bm, [radial(radians(a)) @ Vector((0.722, y, 0)) for y in (-2.33, -2.03, -1.73)], 0.022, 8, BR)
+    mesh_obj(f'Hatch_{side_name}_stump', bm, hole, -hp)
+
+    # split dorsal air-brake: P/N = leaf on +x/-x; sign = three.js rotation.z that opens it outward (breakable: the
+    # hinge rail and its knuckles stay)
     for side in (1, -1):
         tag = 'P' if side > 0 else 'N'
-        piv = empty(f'Brake_{side_name}_{tag}', eng, (0, 0.35, 0.87), anim='brake', axis='z', sign=-float(side), max=0.75)
+        piv = empty(f'Brake_{side_name}_{tag}', eng, (0, 0.35, 0.87), anim='brake', axis='z', sign=-float(side), max=0.75, brk=1)
         bm = bmesh.new()
         build_leaf(bm, side)
         mesh_obj(f'Brake_{side_name}_{tag}_mesh', bm, piv, bevel=0.006)
 
+    capsule(f'Engine_{side_name}', eng, (0, -3.45, 0), (0, 2.7, 0), 0.86)
     empty(f'BeamAnchor_{side_name}', eng, (-0.93, -1.95, 0))
     empty(f'FlameAnchor_{side_name}', eng, (0, 3.5, 0))
     return eng
@@ -982,17 +1010,7 @@ def build_body(body):
             bmesh.ops.transform(bm, matrix=Matrix.Translation((nx, y, 0.08)) @ Matrix.Rotation(radians(-25), 4, 'Z'),
                                 verts=v)
 
-    # stub wings with end plates
-    for s in (1, -1):
-        wing = [(0.70, 2.35), (0.70, 3.75), (1.70, 3.55), (1.70, 3.00)]
-        v = prism(bm, wing, 0.07, lambda u, v_, w: (u, v_, w - 0.035), P, mats=(P, P, D))
-        m = Matrix.Translation((0, 0, -0.10)) @ Matrix.Rotation(radians(-10), 4, 'Y')
-        if s < 0:
-            m = Matrix.Diagonal((-1, 1, 1, 1)) @ m
-        bmesh.ops.transform(bm, matrix=m, verts=v)
-        if s < 0:
-            bmesh.ops.reverse_faces(bm, faces=list(_faces_of(v)))
-        box(bm, (0.04, 0.70, 0.40), (s * 1.68, 3.30, 0.12), T)
+    # (the stub wings are breakable parts: build_wing)
 
     # cable sockets on the front flanks
     for s in (1, -1):
@@ -1007,19 +1025,18 @@ def build_body(body):
     box(bm, (0.72, 0.06, 0.32), (0, 4.24, -0.08), D)
     for k in range(5):
         box(bm, (0.70, 0.04, 0.025), (0, 4.28, -0.20 + k * 0.06), B)
-    cyl(bm, 0.012, 0.008, 1.25, (-0.62, 3.70, 1.02), (0, 0.12, 1), 6, B)
+    # (the antenna and its pennant are a breakable part: build_antenna)
 
     # skids under the belly
     for s in (1, -1):
         box(bm, (0.12, 2.6, 0.08), (s * 0.42, 2.3, -0.52), D)
 
     mesh_obj('Body_static', bm, body, bevel=0.006)
-
-    # pennant on the antenna (accent cloth)
-    bm = bmesh.new()
-    pts = [Vector((-0.62, 3.76 + 0.55 * u, 1.60 - 0.10 * u + 0.03 * sin(u * 9))) for u in [i / 10 for i in range(11)]]
-    sweep(bm, pts, lambda u: 0.11 * (1 - u) + 0.01, 4, 'CLOTH', flat=0.08)
-    mesh_obj('Body_pennant', bm, body, bevel=0)
+    for s in (1, -1):
+        build_wing(body, s)
+    build_antenna(body)
+    # the cockpit tub's collision capsule, nose scoop to the rear grille
+    capsule('Hull', body, (0, 0.6, 0.35), (0, 3.55, 0.35), 1.05)
 
     # glass
     bm = bmesh.new()
@@ -1094,6 +1111,87 @@ def build_pilot(body):
     bmesh.ops.transform(bm, matrix=grow, verts=bm.verts[:])
     mesh_obj('Pilot_glass', bm, piv, bevel=0)
     return piv
+
+
+# ============================================================
+#  collision capsules, breakable parts
+# ============================================================
+# The game collides with the pod's COL_ capsules (playerPod.js readHull): an empty at the capsule's centre with
+# extras col = 'capsule', r and half; the capsule runs along the empty's local Y (the game's local z after export),
+# half metres each way. a, b: the ends in the parent's space. A wireframe COLVIS_ mesh shows it here; bake_export.py
+# deletes those before baking.
+def capsule(name, parent, a, b, r):
+    a, b = Vector(a), Vector(b)
+    axis = b - a
+    ob = empty(f'COL_{name}', parent, (a + b) / 2, col='capsule', r=float(r), half=float(axis.length / 2))
+    ob.empty_display_type = 'SINGLE_ARROW'
+    ob.empty_display_size = r
+    if axis.length > 1e-6:
+        ob.rotation_euler = Vector((0, 1, 0)).rotation_difference(axis.normalized()).to_euler()
+    bm = bmesh.new()
+    cyl(bm, r, r, axis.length, (0, 0, 0), (0, 1, 0), 16, D, caps=False)
+    for s in (1, -1):
+        sphere(bm, r, (0, s * axis.length / 2, 0), segs=16, rings=8)
+    me = bpy.data.meshes.new(f'COLVIS_{name}')
+    bm.to_mesh(me)
+    bm.free()
+    vis = bpy.data.objects.new(f'COLVIS_{name}', me)
+    vis.parent = ob
+    vis.display_type = 'WIRE'
+    vis.hide_render = True
+    get_coll().objects.link(vis)
+    return ob
+
+
+# Breakable parts (the game tears them off in a crash, playerPod.js / main.js): an empty with extras brk = 1 holds
+# the intact part (BREAK_<name>, or a moving part's pivot); STUMP_<name> beside it (same parent, same place) holds
+# what is left, hidden in the game until the part goes. Their meshes keep the parent's coordinates (each sits at
+# -pivot), so the shapes are the same as when they were part of the static meshes.
+def build_wing(body, s):
+    """Stub wing with its end plate on side s (+1: +x, the game's left); the stump is torn off a hand's width out."""
+    side = 'L' if s > 0 else 'R'
+    pivot = Vector((s * 0.70, 3.05, -0.10))
+    brk = empty(f'BREAK_Wing_{side}', body, pivot, brk=1)
+    stump = empty(f'STUMP_Wing_{side}', body, pivot)
+    m = Matrix.Translation((0, 0, -0.10)) @ Matrix.Rotation(radians(-10), 4, 'Y')
+    if s < 0:
+        m = Matrix.Diagonal((-1, 1, 1, 1)) @ m
+
+    def wing(bm, pts, mats):
+        v = prism(bm, pts, 0.07, lambda u, v_, w: (u, v_, w - 0.035), P, mats=mats)
+        bmesh.ops.transform(bm, matrix=m, verts=v)
+        if s < 0:
+            bmesh.ops.reverse_faces(bm, faces=list(_faces_of(v)))
+
+    bm = bmesh.new()
+    wing(bm, [(0.70, 2.35), (0.70, 3.75), (1.70, 3.55), (1.70, 3.00)], (P, P, D))
+    box(bm, (0.04, 0.70, 0.40), (s * 1.68, 3.30, 0.12), T)
+    mesh_obj(f'Wing_{side}_mesh', bm, brk, -pivot, bevel=0.006)
+    bm = bmesh.new()
+    wing(bm, [(0.70, 2.37), (0.70, 3.73), (1.08, 3.66), (1.22, 3.50), (1.10, 3.30), (1.28, 3.12), (1.14, 2.90),
+              (1.24, 2.72), (1.06, 2.60)], (P, P, B))
+    mesh_obj(f'Wing_{side}_stump', bm, stump, -pivot, bevel=0.004)
+    capsule(f'Wing_{side}', brk, Vector((s * 0.95, 3.0, -0.10)) - pivot, Vector((s * 1.35, 3.25, -0.10)) - pivot, 0.42)
+
+
+def build_antenna(body):
+    """The whip antenna on the rear deck with its pennant; the stump is the bottom of the mast, snapped."""
+    ax = Vector((0, 0.12, 1)).normalized()
+    centre = Vector((-0.62, 3.70, 1.02))
+    pivot = centre - ax * 0.625
+    brk = empty('BREAK_Antenna', body, pivot, brk=1)
+    stump = empty('STUMP_Antenna', body, pivot)
+    bm = bmesh.new()
+    cyl(bm, 0.012, 0.008, 1.25, centre, (0, 0.12, 1), 6, B)
+    mesh_obj('Antenna_mesh', bm, brk, -pivot, bevel=0)
+    # pennant on the antenna (accent cloth)
+    bm = bmesh.new()
+    pts = [Vector((-0.62, 3.76 + 0.55 * u, 1.60 - 0.10 * u + 0.03 * sin(u * 9))) for u in [i / 10 for i in range(11)]]
+    sweep(bm, pts, lambda u: 0.11 * (1 - u) + 0.01, 4, 'CLOTH', flat=0.08)
+    mesh_obj('Body_pennant', bm, brk, -pivot, bevel=0)
+    bm = bmesh.new()
+    cyl(bm, 0.0125, 0.0115, 0.14, pivot + ax * 0.07, (0, 0.12, 1), 6, B)
+    mesh_obj('Antenna_stump', bm, stump, -pivot, bevel=0)
 
 
 # ============================================================

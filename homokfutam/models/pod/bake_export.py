@@ -344,6 +344,11 @@ def main():
     scn.world.light_settings.distance = 0.6
 
     build_pod.build()
+    # the collision capsules' wireframes are only for looking at here (the COL_ empties export with their extras)
+    for ob in [o for o in pod_objects() if o.name.startswith('COLVIS_')]:
+        data = ob.data
+        bpy.data.objects.remove(ob, do_unlink=True)
+        bpy.data.meshes.remove(data)
     body = bpy.data.objects['Body']
     eng_l = bpy.data.objects['Engine_L']
     # the right engine is rebuilt after unwrapping so it inherits the left engine's UVs
@@ -359,6 +364,11 @@ def main():
     unwrap(bake_objs)
     build_pod.mirror_engine(eng_l, body)
 
+    # A breakable part's stump sits inside the intact part, and the surface's bevel and occlusion nodes trace the
+    # geometry round each point: baked in place, each would darken the other. The stumps are baked 40 m away.
+    stumps = [o for o in pod_objects() if o.name.startswith('STUMP_')]
+    for o in stumps:
+        o.location.z += 40.0
     rig = BakeRig()
     passes = [('color', 'Color', True), ('rough', 'Roughness', False), ('metal', 'Metallic', False),
               ('maskp', 'MaskPaint', False), ('maskt', 'MaskTrim', False)]
@@ -379,6 +389,8 @@ def main():
     imgs['ao'] = new_image('bake_ao', size, False)
     rig.target(imgs['ao'])
     bake(bake_objs, 'AO', max(64, opt['samples']))
+    for o in stumps:
+        o.location.z -= 40.0
 
     # pack ORM and the livery mask
     ao, rough, metal = pixels(imgs['ao']), pixels(imgs['rough']), pixels(imgs['metal'])

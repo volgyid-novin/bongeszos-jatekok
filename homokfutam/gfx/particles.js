@@ -219,6 +219,8 @@ export class Particles {
     this.a0 = new Float32Array(n); this.col = new Float32Array(n * 3);
     this.gy = new Float32Array(n); this.cell = new Float32Array(n);
     this.dragA = new Float32Array(n); this.gravA = new Float32Array(n);
+    this.flags = new Uint8Array(n);       // 1: cools (white-hot to red over its life), 2: bounces off its ground
+    this.bnc = new Float32Array(n);       // (the bounce: the share of the speed into the ground it keeps)
     this.head = 0; this.alive = 0;
     const g = new THREE.InstancedBufferGeometry();
     const quad = new THREE.PlaneGeometry(1, 1);
@@ -266,7 +268,8 @@ export class Particles {
     this._c = new THREE.Color();
     scene.add(this.mesh);
   }
-  // emit(x, y, z, vx, vy, vz, life, opts?)   opts: size0, size1, color, alpha, ground, rot, spin, drag, grav, cell
+  // emit(x, y, z, vx, vy, vz, life, opts?)   opts: size0, size1, color, alpha, ground, rot, spin, drag, grav, cell,
+  // cool (a spark of hot metal: white-hot, cooling to a dull red), bounce (off the ground: the speed it keeps up)
   emit(x, y, z, vx, vy, vz, life, p) {
     const i = this.head; this.head = (this.head + 1) % this.n;
     const o = this.o;
@@ -285,6 +288,8 @@ export class Particles {
     this.cell[i] = p?.cell ?? Math.floor(Math.random() * 4);
     this.dragA[i] = p?.drag ?? o.drag;
     this.gravA[i] = p?.grav ?? o.grav;
+    this.flags[i] = (p?.cool ? 1 : 0) | (p?.bounce ? 2 : 0);
+    this.bnc[i] = p?.bounce ?? 0;
   }
   update(dt) {
     const { pos, vel, life, max, n } = this, o = this.o;
@@ -298,6 +303,11 @@ export class Particles {
       vel[i * 3] *= k; vel[i * 3 + 1] = vel[i * 3 + 1] * k - this.gravA[i] * dt; vel[i * 3 + 2] *= k;
       pos[i * 3] += vel[i * 3] * dt; pos[i * 3 + 1] += vel[i * 3 + 1] * dt; pos[i * 3 + 2] += vel[i * 3 + 2] * dt;
       if (o.kind === 'confetti' && pos[i * 3 + 1] < this.gy[i] + 0.05) { pos[i * 3 + 1] = this.gy[i] + 0.05; vel[i * 3] = vel[i * 3 + 1] = vel[i * 3 + 2] = 0; }
+      const fl = this.flags[i];
+      if (fl & 2 && pos[i * 3 + 1] < this.gy[i]) {
+        pos[i * 3 + 1] = this.gy[i];
+        if (vel[i * 3 + 1] < 0) { vel[i * 3 + 1] *= -this.bnc[i]; vel[i * 3] *= 0.6; vel[i * 3 + 2] *= 0.6; }
+      }
       this.rot[i] += this.rv[i] * dt;
       const t = 1 - life[i] / max[i];                      // 0 -> 1 over the lifetime
       const fade = Math.min(1, t / o.fadeIn) * (1 - t) * (1 - t * 0.3);
@@ -305,7 +315,12 @@ export class Particles {
       let size = this.s0[i] + (this.s1[i] - this.s0[i]) * Math.sqrt(t);
       if (o.kind === 'confetti') size *= 0.55 + 0.45 * Math.abs(Math.sin(this.rot[i] * 2.3));
       D[w * 4] = size; D[w * 4 + 1] = this.rot[i]; D[w * 4 + 2] = this.a0[i] * (o.kind === 'confetti' ? Math.min(1, life[i]) : fade); D[w * 4 + 3] = this.cell[i] + Math.min(t, 0.999);
-      C[w * 4] = this.col[i * 3]; C[w * 4 + 1] = this.col[i * 3 + 1]; C[w * 4 + 2] = this.col[i * 3 + 2]; C[w * 4 + 3] = this.gy[i];
+      if (fl & 1) {
+        // hot metal: white-hot when it leaves, through orange to a dull red as it cools, and dimmer
+        const h = 1 - t, k = 0.35 + 0.65 * h;
+        C[w * 4] = this.col[i * 3] * k; C[w * 4 + 1] = this.col[i * 3 + 1] * k * (0.35 + 0.9 * h); C[w * 4 + 2] = this.col[i * 3 + 2] * k * (0.15 + 1.6 * h * h);
+      } else { C[w * 4] = this.col[i * 3]; C[w * 4 + 1] = this.col[i * 3 + 1]; C[w * 4 + 2] = this.col[i * 3 + 2]; }
+      C[w * 4 + 3] = this.gy[i];
       V[w * 3] = vel[i * 3]; V[w * 3 + 1] = vel[i * 3 + 1]; V[w * 3 + 2] = vel[i * 3 + 2];
       w++;
     }

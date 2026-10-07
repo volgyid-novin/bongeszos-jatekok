@@ -1,13 +1,14 @@
 # HOMOKFUTAM – visual next steps
 
 Working notes for the next round of visual work on HOMOKFUTAM, written so a new session can pick
-them up cold. Five parts:
+them up cold. Six parts:
 
 1. **Two deferred items:** batching the exhaust plumes, and moving to WebGPU (three's `WebGPURenderer` with TSL node materials). The WebGPU move is now done behind `?renderer=webgpu`; section B has the results and what is left.
 2. **Optional upgrades:** improvements that cost performance, each measured on its own. All eleven are now done, each behind a `?gfx=` key, and the High and Ultra presets switch on the ones worth their cost; section C has the results and what is left.
 3. **Light:** a hot midday desert instead of golden hour, eye adaptation (the tunnel effect in the canyon), baked ray-traced bounce light, mirages and contact shadows: items 1–6 done, each behind a `?gfx=` key and measured; what ray tracing can and cannot do here (items 8–9). Section D.
 4. **Finishing touches:** a living, windy desert: one gust for everything, sand streaming across the track, sand pouring off the rock, spectators and camps out on the course, trackside markers in place of the chase lights, a landmark (a giant excavator's wreck), pods that disturb the world, lens dirt (on trial). Items 1–8 done, each behind a `?gfx=` key and measured. Section E.
-5. **How to measure:** the harness used so far, and the numbers to compare against.
+5. **Collisions and hits:** the pods collide with their real shape (capsules made in Blender, per model) against a distance field of everything solid at pod height; an off-centre hit turns the pod; the pod reacts, sparks fly from where it touches, parts break off. Section F.
+6. **How to measure:** the harness used so far, and the numbers to compare against.
 
 ## Where things stand (October 2026)
 
@@ -825,6 +826,288 @@ All of E as shipped against every E key off (`?gfx=gust:0,drift:0,trickle:0,mark
 
 ---
 
+## F. Collisions and hits: items 1–6 done
+
+**Status (October 2026).** Items 1–6 are built and work on both renderers:
+- the hull;
+- the field;
+- the spin;
+- the pod's reaction;
+- the sparks;
+- the breakable parts.
+
+Not done yet: item 7 (debris kit v2) and item 8 (scrape marks), see "What is left in F".
+
+Decided with the user:
+- **Per-model hulls:** each pod model collides with its own shape. There is no standard size.
+- **Hits turn the pod:** an off-centre contact spins it.
+- **Damage stays visual,** but parts can break off (modelled in Blender).
+- **The world's solid parts are one distance field** (option B3), not a shape per object.
+- **Blender:** the collision capsules are authored there, and effects can be made there too.
+
+**Switches:**
+- `?col=0` brings back the old collision (one circle, the clamps). It is not a `?gfx=` key: graphics presets must never change the physics.
+- `?gfx=hitfx:0` brings back the old hit effects. It is on in all four presets.
+
+### Results
+
+**Clipping and cost of a hit:** `tools/hits.mjs`, old (`?col=0`) against new, the same hull and field in both.
+- *clip*: the deepest the hull got into the world, or for the two pod cases, into the other pod's hull.
+- *end*: the speed at the end of the case.
+- *turn*: the heading change over 0.5 s after the contact.
+
+| Case | clip old → new (m) | end old → new (km/h) | turn old → new (°) |
+|---|---|---|---|
+| Canyon wall, 5°, 540 km/h | 0.55 → 0 | 511 → 505 | 21 → 20 |
+| Canyon wall, 20° | 1.83 → 0 | 486 → 473 | 32 → 30 |
+| Canyon wall, 60° | 5.73 → 0 | 265 → 229 | 28 → 57 |
+| Arena wall, 20°, 400 km/h | 2.71 → 0 | 430 → 420 | 29 → 29 |
+| Boulder, head on, 300 km/h | 1.57 → 0 | 2 → 13 | |
+| Spire, head on | 6.94 → 0 | 57 → 3 | |
+| Nose to tail, 468 vs 342 km/h | 1.90 → 0 | 441 → 374 | |
+| Side by side, steering in | 1.90 → 0 | 417 → 461 | |
+
+- **Clipping:** nothing gets into anything any more.
+- **Grazing hits:** they cost what they did, within 1–3%.
+- **A near-square hit** (60°) now swings the pod round parallel to the wall: the turn the user asked for. It ends ~14% slower than before.
+- **Nose to tail:** the pods now meet where the follower's nose meets the leader's tail, not 8 m deeper.
+
+**Driving feel:** `tools/feel.mjs --slide --bots`, old against new.
+- **Unchanged:**
+  - steering, slides and the sand;
+  - the wall hits at 3–35° (within 1%);
+  - the autopilot's lap (50.24 → 50.22 s);
+  - the bots' best laps (+0.0–0.6 s per difficulty).
+- **The modelled keyboard drivers vary from run to run, even with the old collisions.** A small difference early changes the whole lap. So each mode was run three times; the numbers are the mean of all laps:
+
+  | Driver | old | new |
+  |---|---|---|
+  | Skilled | 54.2 s | 56.1 s (one 64 s lap; 50.7–57.8 otherwise) |
+  | Slider | 50.2 s | 52.7 s |
+  | Average (weaves, ~40% of the time on the sand) | finished 1 run of 3 | finished 1 run of 3 |
+
+  - **In the canyon:** they touch the walls about as often as before. The old clamp let their engines sink ~3 m into the rock instead.
+  - **Where the extra time goes:** things that were not solid before, mainly boulders 11+ m off the edge. The model never reverses and has no respawn key, so after it hits one and ends up facing backwards it can stay there; it did that with the old collisions too.
+  - **The canyon's mouths** cost these drivers time and got them stuck before the ramps (item 2's ramps, below). Now they ride up and are turned back.
+- **The bots in full races** (three 3-lap races, all six, per difficulty): no pod is ever stopped for more than ~1 s, and the best laps match the old ones. Before the slow-pod turn (item 3), a bot that hit the canyon wall square sometimes sat against it for ~2 s.
+
+**Cost:**
+- **Simulation:** 0.084 → 0.118–0.143 ms per 1/120 s physics step, for six pods with the AI and the effects (`__homok.sim`, two rounds). That is ~+0.1 ms per frame at 60 fps.
+- **Frame benchmark** (`bench.mjs`, Low, WebGL, 1080p): within its noise of ±0.5 ms JS.
+- **Boot:**
+  - the rock patches take ~145 ms (153 patches, 0.89M cells, 3.5 MB);
+  - the walls take a few ms;
+  - the pod is one more promise the boot waits for.
+- **Pod model:** 1.95 MB as before, 43.9k triangles. It has 11 breakable parts and 7 stumps. The atlas is re-baked.
+
+### Why: what the old code does
+
+The pod is ~14.1 m long and ~6.2 m wide. In body space (+z forward, +x left), the cockpit tail is at z −4.5 and the engine fans at +9.7. Every check stood one 3 m circle (`POD_R`) in for it:
+
+| Case | Old code | Result (from the model's sizes) |
+|---|---|---|
+| Sliding along a wall | The pod's origin is clamped to `hw − 1.6`. The drawn canyon foot is at `hw + 0.8` and the face at pod height at ~`hw + 2`; the arena bays are at `hw + 1.2`. | The outer engine is ~0.7 m into the rock. |
+| Nose into a wall at 20° / square on | Same clamp. | ~3.8 m / ~7 m of engine inside the rock before the pod stops. |
+| Rock, head on | A circle round the origin, no forward offset; only tested when `\|d\| > hw + 3`. | The engine fronts are ~6.5 m inside the rock when the hit registers. |
+| Pod behind pod | A circle 2.5 m ahead of each origin; it covers z −0.5…5.5 only. | The follower's engines sit ~8 m deep, beside the leader's cockpit. |
+
+The world disagrees with itself too:
+- The talus piles and fallen blocks at the canyon foot have no collider and spill onto the road.
+- The canyon wall is drawn from `canyon > 0.01` but solid only from `> 0.3`.
+- The arena is solid from `0.3` but drawn from `0.55`, so there is an invisible wall.
+- Boulders are slabs and shards but collide as circles.
+- The arch's circles stop a pod 3–7 m short of the rock.
+
+The hit itself:
+- `impact()` turns the heading by up to half the angle to the wall in one step (a visible pop).
+- The sparks spawn at a fixed offset from the centre, at body height.
+- Nothing falls off the pod but generic shards.
+
+### The items
+
+| # | What | Switch | State |
+|---|---|---|---|
+| 1 | **Hull (A1, A2):** a few capsules per pod model, in body space, made in Blender (`COL_*`), read from the model | `?col=0` | done |
+| 2 | **The world's solid parts as one distance field (B3)**, at pod height | (1's) | done |
+| 3 | **Hits turn the pod (A3)** | (1's) | done |
+| 4 | **The pod reacts (A4):** roll and pitch kick, the cockpit whips, the struck engine is knocked, shudder | `?gfx=hitfx:0` | done |
+| 5 | **Sparks where it touches (D1):** from the contact, along the slide, cooling, bouncing; flash, dust, chips, paint flecks | `?gfx=hitfx:0` | done |
+| 6 | **Parts break off (D5):** real parts in Blender, with torn stumps | (crashes) | done |
+| 7 | Debris kit v2 (Blender): torn two-tone panels, bolts, sandstone chips | | left |
+| 8 | Scrape marks on the walls (D3) | | left |
+
+### 1. Hull (`hull`, playerPod.js `readHull`, `makeHull`; models/pod/build_pod.py `capsule`)
+
+- **In Blender:** `capsule(name, parent, a, b, r)` makes an empty `COL_<name>` at the capsule's centre, along its local Y, with the extras `col: 'capsule'`, `r`, `half`. A wireframe `COLVIS_` child shows it in Blender; `bake_export.py` deletes those before baking. The glTF export and gltfpack (`-kn -ke`) keep the empties and their extras.
+- **pod_player's seven capsules:**
+  - each engine, intake lip to nozzle (r 0.86);
+  - the cockpit tub, nose scoop to rear grille (r 1.05);
+  - each outboard stabiliser fin (r 0.3), under its breakable part;
+  - each stub wing (r 0.42), under its breakable part.
+- **In the game:** the capsules are read from the source scene's rest pose into body space (`readHull`). A capsule under a breakable part carries that part's bit, so when the part has gone the capsule no longer counts (`hullWorld`). A model without `COL_*` gets one capsule each along z through the bounds of `Engine_L`, `Engine_R` and `Body_static`. `DEFAULT_HULL` holds the same measured numbers and is used until the model is in, and by the simple pod. The boot now waits for the pod model (`POD_READY`), so a race always has the model's hull.
+- **The hull drives:**
+  - `k2`, the squared radius of gyration about the origin, from the capsules' areas (pod_player: 5.4 m);
+  - `reach`, the broad phase (9.9 m);
+  - `mass` (extras on `Pod`, default 1).
+- **Per-model and per racer:** every racer has `r.model` and `r.hull`, all `pod_player` today. A second model will need the lobby to carry each player's model, so every machine collides with the right hull.
+
+### 2. The world's solid parts as one field (`world/solid.js`; main.js `SOLID`, `addRockSolids`)
+
+- **The band:** what counts is the rock between 0.6 and 3.2 m above the ground (`BAND`), the heights a hovering pod's hull occupies. A low slab below that is flown over, an overhang above it is passed under.
+- **Walls**, per metre of arc length and side of the track:
+  - each has a face offset from the centre line and a back, with end caps where a wall starts or stops (`setWall`, `finishWalls`);
+  - a query finds the track frame from a hint sample, the pod's own, ±6 samples;
+  - the distance is the intersection of three half-planes in (s, d), and the normal comes back to the world through the frame.
+  - **The canyon:**
+    - The sweep's cross-section is now two functions shared with the mesh: `slice()` per arc length, `faceAt()` per height.
+    - The field takes, per metre, the face where it stands out furthest within the band above the ground at its foot. It is computed at a fixed resolution, so `?gfx=geo:1` (finer rows) does not change it.
+    - The face comes out at ~hw + 2.0 in full canyon. Where the wall is lower than the band (the ends) there is none.
+    - Solid is the face itself, out to 3 m past its top row (the back). Beyond that is the rim.
+    - The ends are ramps; see "The canyon's mouths are ramps" below.
+  - **The arena:** the bays' line (hw + 1.2), solid back to the stands' back wall (hw + 42), over the range where the bays are drawn.
+- **Rocks**, one patch each (`addMesh`):
+  - **Which rocks:** every spire, boulder (including the canyon's fallen blocks) and talus pile within hw + 160 of the track, plus the arch.
+  - **Which geometry:** the base `rocks.glb` models' finest level, never the `?gfx=geo:1` spires, with the instance's matrix. If `rocks.glb` fails to load, the fallback shapes are used.
+  - **How a patch is made:**
+    - Triangles near the band are clipped to it, using the ground under each triangle from a 4 m lattice.
+    - Their XZ footprints are filled conservatively: every cell they touch, so a vertical face makes a closed ring.
+    - Free cells the border cannot reach are filled in as solid.
+    - A Felzenszwalb distance transform is run both ways.
+  - **Resolution:** 0.25 m cells under 14 m across, 0.5 m above, plus 6 m of distance round each rock.
+  - **Lookup:** a 32 m hash finds the patches near a point.
+  - This track has 153 patches.
+- **What changed on the course:**
+  - the talus at the canyon foot and the fallen blocks are solid;
+  - the canyon walls are solid where they are drawn, from their low ends at the mouths;
+  - the arena's invisible wall between `arena` 0.3 and 0.55 is gone;
+  - the arch's legs are solid from ~28 m off the centre line (the circles began at 23 m);
+  - boulders have their real outlines.
+- **Not yet in the field (they were not solid before either):** ruins, wrecks, pylons, markers, boards, the landmark.
+
+#### The canyon's mouths are ramps (main.js `RAMP`, `slice`, `faceAt`, `rockContact`, `HIT_RAMP`; world/solid.js `addRide`, `rideAt`, `rideSlope`)
+
+**Why:** with the walls solid where drawn, a pod that ran wide at a mouth hit the rock prows 6–30 m off the road, square on, and wedged there 2–3 hits in a row.
+
+- **Drawn:** where the wall is lower than 30 m (`RAMP.h1`), its face lies back towards a slope of 1 m up per 2.6 m out. It is all slope below 5 m of wall (`h0`). The rim moves out past the slope's top and loses its lip. At each mouth the wall's end now runs down into the sand as a long rock ramp; deeper in, the faces are as they were.
+- **Ridden:**
+  - The field keeps, per metre and side, the drawn cross-section (face, rim, slope beyond), and the pods hover over it where it is higher than the ground (`rideQuery`: the physics' height, the visual clearance, the dust, the contact shadow).
+  - On the ramps, rock under any part of the hull lifts it clear, if it is within 1.2 m of the hull's underside (`RAMP.step`).
+  - On the rock, its slope pushes the pod back down (`RAMP.bank`, 28 m/s² per unit of slope).
+- **The wall line:**
+  - It runs unbroken from the ramps into the faces. On a ramp it sits 1.5 m higher up the slope (`RAMP.climb`), so a pod rides that far up first.
+  - Its start comes in from the side: where the wall is only beginning, the line starts up to 34 m further out (`RAMP.taper`, gone at 20 m of wall). So it is met at an angle over drawn rock, never square on.
+- **Soft on the ramps:** meeting the line on a ramp turns the pod along it like a banked berm (`HIT_RAMP`): no bounce, the speed kept but for up to 25% at a square hit.
+- **Measured** (a pod running wide at a mouth at 300 km/h, no steering):
+
+  | Angle out | Before the ramps | With them |
+  |---|---|---|
+  | 7° | rock face, −49%, wedged | rides up, turned back to the road, −14% |
+  | 15° | −29% | climbs ~4 m up the ramp, turned back, −28% |
+  | 30° | stuck | climbs ~8 m, turned back, −33% |
+
+### 3. Hits turn the pod (main.js `collideWorld`, `hitWorld`, `addSpin`, `collidePods`)
+
+- **Against the world, each 1/120 s step:**
+  - The deepest point of the hull in the field (capsules sampled every 0.7 r) is pushed out along the normal.
+  - Up to three contacts are resolved per step.
+  - Pods with nothing within reach skip the samples: the walls' distance at the origin and the patch hash rule that out.
+- **The response:**
+  - **Bounce and speed kept:** exactly as tuned (`HIT_WALL`, `HIT_ROCK`), on the pod's centre.
+  - **The turn:** from the impulse that stops the contact point, with its lever arm about the origin and the hull's inertia × `SPIN.inertia` (1.6). It goes into `r.spin`, which the yaw integrates on top of the steering and which dies away at `SPIN.decay` (5/s). The steering's yaw rate follows the stick within ~20 ms, so a kick there would vanish.
+  - **How far it turns:** towards the new direction of travel, at most `SPIN.align` (0.85) times the way that lines the nose up with it. The other way (a hit on the tail), at most ~9°.
+  - **One hit, one cost:** the nose and then the tail swinging in count once (`wallCD` 0.6 s).
+  - **A slow pod left nose-first against the rock** (below 25 m/s after a square hit) is turned along it, the way the track runs, within ~0.5 s, as the old collisions did. Before this, bots sometimes sat pushing into the canyon wall for ~2 s.
+- **Pod against pod:**
+  - the deepest pair of capsules (segment–segment distance in the plane);
+  - a two-body impulse with both lever arms and spins, e = 0.3;
+  - a pod driven by another machine is immovable here, as before.
+
+### 4–5. The pod reacts, sparks where it touches (`kickPod`, `hitFx`, `racerFx`; gfx/particles.js)
+
+- **Every contact** carries where it touched: the point on the surface, the capsule's height, the normal, the material (canyon, arena, rock), the capsule, the other pod.
+- **Kick:**
+  - The body rolls up on the struck side and pitches (a nose hit lifts the nose) on a spring that rings out in ~0.5 s (peaks ~7° and ~4°).
+  - The cockpit swing spring gets the shove: it is left behind when the engines are hit, pushed when it is hit itself.
+  - The struck engine (an engine or fin capsule) is knocked aside and up on its own spring (up to 0.4 m).
+  - The body shudders in proportion to the hit.
+- **Sparks** come from the contact:
+  - they are dragged along the slide and thrown off the face;
+  - the particle pools have two new per-particle options: `cool` (white-hot through orange to a dull red, dimming, on the CPU so both renderers get it) and `bounce` (off the ground);
+  - a short flash marks the bite (the fire pool);
+  - dust and grit blow off the face (pale plaster in the arena);
+  - rock chips fly out along the normal.
+- **Pod against pod:** flecks of the other pod's paint (the confetti pool), and both beams strain and arc.
+- **Scrape:** the stream follows the contact point while the pod grinds along, with grit off the face.
+
+### 6. Parts break off (models/pod/build_pod.py `build_wing`, `build_antenna`, `build_engine`; playerPod.js `setBroken`, `breakPart`, `stowPart`; main.js `breakParts`, `flyPart`, `updateFlying`, `partsTo`)
+
+- **The parts (11):** two stub wings, two outboard stabilisers with their flaps, four air-brake leaves, the antenna with its pennant, two engine access hatches.
+- **In Blender:**
+  - Each part is an empty with the extra `brk` (`BREAK_<name>`, or the brake pivots).
+  - Beside it sits `STUMP_<name>`: a torn wing root, a ragged stabiliser root, the dark opening behind a hatch with two pipes, a snapped mast.
+  - The meshes keep the parent's coordinates, so the shapes did not change.
+  - The stumps are baked 40 m away (`bake_export.py`): baked in place, a stump inside its part would darken both, through the surface's bevel and AO nodes.
+- **In the game:**
+  - A part is a node of the skinned pod. A crash takes the 1–3 parts nearest the contact (by power).
+  - Each part is lifted out of the pod into the scene (`scene.attach`) and flown: it keeps most of the pod's speed, gets a push out from the pod's centre and up, tumbles about its centre, bounces on the sand with a puff, smokes, sinks after 3–5 s and is put away.
+  - Its stump shows from the moment it breaks until the next race.
+  - The merged meshes follow their bones wherever they are, so a flying piece is the pod's own geometry in its own livery: no new meshes, materials or shader compiles. While a piece flies, the pod's meshes are not culled by their rest bounds.
+  - When parts tear, a crash throws 3 generic painted shards instead of 8.
+- **Sync:**
+  - `r.broken` (the mask) goes over the network as the 19th field of a pod's state. Each machine flies the parts that newly went.
+  - It is recorded in the replay. The replay shows the parts as they were at its start, without touching the racers' own masks.
+  - A new race puts every part back (`partsReset`).
+- **The simple pod** (LOW's rivals) has no parts and keeps the generic shards.
+
+### Things that bit
+
+- **The spin at first took the bounce:** an impulse at an off-centre point puts part of it into rotation, so the pods kept less speed than with the tuned response (a 20° graze cost 5% more). Now the linear response is the tuned one and only the turn comes from the contact.
+- **The tail slap counted twice:** the nose hit, the spin swung the tail into the wall 0.3 s later, a second "fresh" hit with its cost.
+- **Stumps inside parts:** both would bake dark; baked apart.
+- **A wing stump inside the hull:** the first torn wing root ended at x 0.97, inside the tub (~1.0 there); it now reaches 1.1–1.3.
+- **WebGPU captures with the game's loop held** show a stale frame (nothing is presented); capture WebGPU in real time.
+- **Field queries need a hint:** a query far from the hint sample got a nonsense frame (the walls are skipped when the nearest sample is over 200 m away).
+- **Line endings:** the sources are CRLF on disk; multi-line edits by script must match them.
+- **The ramps took four goes.** A flat field cannot tell a pod riding up the rock from one at road level:
+  - A ramp before a wall in the field left a square end, which pods on the ramp met head on.
+  - A slanted end over the ramp stood on open sand in front of the canyon, where nothing is drawn.
+  - Collision by the rock's height made pods drive into gentle slopes: the hover only looked under the pod's centre.
+  - What works: the hover lifts for rock under the whole hull, and one wall line runs on from the ramps into the faces, its start coming in from the side and soft on the ramps.
+- **The driver models are not deterministic:** compare three runs each, not one.
+
+### What is left in F
+
+1. **Running wide** now rides the canyon's mouths (the ramps). Off-road boulders are still solid where drawn: decide in play whether hitting them costs too much for players who run wide.
+2. **Debris kit v2 (item 7):** two-tone torn panels (paint outside, bare metal inside) need a paint mask in the debris material on both renderers (a vertex attribute mixing the instance colour with metal). Bolts, brackets and sandstone chips too.
+3. **Scrape marks (item 8):** a ribbon along the contact on the canyon and arena walls (the face is known from the field), with a texture from Blender.
+4. **Multiplayer (E):**
+   - remote pods still are not pushed locally, so with lag their hulls can overlap ours for a few frames;
+   - contact events are not shared;
+   - the lobby does not carry the pod model yet.
+5. **Other solids:** ruins, wrecks and the landmark's lattice could become patches the same way.
+6. **Not started:** D4 (damage on the pod), D6 (camera kick, hit-stop), D7 (impact sounds per material), C (smashable props).
+
+### Measuring F
+
+- **`tools/hits.mjs`:** scripted hits from a fixed start. The scenarios:
+  - the canyon wall at 5°, 20° and 60°;
+  - an arena wall;
+  - a spire and a boulder, head on;
+  - nose to tail;
+  - side by side.
+
+  For each it reports:
+  - the deepest any hull capsule got into the world field or into the other pod's hull, over the scenario;
+  - the speed after 0.1 s and 1 s;
+  - the heading change.
+
+  Old (`?col=0`) against new.
+- **`tools/feel.mjs`:** the wall costs, the lap times of the autopilot and the modelled drivers, the bots.
+- **Cost:** the JS time per frame with six pods (`bench.mjs`), and the boot time of the field.
+- **Visual:** frames of the scripted hits from a fixed camera.
+
+---
+
 ## Measuring: harness and method
 
 The scripts are in `homokfutam/tools/` (setup and usage: its README). The notes below are what they do and why.
@@ -851,6 +1134,7 @@ The scripts are in `homokfutam/tools/` (setup and usage: its README). The notes 
 | `view({eye, look, fov, abs})` | debug camera: pod-relative, or world space with `abs: true`; `view(null)` restores |
 | `force({...})` | forces inputs on the player, e.g. boost |
 | `crash(n, power)` | visual crash on racer n |
+| `solid` | the solid field (F2): `solid.query(x, z, hint, out)` → signed distance (m), `out.nx/nz` (outward normal), `out.mat`; `solid.stats`, `solid.walls`, `solid.patches` |
 | `podEnv(k)` | 0 = sky-only lighting on the pods; k = probes at strength k |
 | `rebakeProbes()` | bakes the light probes again |
 | `rocks` | the rock lists, for framing spires (`rocks.arch`: the arch's position) |

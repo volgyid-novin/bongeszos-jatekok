@@ -10,7 +10,7 @@ export const PRESETS = {
     sky: false, csm: false, pom: false, vol: false, clouds: false, aoq: 0, coat: false, refl: false, grass: false, geo: false, parts: false,
     noon: true, sunEl: 0, eye: 2, gi: false, mirage: false, sss: 0, rtr: 0, gloss: 1, tunnel: 1,
     // docs/visual-next-steps.md E: the living, windy desert
-    gust: 1, drift: 1, trickle: 1, markers: 1, camps: 0, landmark: 1, wake: 0, lens: 0,
+    gust: 1, drift: 1, trickle: 1, markers: 1, camps: 0, landmark: 1, wake: 0, lens: 0, hitfx: 1,
   },
   medium: {
     name: 'medium', pixelRatio: 1.25, minPixelRatio: 0.7, post: true, msaa: 0, ao: false, bloom: true, godrays: false,
@@ -18,7 +18,7 @@ export const PRESETS = {
     dressing: 0.8, cloudShadows: true, flare: true, blur: true, dof: false, rivals: true, groundQ: 1, lod: 1, casters: true, taa: true,
     sky: false, csm: false, pom: false, vol: false, clouds: false, aoq: 0, coat: false, refl: false, grass: false, geo: false, parts: false,
     noon: true, sunEl: 0, eye: 2, gi: false, mirage: false, sss: 0, rtr: 0, gloss: 1, tunnel: 1,
-    gust: 1, drift: 1, trickle: 1, markers: 1, camps: 1, landmark: 1, wake: 1, lens: 0,
+    gust: 1, drift: 1, trickle: 1, markers: 1, camps: 1, landmark: 1, wake: 1, lens: 0, hitfx: 1,
   },
   high: {
     name: 'high', pixelRatio: 1.5, minPixelRatio: 0.8, post: true, msaa: 4, ao: true, bloom: true, godrays: true,
@@ -31,7 +31,7 @@ export const PRESETS = {
     // with the darker shade, the baked light, the mirage, contact shadows); every preset: noon (the midday light),
     // and LOW / MEDIUM the eye from the camera's place on the track (eye: 2, no GPU work)
     noon: true, sunEl: 0, eye: 1, gi: true, mirage: true, sss: 1, rtr: 0, gloss: 1, tunnel: 1,
-    gust: 1, drift: 1, trickle: 1, markers: 1, camps: 1, landmark: 1, wake: 1, lens: 0,
+    gust: 1, drift: 1, trickle: 1, markers: 1, camps: 1, landmark: 1, wake: 1, lens: 0, hitfx: 1,
   },
   ultra: {
     name: 'ultra', pixelRatio: 2, minPixelRatio: 1, post: true, msaa: 4, ao: true, bloom: true, godrays: true,
@@ -39,7 +39,7 @@ export const PRESETS = {
     dressing: 1, cloudShadows: true, flare: true, blur: true, dof: true, rivals: true, groundQ: 2, lod: 1, casters: true, taa: true,
     sky: true, csm: true, pom: true, vol: true, clouds: true, aoq: 1, coat: true, refl: true, grass: true, geo: true, parts: true,
     noon: true, sunEl: 0, eye: 1, gi: true, mirage: true, sss: 1, rtr: 1, gloss: 1, tunnel: 1,
-    gust: 1, drift: 1, trickle: 1, markers: 1, camps: 1, landmark: 1, wake: 1, lens: 0,
+    gust: 1, drift: 1, trickle: 1, markers: 1, camps: 1, landmark: 1, wake: 1, lens: 0, hitfx: 1,
   },
 };
 export const ORDER = ['low', 'medium', 'high', 'ultra'];
@@ -58,7 +58,7 @@ export function pickQuality() {
   const q = { ...PRESETS[name], auto: !PRESETS[new URLSearchParams(location.search).get('q')] };
   // per-setting overrides for testing, e.g. ?gfx=ao:0,heat:0,shadow:1024 or ?gfx=sky:1 (the upgrades in
   // docs/visual-next-steps.md, C: sky, csm, pom, vol, clouds, aoq, coat, refl, grass, geo, parts; D: noon, sunEl,
-  // eye, gi, mirage, sss, rtr, gloss, tunnel; E: gust, drift, trickle, markers, camps, landmark, wake, lens)
+  // eye, gi, mirage, sss, rtr, gloss, tunnel; E: gust, drift, trickle, markers, camps, landmark, wake, lens; F: hitfx)
   for (const kv of (new URLSearchParams(location.search).get('gfx') || '').split(',')) {
     const [k, v] = kv.split(':');
     if (k in q && v !== undefined) q[k] = typeof q[k] === 'boolean' ? v === '1' || v === 'true' : +v;

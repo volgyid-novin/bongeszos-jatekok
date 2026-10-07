@@ -3,7 +3,7 @@ import { GPU, FORCE_GL, W, TSL, N, U, loadNodes, RENDERER, WEBGPU_MISSING, saveR
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RaceRoom, selfId } from './net.js';
-import { loadPodModel, setPodLivery, setPodGloss, setPodEnv, animatePlayerPod, podLift } from './playerPod.js';
+import { loadPodModel, setPodLivery, setPodGloss, setPodEnv, animatePlayerPod, podLift, DEFAULT_HULL, setBroken, breakPart, stowPart } from './playerPod.js';
 import { pickQuality, saveQuality, createDynRes, ORDER as GFX_ORDER } from './gfx/quality.js';
 import { createEye } from './gfx/eye.js';
 import { loadGI, GI_ON } from './gfx/gi.js';
@@ -23,6 +23,7 @@ import { placeFalls, buildTrickle } from './world/trickle.js';
 import { buildCourse, COURSE_URL } from './world/course.js';
 import { LANDMARK_URL, placeLandmark, buildLandmark } from './world/landmark.js';
 import { buildBirds } from './world/birds.js';
+import { createSolid, BAND as SOLID_BAND, MAT as SOLID_MAT } from './world/solid.js';
 import { createPost } from './gfx/post.js';
 import { bakeProbes, createLiveEnv } from './gfx/probes.js';
 import { Particles, loadFlipbooks } from './gfx/particles.js';
@@ -456,7 +457,15 @@ function rangeWhere(arr, thr) {         // contiguous index range where arr > th
 // ============================================================
 //  Terrain
 // ============================================================
-const COLLIDERS = [];   // {x, z, r} rock bases the pods can hit off-track
+const COLLIDERS = [];   // {x, z, r} rock bases the pods can hit off-track (the old collisions, ?col=0)
+// Everything solid at pod height as one signed distance field (docs/visual-next-steps.md F2): the canyon's and the
+// arena's walls go in as they are swept below, the rocks once their models are in (addRockSolids)
+const SOLID = createSolid(TR, groundQuery);
+// what a pod hovers over: the ground, or the rock it rides up (the canyon walls' low ends); hint: a track sample near;
+// top: rock higher than that is a wall to it, not ground (the face beside a pod, the rock ahead of it)
+const rideQuery = (x, z, hint, top = Infinity) => { const g = groundQuery(x, z), h = SOLID.rideAt(x, z, hint); return h > g && h < top ? h : g; };
+const rideOf = (r) => r.rideFn || (r.rideFn = (x, z) => rideQuery(x, z, r.loc?.i ?? 0, r.y));
+const _rs = { x: 0, z: 0 };
 const ARCH = { x: 0, z: 0 };
 // The tunnel (?gfx=tunnel:1, docs/visual-next-steps.md D7): in the second half of the canyon, past the stone bridge
 // and the canyon's light probe, the slot is roofed over by three rock slabs with two gaps of sky between them;
@@ -665,6 +674,12 @@ function surfaceAt(i, s, d, x, z) {
 // ============================================================
 let CANYON_BRIDGE = null;
 const CANYON_WALLS = [];
+// the canyon walls' low ends as ramps (F2): all ramp below h0 m of wall, all wall above h1; run: m out per m up;
+// climb: how far up a ramp a pod rides before it meets the wall line there (m above the band a wall has); step: how
+// much higher than its hull's underside a pod rides onto rock (the hover lifts it); bank: how hard the rock's slope
+// pushes a pod riding on it back down (m/s² per unit of slope); taper: how far out the wall line starts where the
+// wall is only beginning (m, gone at taperH m of wall), so it comes in from the side, over the ramp, not square on
+const RAMP = { h0: 5, h1: 30, run: 2.6, climb: 1.5, step: 1.2, bank: 28, taper: 34, taperH: 20 };
 {
   const r = rangeWhere(TR.canyon, 0.01);
   if (r) {
@@ -687,6 +702,41 @@ const CANYON_WALLS = [];
       return { k, f: u - k, hard: hash1(k) };
     };
     const s0 = TR.s[TR.idx(r[0] - 2)], len = (((TR.s[TR.idx(r[1] + 2)] - s0) % TR.L) + TR.L) % TR.L;
+    // The wall's cross-section, shared by the sweep below and the solid field (F2). slice(): what holds for a whole
+    // slice at arc length s (after trackPoint(s) into tp); faceAt(): the face at height fraction h of it (foot: the
+    // bottom row): its lateral offset o, height y, bed b, the noise n and the cut-back.
+    // The wall's low ends are ramps (F2): where the wall is lower than RAMP.h1 its face lies back towards a slope of 1 m
+    // up per RAMP.run m out (all the way below RAMP.h0), so a pod that runs wide at a mouth of the canyon rides up the
+    // rock instead of hitting a wall (sc.ramp: 0 a wall, 1 a ramp)
+    const slice = (s, side, sc) => {
+      trackPoint(s, 0, tp);
+      tp.rx = -Math.cos(tp.yaw) * side; tp.rz = Math.sin(tp.yaw) * side;
+      sc.c = at(TR.canyon, s); sc.H = at(TR.wallH, s) * sc.c; sc.hw = at(TR.hw, s); sc.ty = tp.y;
+      sc.ramp = 1 - smooth(RAMP.h0, RAMP.h1, sc.H);
+      const jn = 1 - Math.abs(2 * fbm(s * 0.05 + side * 9, side * 3.1, 2) - 1);
+      sc.joint = Math.pow(jn, 10) * 2.6;                                 // narrow vertical slots
+      sc.butt = (fbm(s * 0.013 + side * 4, 1.7, 3) - 0.5) * 9;          // buttresses and bays
+      return sc;
+    };
+    const faceAt = (s, side, sc, h, foot, out) => {
+      const y = sc.H * h;
+      const b = bed(y, s, side), soft = 1 - b.hard;
+      const n = fbm(s * 0.035, h * 8 + side * 31, 3) - 0.5;
+      const fine = fbm(s * 0.2 + 11, h * 26 + side * 7, 2) - 0.5;
+      const up = smooth(0.04, 0.16, h);            // the foot stays plain: the pods scrape along it
+      const recess = soft > 0.4 ? Math.pow(Math.sin(Math.PI * b.f), 0.8) * (soft - 0.4) * 4.2 : 0;
+      const lip = b.hard > 0.6 ? Math.exp(-Math.pow((1 - b.f) / 0.18, 2)) * 0.7 : 0;
+      const alc = smooth(0.58, 0.8, fbm(s * 0.011 + side * 3, h * 1.6 + 2, 2)) * Math.pow(Math.sin(Math.PI * clamp((h - 0.12) / 0.6, 0, 1)), 1.5) * 4.5 * (0.4 + soft);
+      const cut = recess + alc + sc.joint * smooth(0.05, 0.3, h);
+      out.o = foot ? sc.hw + 0.8 : sc.hw + 2 + 5 * Math.pow(h, 1.6) + sc.butt * h + n * 4 * h + fine * 0.8 * h + (cut - lip) * up;
+      if (sc.ramp > 0 && !foot) out.o = lerp(out.o, sc.hw + 0.8 + RAMP.run * y + n * 1.5 * h, sc.ramp);
+      out.y = y; out.yw = sc.ty - 1.5 + y + n * 2 * h; out.b = b; out.cut = cut; out.up = up;
+      return out;
+    };
+    // the rim and the slope beyond the face's top row (o: its offset): pushed out where a ramp's top runs past them
+    const RIM = [[14, 2], [30, 10], [75, 35], [135, 70]];
+    const rimO = (sc, top, k) => sc.ramp > 0 ? Math.max(sc.hw + RIM[k][0], top + RIM[k][1]) : sc.hw + RIM[k][0];
+    const SC = {}, FA = {};
     // ?gfx=geo:1 (docs/visual-next-steps.md C9): every metre and 90 rows up, so the fine noise, the joints
     // and the lips of the hard beds are resolved instead of aliased between rows
     const J = Q.geo ? 90 : 56, STEP = Q.geo ? 1 : 2;
@@ -701,39 +751,28 @@ const CANYON_WALLS = [];
       let pr = null;
       const vert = (o, y, rgb, a) => { pos.push(tp.x + tp.rx * o, y, tp.z + tp.rz * o); col.push(rgb.r, rgb.g, rgb.b); occ.push(a); if (pr && pr.n < pr.o.length) { pr.o[pr.n] = o; pr.y[pr.n++] = y; } };
       for (let s = s0; s <= s0 + len + 1e-3; s += STEP) {
-        trackPoint(s, 0, tp);
-        tp.rx = -Math.cos(tp.yaw) * side; tp.rz = Math.sin(tp.yaw) * side;
-        const c = at(TR.canyon, s), H = at(TR.wallH, s) * c, hw = at(TR.hw, s), ty = tp.y;
+        const sc = slice(s, side, SC), { c, H, hw, ty } = sc;
         pr = { s, x: tp.x, z: tp.z, rx: tp.rx, rz: tp.rz, ty, H, hw, c, J, o: new Float32Array(J + 5), y: new Float32Array(J + 5), n: 0 };
         prof.rows.push(pr);
-        const jn = 1 - Math.abs(2 * fbm(s * 0.05 + side * 9, side * 3.1, 2) - 1);
-        const joint = Math.pow(jn, 10) * 2.6;                                 // narrow vertical slots
-        const butt = (fbm(s * 0.013 + side * 4, 1.7, 3) - 0.5) * 9;          // buttresses and bays
         const drift = fbm(s * 0.003 + side, 0.5, 2);
         const start = pos.length / 3;
+        let top = 0;
         for (let j = 0; j <= J; j++) {
-          const h = j / J, y = H * h;
-          const b = bed(y, s, side), soft = 1 - b.hard;
-          const n = fbm(s * 0.035, h * 8 + side * 31, 3) - 0.5;
-          const fine = fbm(s * 0.2 + 11, h * 26 + side * 7, 2) - 0.5;
-          const up = smooth(0.04, 0.16, h);            // the foot stays plain: the pods scrape along it
-          const recess = soft > 0.4 ? Math.pow(Math.sin(Math.PI * b.f), 0.8) * (soft - 0.4) * 4.2 : 0;
-          const lip = b.hard > 0.6 ? Math.exp(-Math.pow((1 - b.f) / 0.18, 2)) * 0.7 : 0;
-          const alc = smooth(0.58, 0.8, fbm(s * 0.011 + side * 3, h * 1.6 + 2, 2)) * Math.pow(Math.sin(Math.PI * clamp((h - 0.12) / 0.6, 0, 1)), 1.5) * 4.5 * (0.4 + soft);
-          const cut = recess + alc + joint * smooth(0.05, 0.3, h);
-          const o = j === 0 ? hw + 0.8 : hw + 2 + 5 * Math.pow(h, 1.6) + butt * h + n * 4 * h + fine * 0.8 * h + (cut - lip) * up;
+          const h = j / J, { o, y, yw, b, cut, up } = faceAt(s, side, sc, h, j === 0, FA);
+          top = o;
           const pick = b.hard > 0.5 ? HARD[((b.k % 3) + 3) % 3] : SOFT[((b.k % 4) + 4) % 4];
           _col.copy(PAL[pick]).lerp(PAL[1], drift * 0.35)
             .multiplyScalar((0.94 + 0.08 * b.f) * (1 + 0.025 * Math.sin(y * 5.7)) * (1 + (fbm(s * 0.05, y * 0.08 + side, 2) - 0.5) * 0.12));
           // (under the tunnel's roof, below ~25 m, the wall sees almost no sky)
           const sky = (0.32 + 0.68 * Math.pow(h, 0.65)) * (1 - 0.45 * clamp(cut / 3.5, 0, 1) * up) * (1 - 0.8 * roofAt(s) * smooth(27, 22, y));
-          vert(o, ty - 1.5 + y + n * 2 * h, _col, sky);
+          vert(o, yw, _col, sky);
         }
         _col.copy(PAL[4]).lerp(PAL[0], 0.4);
-        vert(hw + 14, ty + H + 1.5 + (fbm(s * 0.05, side * 5) - 0.5) * 3, _col, 1);
-        vert(hw + 30, ty + H + (fbm(s * 0.02, side * 5) - 0.5) * 6, _col, 1);
-        vert(hw + 75, ty + H * 0.85, _col, 1);
-        vert(hw + 135, ty - 6, _col, 1);
+        const flat = 1 - sc.ramp;          // (a ramp runs straight on into its top, without the rim's lip)
+        vert(rimO(sc, top, 0), ty + H + (1.5 + (fbm(s * 0.05, side * 5) - 0.5) * 3) * flat, _col, 1);
+        vert(rimO(sc, top, 1), ty + H + (fbm(s * 0.02, side * 5) - 0.5) * 6 * flat, _col, 1);
+        vert(rimO(sc, top, 2), ty + H * 0.85, _col, 1);
+        vert(rimO(sc, top, 3), ty - 6, _col, 1);
         M = pos.length / 3 - start;
         rows++;
       }
@@ -752,6 +791,40 @@ const CANYON_WALLS = [];
       m.userData.rock = true;
       m.userData.canyonWall = true;          // (the light bake turns its faces towards the track: gfx/gibake.js)
       scene.add(m);
+    }
+    // The walls into the solid field (F2): per metre of arc length and side, the face where it stands out furthest
+    // within the band of heights a pod occupies above the ground at its foot, from the profile itself at a fixed
+    // resolution (not from the rows above, which ?gfx=geo:1 changes). Where the wall is lower than the band there is
+    // none; where it is more ramp than wall, its surface (the face, the rim and the slope beyond) is one the pods ride
+    // on instead (SOLID.addRide, rideQuery).
+    for (const side of [-1, 1]) for (let s = s0; s <= s0 + len + 1e-3; s += SOLID.ds) {
+      const sc = slice(s, side, SC);
+      if (sc.H < 0.5) continue;
+      // (the ride surface: the ramps, and wherever else a pod can get onto the rock (round the wall's slanted leading
+      // edge, solid.js wallAt, onto the rim behind the face) it rides on it rather than through it)
+      {
+        const K = 12, o = new Float32Array(K + 5), y = new Float32Array(K + 5);
+        for (let k = 0; k <= K; k++) { faceAt(s, side, sc, k / K, k === 0, FA); o[k] = FA.o; y[k] = FA.yw; }
+        const flat = 1 - sc.ramp;
+        const rimY = [sc.ty + sc.H + (1.5 + (fbm(s * 0.05, side * 5) - 0.5) * 3) * flat, sc.ty + sc.H + (fbm(s * 0.02, side * 5) - 0.5) * 6 * flat, sc.ty + sc.H * 0.85, sc.ty - 6];
+        for (let k = 0; k < 4; k++) { o[K + 1 + k] = rimO(sc, o[K], k); y[K + 1 + k] = rimY[k]; }
+        SOLID.addRide(side, s, o, y, sc.ramp > 0);
+      }
+      // the wall line: on a ramp, RAMP.climb higher up (the pod rides that far up it first), so the line runs on
+      // unbroken from the ramps into the faces; on a ramp it is soft (SOLID_MAT.ramp: HIT_RAMP)
+      const g = groundQuery(tp.x + tp.rx * (sc.hw + 2), tp.z + tp.rz * (sc.hw + 2));
+      const lo = SOLID_BAND[0] + RAMP.climb * sc.ramp, hi = SOLID_BAND[1] + RAMP.climb * sc.ramp;
+      const dh = Math.min(1 / 64, 0.4 / sc.H);
+      let face = Infinity;
+      for (let h = dh; h <= 1 + 1e-6; h += dh) {
+        const rel = faceAt(s, side, sc, Math.min(h, 1), false, FA).yw - g;
+        if (rel > hi) break;
+        if (rel >= lo && FA.o < face) face = FA.o;
+      }
+      face += RAMP.taper * Math.max(0, 1 - sc.H / RAMP.taperH) ** 2;
+      // (solid is the face itself, out to a little past its top row: beyond that is the rim, rock to ride on where it
+      // is low enough to reach, out of reach where it is not)
+      if (face < Infinity) SOLID.setWall(side, s, face, Math.max(face + 3, faceAt(s, side, sc, 1, false, FA).o + 3), sc.ramp >= 0.5 ? SOLID_MAT.ramp : SOLID_MAT.canyon);
     }
     // a natural rock bridge across the canyon
     const mid = TR.idx(Math.round((r[0] + r[1]) / 2) + 18);
@@ -930,8 +1003,18 @@ const ARENA_MATS = {
   const tintA = C('#f3e9d6'), tintB = C('#e4d3b6'), plasterTint = C('#f7efe2');
   const r = rangeWhere(TR.arena, 0.55);
   ARENA_LAYOUT.range = r;
+  // the arena's wall into the solid field (F2): the bays' faces on both sides along the stands, solid back to the
+  // stands' back wall; then the walls are complete (the canyon's went in above)
+  if (r) for (let k = r[0]; k <= r[1]; k++) {
+    const i0 = TR.idx(k), i1 = TR.idx(k + 1), sA = TR.s[i0], sB = TR.s[i0 + 1];
+    for (let s = sA; s < sB; s += SOLID.ds) {
+      const hw = lerp(TR.hw[i0], TR.hw[i1], (s - sA) / (sB - sA));
+      for (const side of [-1, 1]) SOLID.setWall(side, s, hw + 1.2, hw + 42, SOLID_MAT.arena);
+    }
+  }
+  SOLID.finishWalls();
   if (r) {
-    const tier = (i, j) => [TR.hw[i] + 2.8 + 3.2 * (j + 1), TR.py[i] + 4.2 + 2.2 * j];
+    const tier =(i, j) => [TR.hw[i] + 2.8 + 3.2 * (j + 1), TR.py[i] + 4.2 + 2.2 * j];
     for (const side of [-1, 1]) {
       // the tiers, from behind the front-wall bays up to the last row
       const prof = (i) => {
@@ -1266,6 +1349,7 @@ function buildRockVisuals(models) {
     scene.add(im);
   }
   const A = ROCKS.arch, arch = new THREE.LOD();
+  A.matrix = new THREE.Matrix4().compose(new THREE.Vector3(A.x, A.y, A.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), A.yaw), new THREE.Vector3(A.sx, 1, 1));
   [0, 1].forEach((l) => {
     const m = new THREE.Mesh(models.get(`arch_lod${l}`), rockMatAOSolo);
     m.castShadow = m.receiveShadow = true;
@@ -1286,11 +1370,30 @@ function buildRockVisuals(models) {
   }
 }
 
+// The rocks a pod can reach, into the solid field (F2), with the geometry they are drawn with: geo(kind, item) for
+// kind spire / boulder / talus / arch (null: not drawn), mtxOf(item) its matrix. From rocks.glb that is the base
+// models' finest level, never ?gfx=geo:1's spires, so the physics is the same on every preset.
+function addRockSolids(geo, mtxOf = (it) => it.m) {
+  const t0 = performance.now();
+  const near = (it, r) => { nearestCoarse(it.x, it.z, _nc); return _nc.i >= 0 && _nc.d - r < TR.hw[_nc.i] + 160; };
+  const add = (kind, it, r) => { if (!near(it, r)) return; const g = geo(kind, it); if (g) SOLID.addMesh(g, mtxOf(it)); };
+  for (const it of ROCKS.spires) add('spire', it, it.r * 0.6);
+  for (const it of ROCKS.boulders) add('boulder', it, it.r * 2);
+  for (const it of ROCKS.talus) add('talus', it, it.r);
+  const A = ROCKS.arch, ag = A && geo('arch', A);
+  if (ag) SOLID.addMesh(ag, A.matrix);
+  const S = SOLID.stats;
+  console.log(`HOMOKFUTAM: solid field: ${S.patches} rock patches, ${(S.cells / 1e6).toFixed(2)}M cells, ${S.tris} triangles near the band, ${Math.round(performance.now() - t0)} ms`);
+}
+const ROCK_VARIANTS = { spire: 8, boulder: 6, talus: 2 };
+
 // the old procedural shapes, if rocks.glb can't be loaded
 function buildRockFallback() {
   const rand = rng(77);
-  instanced(Array.from({ length: 8 }, (_, k) => spireGeometry(k * 1.7 + 0.3, (rand() - 0.5) * 0.25)), rockMatI, ROCKS.spires);
-  instanced([lumpGeometry(1), lumpGeometry(2.5), lumpGeometry(4.2)], boulderMat, ROCKS.boulders);
+  const spireGeos = Array.from({ length: 8 }, (_, k) => spireGeometry(k * 1.7 + 0.3, (rand() - 0.5) * 0.25));
+  const lumps = [lumpGeometry(1), lumpGeometry(2.5), lumpGeometry(4.2)];
+  instanced(spireGeos, rockMatI, ROCKS.spires);
+  instanced(lumps, boulderMat, ROCKS.boulders);
   const mesas = ROCKS.mesas.map((it, k) => {
     const g = weld(new THREE.CylinderGeometry(1, 1.25, 1, 56, 16));
     const p = g.attributes.position, col = new Float32Array(p.count * 3);
@@ -1330,6 +1433,10 @@ function buildRockFallback() {
   arch.userData.rock = true;
   scene.add(arch);
   ROCKS.archMesh = arch;
+  arch.updateMatrix();
+  A.matrix = arch.matrix.clone();
+  try { addRockSolids((kind, it) => kind === 'spire' ? spireGeos[it.g % 8] : kind === 'boulder' ? lumps[it.g % 3] : kind === 'arch' ? ag : null, (it) => it.mOld || it.m); }
+  catch (e) { console.warn('HOMOKFUTAM: solid field (rocks) failed', e); }
 }
 let PROPS_MODELS = null;          // assets/world/props.glb: ground clutter, placed at boot (needs the macro map)
 const PROPS_READY = loadRockModels(new URL('./assets/world/props.glb', import.meta.url).href).then((m) => { PROPS_MODELS = m; })
@@ -1341,7 +1448,13 @@ const COURSE_READY = Q.markers || Q.camps ? loadRockModels(COURSE_URL).then((m) 
 const LANDMARK_READY = Q.landmark ? loadRockModels(LANDMARK_URL).then((m) => { LANDMARK_MODELS = m; }).catch((e) => console.warn('HOMOKFUTAM: landmark failed', e)) : Promise.resolve();
 const ROCKS_READY = Promise.all([loadRockModels(), Q.geo && loadRockModels(new URL('./assets/world/rocks_spires_hi.glb', import.meta.url).href)
   .catch((e) => { console.warn('HOMOKFUTAM: detailed spires failed, using the regular ones', e); return null; })])
-  .then(([models, hi]) => { if (hi) for (const [k, g] of hi) models.set(k, g); buildRockVisuals(models); }).catch((e) => {
+  .then(([models, hi]) => {
+    const base = new Map(models);
+    if (hi) for (const [k, g] of hi) models.set(k, g);
+    buildRockVisuals(models);
+    try { addRockSolids((kind, it) => base.get(kind === 'arch' ? 'arch_lod0' : `${kind}${it.g % ROCK_VARIANTS[kind]}_lod0`)); }
+    catch (e) { console.warn('HOMOKFUTAM: solid field (rocks) failed', e); }
+  }).catch((e) => {
   console.warn('HOMOKFUTAM: rock models failed, using the simple shapes', e);
   buildRockFallback();
 });
@@ -1575,6 +1688,8 @@ const racers = ROSTER.map((d, n) => {
     x: 0, y: 0, z: 0, yaw: 0, vx: 0, vz: 0, vy: 0, fwd: 0, lat: 0,
     steer: 0, throttle: 0, brake: 0, boostIn: false, boosting: false, heat: 0, overheat: 0,
     yawRate: 0, slideIn: false, slide: 0, slip: 0, cooling: 0, draft: 0, gust: 0, edge: 0, wallCD: 0, swing: 0, swingV: 0,
+    // the pod model and its hull (F1; every racer flies pod_player for now), the spin a hit gives it (F3)
+    model: 'pod_player', hull: DEFAULT_HULL, spin: 0, broken: 0, kr: 0, krv: 0, kp: 0, kpv: 0,
     loc: { i: 0 }, lap: -1, prog: 0, maxLap: 0, lapStart: 0, lapTimes: [], finished: false, finishTime: 0,
     roll: 0, pitch: 0, off: 0, wrong: 0, skill: 1, aiOff: 0, aiOffT: 0, aiBoost: false, phase: n * 1.37,
   };
@@ -1682,8 +1797,15 @@ function attachDetailPods() {
     swapMesh(r, r.detailMesh);
   }
 }
-loadPodModel(renderer)
-  .then((make) => { podFactory = make; attachDetailPods(); })
+// (the hull comes with the model: until it is in, the measured default; the boot waits for it, so a race has it)
+const POD_READY = loadPodModel(renderer)
+  .then((make) => {
+    podFactory = make;
+    for (const r of racers) if (r.model === 'pod_player') r.hull = make.hull;
+    const H = make.hull;
+    console.log(`HOMOKFUTAM: pod hull: ${H.caps.length} capsules (${H.source}), reach ${H.reach.toFixed(1)} m, radius of gyration ${Math.sqrt(H.k2).toFixed(2)} m`);
+    attachDetailPods();
+  })
   .catch((e) => console.warn('HOMOKFUTAM: detailed pod failed to load, using the simple one', e));
 const _tp = { x: 0, y: 0, z: 0, yaw: 0, i: 0 };
 
@@ -1692,7 +1814,7 @@ function placeOnGrid(r, slot) {
   trackPoint(TR.L - 16 - row * 16, col * 7 + (row % 2 ? 1.5 : -1.5) * col, _tp);
   Object.assign(r, { x: _tp.x, z: _tp.z, y: _tp.y + HOVER, yaw: _tp.yaw, vx: 0, vz: 0, vy: 0, fwd: 0, lat: 0, steer: 0,
     heat: 0, overheat: 0, boosting: false, lap: -1, maxLap: 0, lapTimes: [], finished: false, finishTime: 0, wrong: 0, off: 0,
-    yawRate: 0, slideIn: false, slide: 0, slip: 0, draft: 0, wallCD: 0 });
+    yawRate: 0, slideIn: false, slide: 0, slip: 0, draft: 0, wallCD: 0, spin: 0 });
   r.loc.i = _tp.i;
   locate(r.x, r.z, r.loc, true);
   r.prog = r.loc.s - TR.L;
@@ -1700,7 +1822,7 @@ function placeOnGrid(r, slot) {
 }
 function respawn(r) {
   trackPoint(r.loc.s - 12, 0, _tp);
-  Object.assign(r, { x: _tp.x, z: _tp.z, y: _tp.y + HOVER + 2, yaw: _tp.yaw, vx: 0, vz: 0, vy: 0, fwd: 0, lat: 0, heat: Math.min(r.heat, 60), yawRate: 0, slide: 0, slip: 0 });
+  Object.assign(r, { x: _tp.x, z: _tp.z, y: _tp.y + HOVER + 2, yaw: _tp.yaw, vx: 0, vz: 0, vy: 0, fwd: 0, lat: 0, heat: Math.min(r.heat, 60), yawRate: 0, slide: 0, slip: 0, spin: 0 });
   r.loc.i = _tp.i;
 }
 
@@ -1743,6 +1865,9 @@ const DRAFT_V = 0.06;
 // Hits on walls (the arena, the canyon) and rocks: a glancing hit turns the nose along the obstacle and costs a few per
 // cent, a square one a lot; one penalty per contact (r.wallCD), only a light scrape while the pod slides along.
 const HIT_WALL = { base: 0.02, loss: 0.45, rest: 0.15, restSq: 0.3 }, HIT_ROCK = { base: 0.06, loss: 0.6, rest: 0.25, restSq: 0.4 };
+// (the canyon walls' ramps, F2: the pod has ridden up the slope, so meeting the wall line there turns it along the
+// wall like a banked berm, its speed kept but for a share that grows with the angle)
+const HIT_RAMP = { base: 0, loss: 0.25, rest: 0, restSq: 0, redirect: true };
 // n: unit normal pointing at the obstacle, vn > 0: the speed into it; (hx, hz): the contact point for the effects
 function impact(r, nx, nz, vn, k, hx, hz, dt, rock) {
   const v = Math.hypot(r.vx, r.vz) || 1, phi = Math.asin(Math.min(1, vn / v));    // 0: grazing, PI/2: square on
@@ -1761,6 +1886,196 @@ function impact(r, nx, nz, vn, k, hx, hz, dt, rock) {
     r.yawRate = turn * 0.5 * HANDLING.yawK;
   } else r.yawRate *= 0.3;
   if (fresh && vn > 4) hitFx(r, hx, hz, rock ? vn * 1.6 : vn, true);
+}
+
+// ============================================================
+//  Collisions (docs/visual-next-steps.md F): each pod's hull, a few capsules per model (r.hull), against the solid
+//  field (SOLID) and against the other pods' hulls. The deepest contact is pushed out and resolved as an impulse at
+//  the contact point, so a hit off the centre turns the pod (r.spin, F3); the tuned costs of a hit stay (HIT_WALL,
+//  HIT_ROCK: the tangential speed kept, the bounce by the impact angle). ?col=0: the old circles and clamps.
+// ============================================================
+const COL_NEW = !/[?&]col=0\b/.test(location.search);
+// the spin a hit gives: the hull's inertia is scaled by `inertia` (more: less spin), the spin dies away at `decay`
+// per second and never exceeds `max` rad/s, nor turns the nose further than `align` times the way to the new
+// direction of travel (addSpin); e: the bounce between two pods
+const SPIN = { inertia: 1.6, decay: 5, max: 3.5, align: 0.85 }, POD_E = 0.3;
+// the hull's capsules in the world at the pod's pose (x, z; y: height above the pod's origin, for the effects)
+function hullWorld(r) {
+  const H = r.hull, c = Math.cos(r.yaw), s = Math.sin(r.yaw);
+  if (!r.hw || r.hw.hull !== H) { r.hw = H.caps.map(() => ({ ax: 0, az: 0, bx: 0, bz: 0, r: 0, y: 0, on: true })); r.hw.hull = H; }
+  for (let i = 0; i < H.caps.length; i++) {
+    const k = H.caps[i], w = r.hw[i];
+    // body (x left, z forward) -> world, as the mesh: (x c + z s, -x s + z c)
+    w.ax = r.x + k.ax * c + k.az * s; w.az = r.z - k.ax * s + k.az * c;
+    w.bx = r.x + k.bx * c + k.bz * s; w.bz = r.z - k.bx * s + k.bz * c;
+    w.r = k.r; w.y = (k.ay + k.by) / 2; w.on = !(k.bit & (r.broken || 0));
+  }
+  return r.hw;
+}
+// the deepest point of the hull inside the solid field: ct.pen (m), the contact on the surface (x, z), the outward
+// normal, the material, which capsule and its height
+const _sq = { d: 0, nx: 0, nz: 0, mat: 0 };
+const CT = { pen: 0, x: 0, z: 0, nx: 0, nz: 0, mat: 0, cap: -1, y: 0 };
+function worldContact(r, ct) {
+  ct.pen = 0;
+  const caps = hullWorld(r);
+  // nothing solid within the hull's reach of the origin: done (the walls' distance is exact; a rock's patch reads
+  // only up to its REACH, so the hash is asked for any patch near; the canyon's ends are checked by height below)
+  const hard = SOLID.nearHardAt(r.loc.i);
+  const d0 = SOLID.query(r.x, r.z, r.loc.i, _sq);
+  if (!hard && d0 > r.hull.reach + 1 && !SOLID.near(r.x, r.z, r.hull.reach + 1)) return false;
+  for (let i = 0; i < caps.length; i++) {
+    const k = caps[i];
+    if (!k.on) continue;
+    const len = Math.hypot(k.bx - k.ax, k.bz - k.az), n = Math.max(1, Math.ceil(len / (k.r * 0.7)));
+    for (let j = 0; j <= n; j++) {
+      const t = j / n, x = k.ax + (k.bx - k.ax) * t, z = k.az + (k.bz - k.az) * t;
+      const d = SOLID.query(x, z, r.loc.i, _sq), pen = k.r - d;
+      if (pen > ct.pen && (_sq.nx || _sq.nz)) {
+        ct.pen = pen; ct.nx = _sq.nx; ct.nz = _sq.nz; ct.x = x - _sq.nx * d; ct.z = z - _sq.nz * d;
+        ct.mat = _sq.mat; ct.cap = i; ct.y = k.y;
+      }
+      if (hard) rockContact(r, k, i, x, z);
+    }
+  }
+  return ct.pen > 0;
+}
+// On the canyon walls' ramps (F2, RAMP) the hull rides the rock: at a point of a capsule's axis and at its sides (out
+// and in across the track), rock above the capsule (its underside on the axis, its middle at the sides) by no more
+// than RAMP.step lifts the hover clear of it (r.rockLift, physics). The wall line stops it further up.
+function rockContact(r, k, i, x, z) {
+  const f = SOLID.frame(x, z, r.loc.i), sd = f.d >= 0 ? 1 : -1, ox = -f.tz * sd, oz = f.tx * sd;
+  for (let q = -1; q <= 1; q++) {
+    const h = SOLID.rideAt(x + ox * k.r * q, z + oz * k.r * q, r.loc.i, true);
+    if (h === -Infinity) continue;
+    const under = k.y - (q === 0 ? k.r : 0), e = h - (r.y + under);
+    if (e > 0 && e <= RAMP.step) r.rockLift = Math.max(r.rockLift, h - under + 0.15);
+  }
+}
+// the world pushes back: out of the rock, then an impulse at the contact point (up to three contacts a step)
+function collideWorld(r, dt) {
+  r.rockLift = -Infinity;
+  for (let it = 0; it < 3; it++) {
+    if (!worldContact(r, CT)) return;
+    const push = Math.min(CT.pen, 2.5);
+    r.x += CT.nx * push; r.z += CT.nz * push;
+    const rx = CT.x - r.x, rz = CT.z - r.z, w = r.yawRate + r.spin;
+    // the contact point's velocity (turning about the origin: w (rz, -rx)) into the rock
+    const vin = -((r.vx + w * rz) * CT.nx + (r.vz - w * rx) * CT.nz);
+    const rock = CT.mat === SOLID_MAT.rock;
+    r.scrape = Math.max(r.scrape || 0, Math.min(1, Math.abs(r.fwd) / 70));
+    r.scrapeX = CT.x; r.scrapeZ = CT.z; r.scrapeY = CT.y; r.scrapeNX = CT.nx; r.scrapeNZ = CT.nz; r.scrapeMat = CT.mat; r.scrapeN = true;
+    if (vin > 0) hitWorld(r, CT, rx, rz, vin, rock ? HIT_ROCK : CT.mat === SOLID_MAT.ramp ? HIT_RAMP : HIT_WALL, dt, rock);
+    // a pod left slow with its nose against it (a square hit) is turned along it, the way the track runs, within half
+    // a second, as the old collisions did: it does not sit pushing into the rock
+    const fx = Math.sin(r.yaw), fz = Math.cos(r.yaw);
+    if (-(fx * CT.nx + fz * CT.nz) > 0.35 && Math.hypot(r.vx, r.vz) < 25) {
+      const sg = Math.sign(-CT.nz * r.loc.tx + CT.nx * r.loc.tz) || 1;
+      r.yaw += wrapAngle(Math.atan2(-CT.nz * sg, CT.nx * sg) - r.yaw) * Math.min(1, 4 * dt);
+    }
+  }
+}
+function hitWorld(r, ct, rx, rz, vin, k, dt, rock) {
+  const v = Math.hypot(r.vx, r.vz) || 1, vn = r.vx * ct.nx + r.vz * ct.nz;      // vn < 0: the centre moves into it
+  const phi = Math.asin(Math.min(1, Math.max(0, -vn) / v));                      // 0: grazing, PI/2: square on
+  // (one hit is one cost: the tail swinging in after the nose, or the nose after the tail, is the same hit)
+  const fresh = !(r.wallCD > 0);
+  r.wallCD = 0.6;
+  // the tangential speed: the tuned cost of a hit, or of grinding along
+  const keep = fresh ? 1 - (k.base + k.loss * (phi / (Math.PI / 2)) ** 1.3) : Math.exp(-0.12 * dt);
+  const tvx = (r.vx - ct.nx * vn) * keep, tvz = (r.vz - ct.nz * vn) * keep;
+  // the bounce: the centre's speed into it comes back by the tuned restitution, as before (none if only the turn
+  // brought the contact point in); the spin: the impulse that stops the contact point (mass 1, the lever arm about
+  // the origin), so a hit off the centre turns the pod without changing what the hit costs
+  const rest = lerp(k.rest, k.restSq, smooth(0.3, 0.9, phi));
+  const vn1 = vn < 0 ? -vn * rest : vn;
+  r.vx = tvx + ct.nx * vn1; r.vz = tvz + ct.nz * vn1;
+  if (k.redirect && vn < 0) {
+    // (a berm: the speed goes on along the wall instead of into it)
+    const tl = Math.hypot(tvx, tvz) || 1, sp = v * (1 - k.loss * phi / (Math.PI / 2));
+    r.vx = tvx / tl * sp; r.vz = tvz / tl * sp;
+  }
+  const lever = ct.nx * rz - ct.nz * rx, I = r.hull.k2 * SPIN.inertia;
+  addSpin(r, (1 + rest) * vin / (1 + lever * lever / I) * lever / I);
+  if (fresh && vin > 4) hitFx(r, ct.x, ct.z, rock ? vin * 1.6 : vin, rock, ct);
+}
+// The spin is the contact's, but how far it turns the pod is held in check: towards the new direction of travel at
+// most as far as lines the nose up with it (a nose into the wall swings round parallel to it), the other way (a hit
+// on the tail) at most ~9 degrees. The turn a spin gives is spin / decay.
+function addSpin(r, dw) {
+  const w = r.spin + dw, align = wrapAngle(Math.atan2(r.vx, r.vz) - r.yaw);
+  const most = (Math.sign(w) === Math.sign(align) ? Math.abs(align) * SPIN.align + 0.02 : 0.15) * SPIN.decay;
+  r.spin = clamp(w, -Math.min(most, SPIN.max), Math.min(most, SPIN.max));
+}
+
+// closest points of two segments in the plane (Ericson): writes s, t (0..1) into _cp, returns the squared distance
+const _cp = { s: 0, t: 0 };
+function segSeg(p1x, p1z, q1x, q1z, p2x, p2z, q2x, q2z) {
+  const d1x = q1x - p1x, d1z = q1z - p1z, d2x = q2x - p2x, d2z = q2z - p2z, rx = p1x - p2x, rz = p1z - p2z;
+  const a = d1x * d1x + d1z * d1z, e = d2x * d2x + d2z * d2z, f = d2x * rx + d2z * rz;
+  let s, t;
+  if (a < 1e-9 && e < 1e-9) { s = t = 0; }
+  else if (a < 1e-9) { s = 0; t = clamp(f / e, 0, 1); }
+  else {
+    const c = d1x * rx + d1z * rz;
+    if (e < 1e-9) { t = 0; s = clamp(-c / a, 0, 1); }
+    else {
+      const b = d1x * d2x + d1z * d2z, den = a * e - b * b;
+      s = den > 1e-9 ? clamp((b * f - c * e) / den, 0, 1) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) { t = 0; s = clamp(-c / a, 0, 1); } else if (t > 1) { t = 1; s = clamp((b - c) / a, 0, 1); }
+    }
+  }
+  _cp.s = s; _cp.t = t;
+  const dx = p1x + d1x * s - (p2x + d2x * t), dz = p1z + d1z * s - (p2z + d2z * t);
+  return dx * dx + dz * dz;
+}
+// pod against pod: the deepest pair of capsules; only pods simulated on this machine move (a network pod's owner
+// resolves its own side, so here it is immovable)
+const PC = { pen: 0, x: 0, z: 0, nx: 0, nz: 0, y: 0 };
+function collidePods() {
+  for (let a = 0; a < racers.length; a++) for (let b = a + 1; b < racers.length; b++) {
+    const A = racers[a], B = racers[b];
+    if (A.gone || B.gone) continue;
+    const simA = A.ctl !== 'net', simB = B.ctl !== 'net';
+    if (!simA && !simB) continue;
+    const rr = A.hull.reach + B.hull.reach;
+    if ((A.x - B.x) ** 2 + (A.z - B.z) ** 2 > rr * rr || Math.abs(A.y - B.y) > 3) continue;
+    const ca = hullWorld(A), cb = hullWorld(B);
+    PC.pen = 0;
+    for (const p of ca) {
+      if (!p.on) continue;
+      for (const q of cb) {
+        if (!q.on) continue;
+        const d2 = segSeg(p.ax, p.az, p.bx, p.bz, q.ax, q.az, q.bx, q.bz), R = p.r + q.r;
+        if (d2 >= R * R) continue;
+        const d = Math.sqrt(d2), pen = R - d;
+        if (pen <= PC.pen) continue;
+        const px = p.ax + (p.bx - p.ax) * _cp.s, pz = p.az + (p.bz - p.az) * _cp.s;
+        const qx = q.ax + (q.bx - q.ax) * _cp.t, qz = q.az + (q.bz - q.az) * _cp.t;
+        // n: from A's capsule towards B's (along the line between the two pods if they sit exactly on each other)
+        let nx = qx - px, nz = qz - pz;
+        if (d > 1e-6) { nx /= d; nz /= d; } else { nx = B.x - A.x; nz = B.z - A.z; const l = Math.hypot(nx, nz) || 1; nx /= l; nz /= l; }
+        PC.pen = pen; PC.nx = nx; PC.nz = nz;
+        PC.x = px + nx * (p.r - pen / 2); PC.z = pz + nz * (p.r - pen / 2); PC.y = (p.y + q.y) / 2;
+      }
+    }
+    if (PC.pen <= 0) continue;
+    const iA = simA ? 1 / A.hull.mass : 0, iB = simB ? 1 / B.hull.mass : 0, wA = iA / (iA + iB), wB = iB / (iA + iB);
+    const { nx, nz } = PC;
+    A.x -= nx * PC.pen * wA; A.z -= nz * PC.pen * wA; B.x += nx * PC.pen * wB; B.z += nz * PC.pen * wB;
+    const rax = PC.x - A.x, raz = PC.z - A.z, rbx = PC.x - B.x, rbz = PC.z - B.z;
+    const wa = A.yawRate + (A.spin || 0), wb = B.yawRate + (B.spin || 0);
+    const rel = (B.vx + wb * rbz - A.vx - wa * raz) * nx + (B.vz - wb * rbx - A.vz + wa * rax) * nz;
+    if (rel >= 0) continue;
+    const la = nx * raz - nz * rax, lb = nx * rbz - nz * rbx;
+    const IA = simA ? 1 / (A.hull.k2 * A.hull.mass * SPIN.inertia) : 0, IB = simB ? 1 / (B.hull.k2 * B.hull.mass * SPIN.inertia) : 0;
+    const j = -(1 + POD_E) * rel / (iA + iB + la * la * IA + lb * lb * IB);
+    if (simA) { A.vx -= nx * j * iA; A.vz -= nz * j * iA; addSpin(A, -la * j * IA); }
+    if (simB) { B.vx += nx * j * iB; B.vz += nz * j * iB; addSpin(B, lb * j * IB); }
+    const victim = A.player ? A : B;
+    if (j > 3) hitFx(victim, PC.x, PC.z, j * 2, false, { y: PC.y, nx: victim === A ? -nx : nx, nz: victim === A ? -nz : nz, pod: victim === A ? B : A });
+  }
 }
 
 function physics(r, dt, t) {
@@ -1833,7 +2148,9 @@ function physics(r, dt, t) {
   const cross = gk > 0 ? WIND_DIR.x * -fz + WIND_DIR.y * fx : 0, along = gk > 0 ? WIND_DIR.x * fx + WIND_DIR.y * fz : 0;
   r.yawRate += GUST_YAW * gk * cross * dt;
 
-  r.yaw += r.yawRate * dt;
+  // (a hit's spin turns the pod on top of the steering, and dies away)
+  r.yaw += (r.yawRate + r.spin) * dt;
+  if (r.spin) r.spin = Math.abs(r.spin) < 1e-3 ? 0 : r.spin * Math.exp(-SPIN.decay * dt);
   const nfx = Math.sin(r.yaw), nfz = Math.cos(r.yaw);
   // velocity re-expressed on the new heading; the grip takes the sideways part back by the tyre curve
   const vx = fx * fwd - fz * lat, vz = fz * fwd + fx * lat;
@@ -1852,10 +2169,16 @@ function physics(r, dt, t) {
   r.fwd = fwd; r.lat = lat;
   r.x += r.vx * dt; r.z += r.vz * dt;
 
+  // the hull against the solid world (F); the old way below (?col=0)
+  locate(r.x, r.z, loc);
+  if (COL_NEW) {
+    collideWorld(r, dt);
+    locate(r.x, r.z, loc);
+    if (Math.abs(loc.d) > loc.hw + 150) { respawn(r); if (r.player) toast('VISSZA A PÁLYÁRA'); }
+  }
   // walls in the arena and canyon
   const lim = loc.hw - 1.6;
-  locate(r.x, r.z, loc);
-  if (walled && Math.abs(loc.d) > lim) {
+  if (!COL_NEW && walled && Math.abs(loc.d) > lim) {
     const sgn = Math.sign(loc.d), nx = -loc.tz * sgn, nz = loc.tx * sgn;
     const pen = Math.abs(loc.d) - lim;
     r.x -= nx * pen; r.z -= nz * pen;
@@ -1864,7 +2187,7 @@ function physics(r, dt, t) {
     if (vn > 0) impact(r, nx, nz, vn, HIT_WALL, r.x + nx * 2.5, r.z + nz * 2.5, dt, false);
   }
   // rocks, towers
-  if (Math.abs(loc.d) > loc.hw + 3) {
+  if (!COL_NEW && Math.abs(loc.d) > loc.hw + 3) {
     for (const c of COLLIDERS) {
       const dx = r.x - c.x, dz = r.z - c.z, rr = c.r + POD_R;
       const d2 = dx * dx + dz * dz;
@@ -1878,12 +2201,15 @@ function physics(r, dt, t) {
   }
 
   // height: hover over track or dunes, pitch with the slope
-  const gy = groundQuery(r.x, r.z);
-  const ga = groundQuery(r.x + nfx * 5, r.z + nfz * 5), gb = groundQuery(r.x - nfx * 5, r.z - nfz * 5);
-  const target = Math.max(gy, (ga + gb) / 2) + HOVER + Math.sin(t * 2.7 + r.phase) * 0.12 * (1 - Math.min(1, sp / 80));
+  // (over the ground, or the rock the pod rides up: F2's ramps; on the rock, its slope pushes the pod back down it)
+  const top = r.y + RAMP.step, g0 = groundQuery(r.x, r.z), rk = SOLID.rideAt(r.x, r.z, loc.i), rock = rk < top ? rk : -Infinity, gy = Math.max(g0, rock);
+  const ga = rideQuery(r.x + nfx * 5, r.z + nfz * 5, loc.i, top), gb = rideQuery(r.x - nfx * 5, r.z - nfz * 5, loc.i, top);
+  if (rock > g0 + 0.05 && SOLID.rideSlope(r.x, r.z, loc.i, _rs)) { r.vx -= RAMP.bank * _rs.x * dt; r.vz -= RAMP.bank * _rs.z * dt; }
+  const target = Math.max(Math.max(gy, (ga + gb) / 2) + HOVER, r.rockLift ?? -Infinity) + Math.sin(t * 2.7 + r.phase) * 0.12 * (1 - Math.min(1, sp / 80));
   r.vy += ((target - r.y) * 60 - r.vy * 12) * dt;
   r.y += r.vy * dt;
   if (r.y < gy + 0.6) { r.y = gy + 0.6; r.vy = Math.max(0, r.vy); }
+  if (r.rockLift > r.y + 0.3) { r.y = r.rockLift - 0.3; r.vy = Math.max(0, r.vy); }      // (rock under the hull: F2)
   r.pitch = damp(r.pitch, -Math.atan2(ga - gb, 10), 8, dt);
   if (off > 0.5 && ga - gb > 1.5) { r.vx *= 1 - 0.3 * dt; r.vz *= 1 - 0.3 * dt; }
 
@@ -2091,13 +2417,108 @@ function haptics(dt) {
 //  Effects
 // ============================================================
 let shake = 0;
-// Hard hits (visual only; the physics is unchanged): a fireball, the beam snaps, panels tear off,
+// Parts that come off in a crash (docs/visual-next-steps.md F6): the pod's breakable parts nearest the contact.
+// Each flies off as itself (its node taken out of the pod: playerPod.js breakPart) and tumbles to the ground, smoking,
+// then is put away; its stump stays on the pod until the next race. r.broken is the mask of the parts that are off:
+// it goes over the network and into the replay, and those parts' capsules stop counting (hullWorld). Visual only.
+const FLYING = [];
+const _fq = new THREE.Quaternion(), _fe = new THREE.Euler(), _fv = new THREE.Vector3();
+const podOf = (r) => r.mesh?.userData?.pod;
+function breakParts(r, x, z, power) {
+  const pod = podOf(r);
+  if (!pod?.brk?.length) return 0;
+  // the contact in body space (the inverse of the mesh's turn)
+  const c = Math.cos(r.yaw), s = Math.sin(r.yaw), wx = x - r.x, wz = z - r.z;
+  const bx = wx * c - wz * s, bz = wx * s + wz * c;
+  const near = pod.brk.map((b, k) => ({ k, d: Math.hypot(b.x - bx, b.z - bz) })).filter((o) => !((r.broken || 0) & (1 << o.k)) && o.d < 5)
+    .sort((a, b) => a.d - b.d);
+  const n = Math.min(near.length, power > 75 ? 3 : power > 52 ? 2 : 1);
+  for (let i = 0; i < n; i++) flyPart(r, near[i].k);
+  return n;
+}
+function flyPart(r, k) {
+  const pod = podOf(r), b = pod.brk[k];
+  r.broken = (r.broken || 0) | (1 << k);
+  if (!b.node) return;
+  // its centre in the world now, and in its own frame (it tumbles about that)
+  const ctr = r.mesh.localToWorld(new THREE.Vector3(b.x, b.y, b.z));
+  breakPart(pod, k);
+  b.node.updateWorldMatrix(true, false);
+  const off = b.node.worldToLocal(ctr.clone());
+  scene.attach(b.node);
+  // off it goes: most of the pod's speed, out from the pod's centre and up, tumbling
+  const c = Math.cos(r.yaw), s = Math.sin(r.yaw), ox = b.x * c + b.z * s, oz = -b.x * s + b.z * c, ol = Math.hypot(ox, oz) || 1;
+  const out = 4 + Math.random() * 7, R = () => Math.random() - 0.5;
+  FLYING.push({ r, pod, k, node: b.node, c: ctr, off, vx: (r.vx || 0) * 0.82 + ox / ol * out + R() * 5, vy: 3 + Math.random() * 7, vz: (r.vz || 0) * 0.82 + oz / ol * out + R() * 5,
+    wx: R() * 18, wy: R() * 12, wz: R() * 18, t: 0, life: 3.2 + Math.random() * 1.6, size: b.size, smoke: Math.random() < 0.6 });
+  // (its bone can now be far from the pod: the pod's meshes must not be culled by their rest bounds meanwhile)
+  r.mesh.traverse((o) => { if (o.isSkinnedMesh) o.frustumCulled = false; });
+  if (camera.position.distanceTo(ctr) < 250) {
+    for (let i = 0; i < Math.round(14 * PQ); i++) emit(SPARK, ctr.x, ctr.y, ctr.z, (r.vx || 0) * 0.7 + R() * 22, Math.random() * 10, (r.vz || 0) * 0.7 + R() * 22, 0.25 + Math.random() * 0.4, { bright: 7 });
+  }
+}
+function updateFlying(dt) {
+  for (let i = FLYING.length - 1; i >= 0; i--) {
+    const f = FLYING[i];
+    f.t += dt;
+    const drag = Math.exp(-0.35 * dt);
+    f.vx *= drag; f.vz *= drag; f.vy -= 22 * dt;
+    f.c.x += f.vx * dt; f.c.y += f.vy * dt; f.c.z += f.vz * dt;
+    const g = groundQuery(f.c.x, f.c.z) + 0.08 + f.size * 0.12;
+    if (f.c.y < g) {
+      f.c.y = g;
+      if (f.vy < -2) {
+        const hit = Math.min(1, -f.vy / 12);
+        if (camera.position.distanceTo(f.c) < 200) emit(DUST, f.c.x, g, f.c.z, f.vx * 0.3, 1 + hit * 3, f.vz * 0.3, 0.8 + hit, { ground: g - 0.1, size0: 0.6 + f.size * 0.3, size1: 2 + f.size, alpha: 0.35 });
+        f.vy = -f.vy * 0.32; f.vx *= 0.55; f.vz *= 0.55; f.wx *= 0.5; f.wy *= 0.5; f.wz *= 0.5;
+      } else { f.vy = Math.max(0, f.vy); f.vx *= 1 - Math.min(1, 4 * dt); f.vz *= 1 - Math.min(1, 4 * dt); f.wx *= 1 - Math.min(1, 5 * dt); f.wy *= 1 - Math.min(1, 5 * dt); f.wz *= 1 - Math.min(1, 5 * dt); }
+    }
+    _fq.setFromEuler(_fe.set(f.wx * dt, f.wy * dt, f.wz * dt));
+    f.node.quaternion.premultiply(_fq);
+    f.node.position.copy(_fv.copy(f.off).applyQuaternion(f.node.quaternion)).negate().add(f.c);
+    if (f.smoke && f.t < 2 && Math.random() < dt * 14 * PQ) emit(SMOKE, f.c.x, f.c.y, f.c.z, f.vx * 0.2, 1.5, f.vz * 0.2, 1 + Math.random() * 0.6, { alpha: 0.35 * (1 - f.t / 2), size0: 0.4, size1: 2.5 });
+    // it sinks into the sand at the end of its life, then is put away
+    if (f.t > f.life - 0.6) f.c.y -= dt * f.size * 0.9;
+    if (f.t >= f.life) {
+      stowPart(f.pod, f.k);
+      FLYING.splice(i, 1);
+      if (!FLYING.some((o) => o.pod === f.pod)) f.r.mesh.traverse((o) => { if (o.isSkinnedMesh) o.frustumCulled = true; });
+    }
+  }
+}
+// r (a racer or a replay proxy) to the parts mask m: parts newly off fly off, parts back are put back at once
+// (instant: none fly)
+function partsTo(r, m, instant = false) {
+  const pod = podOf(r), was = r.broken || 0;
+  if (!pod?.brk?.length) { r.broken = m; return; }
+  if (was & ~m || instant) {
+    for (let i = FLYING.length - 1; i >= 0; i--) if (FLYING[i].pod === pod) { stowPart(pod, FLYING[i].k); FLYING.splice(i, 1); }
+    setBroken(pod, m); r.broken = m;
+    return;
+  }
+  for (let k = 0; k < pod.brk.length; k++) if (m & ~was & (1 << k)) flyPart(r, k);
+  r.broken = m;
+}
+// every pod whole again (a new race, a replay starting)
+function partsReset() {
+  for (const f of FLYING) stowPart(f.pod, f.k);
+  FLYING.length = 0;
+  for (const r of racers) {
+    r.broken = 0;
+    const pod = podOf(r);
+    if (pod?.brk) { setBroken(pod, 0); r.mesh.traverse((o) => { if (o.isSkinnedMesh) o.frustumCulled = true; }); }
+  }
+}
+
+// Hard hits (visual only; the physics is unchanged): a fireball, the beam snaps, parts tear off (F6) and panels,
 // the pod shudders and one engine trails smoke for a few seconds.
 const CRASH_POWER = 40;
 function crashFx(r, x, z, power, replay = false) {
   if ((r.crashCD ?? 0) > 0) return;
   r.crashCD = 3;
   if (!replay) r.crashN = (r.crashN ?? 0) + 1;
+  // (the parts that come off: on this machine only for the pods it drives; the others' come with their state)
+  const torn = !replay && r.ctl !== 'net' ? breakParts(r, x, z, power) : 0;
   r.dmg = 4.5; r.shudder = 1; r.dmgEngine = Math.random() < 0.5 ? 0 : 1;
   const ud = r.mesh.userData;
   ud.beam?.snap();
@@ -2113,7 +2534,7 @@ function crashFx(r, x, z, power, replay = false) {
   ud.engines[r.dmgEngine].getWorldPosition(_v3);
   emit(BLAST, _v3.x, _v3.y, _v3.z, r.vx * 0.85, 2, r.vz * 0.85, 1.3, { size0: 2, size1: 6 });
   const paint = r.color ?? racers[r.n].color;
-  for (let k = 0; k < Math.round(8 * PQ); k++) {
+  for (let k = 0; k < Math.round((torn ? 3 : 8) * PQ); k++) {
     METAL.emit(x + R() * 2, y + R(), z + R() * 2, r.vx * 0.7 + R() * 18, 5 + Math.random() * 10, r.vz * 0.5 + R() * 18,
       0.45 + Math.random() * 0.7, k % 4, paint, Math.random() < 0.4 ? 1.6 : 0);
   }
@@ -2126,24 +2547,68 @@ function crashFx(r, x, z, power, replay = false) {
   }
 }
 
-// collisions: sparks, dust, rock chips and (when it is us) a camera kick and a flash
-function hitFx(r, x, z, power, rock = false) {
+// collisions: sparks, dust, rock chips and (when it is us) a camera kick and a flash. ct (the new collisions, F):
+// where the hull touched: y (the height on the pod), nx/nz (the normal out of what it hit), mat (the solid's
+// material), cap (the hull capsule), pod (the other pod, pod against pod). ?gfx=hitfx:0: the old effects.
+function hitFx(r, x, z, power, rock = false, ct = null) {
   if (power >= CRASH_POWER) crashFx(r, x, z, power);
   else if (power > 15) r.mesh.userData.beam?.hit(power / 40);
-  const n = Math.round(Math.min(40, power * 1.2) * PQ);
-  const y = r.y - 0.3;
-  for (let k = 0; k < n; k++) {
-    emit(SPARK, x, y, z, (Math.random() - 0.5) * 30 + r.vx * 0.6, Math.random() * 12, (Math.random() - 0.5) * 30 + r.vz * 0.6, 0.25 + Math.random() * 0.5, { bright: 5 + Math.random() * 5 });
-  }
+  const R = () => Math.random() - 0.5;
   const g = groundQuery(x, z);
-  for (let k = 0; k < Math.min(10, power * 0.3); k++) {
-    emit(DUST, x + (Math.random() - 0.5) * 3, y, z + (Math.random() - 0.5) * 3, r.vx * 0.3 + (Math.random() - 0.5) * 10, 2 + Math.random() * 6, r.vz * 0.3 + (Math.random() - 0.5) * 10, 1 + Math.random(), { ground: g, size0: 2, size1: 7 });
-  }
-  if (rock && power > 12) {
-    for (let k = 0; k < Math.min(8, power * 0.15) * PQ; k++) {
-      DEBRIS.emit(x, y + 0.5, z, r.vx * 0.4 + (Math.random() - 0.5) * 14, 4 + Math.random() * 9, r.vz * 0.4 + (Math.random() - 0.5) * 14, 0.15 + Math.random() * 0.45);
+  const near = camera.position.distanceTo(_v3.set(x, r.y, z)) < 300;
+  if (Q.hitfx && ct) {
+    const y = r.y + ct.y, nx = ct.nx, nz = ct.nz;
+    kickPod(r, x, z, nx, nz, power, ct.cap);
+    if (near) {
+      // sparks from where it touched: dragged along the way the pod slides, thrown off the surface, white-hot and
+      // cooling, skipping off the ground
+      const vn = r.vx * nx + r.vz * nz, tx = r.vx - nx * vn, tz = r.vz - nz * vn;
+      const n = Math.round(Math.min(60, power * 1.6) * PQ);
+      for (let k = 0; k < n; k++) {
+        const a = 0.35 + Math.random() * 0.6, o = 2 + Math.random() * 10;
+        emit(SPARK, x + R() * 0.5, y + R() * 0.6, z + R() * 0.5, tx * a + nx * o + R() * 9, 1 + Math.random() * 9, tz * a + nz * o + R() * 9,
+          0.35 + Math.random() * 0.65, { bright: 6 + Math.random() * 7, ground: g, cool: true, bounce: 0.35 });
+      }
+      // the flash where it bit
+      emit(FIRE, x + nx * 0.3, y, z + nz * 0.3, tx * 0.25, 0.5, tz * 0.25, 0.06 + Math.random() * 0.04, { bright: 2.5 + Math.min(4, power * 0.06), size0: 0.7 + Math.min(1.5, power * 0.02), size1: 2 + Math.min(3, power * 0.05) });
+      const arena = ct.mat === SOLID_MAT.arena, pod = ct.pod;
+      // dust and grit blown off the face and rolling up it (the arena's: pale plaster)
+      for (let k = 0; k < Math.min(12, power * 0.35) * (pod ? 0.3 : 1); k++) {
+        emit(DUST, x + nx * 0.6 + R() * 1.5, y - 0.4 + Math.random() * 0.8, z + nz * 0.6 + R() * 1.5, tx * 0.25 + nx * (1.5 + Math.random() * 4), 1.5 + Math.random() * 4, tz * 0.25 + nz * (1.5 + Math.random() * 4),
+          1 + Math.random() * 1.2, { ground: g, size0: 1.2 + Math.random(), size1: 5 + power * 0.06, alpha: 0.35, color: arena ? '#efe4d2' : undefined });
+      }
+      // rock chips knocked off, flung out from the face
+      if (!pod && power > 8) {
+        for (let k = 0; k < Math.min(10, power * 0.18) * PQ; k++) {
+          DEBRIS.emit(x + nx * 0.3, y, z + nz * 0.3, tx * 0.35 + nx * (3 + Math.random() * 7) + R() * 6, 3 + Math.random() * 8, tz * 0.35 + nz * (3 + Math.random() * 7) + R() * 6, (arena ? 0.08 : 0.12) + Math.random() * (arena ? 0.2 : 0.35));
+        }
+      }
+      // pod against pod: flecks of the other one's paint, and the two beams arc
+      if (pod) {
+        const paint = pod.color ?? racers[pod.n].color;
+        for (let k = 0; k < Math.min(14, power * 0.4) * PQ; k++) {
+          emit(CONFETTI, x + R() * 0.6, y + R() * 0.5, z + R() * 0.6, tx * 0.5 + nx * (2 + Math.random() * 6) + R() * 6, 2 + Math.random() * 5, tz * 0.5 + nz * (2 + Math.random() * 6) + R() * 6,
+            3, { color: Math.random() < 0.7 ? paint : '#3b3733', size0: 0.06 + Math.random() * 0.1, size1: 0.08, grav: 9.8, drag: 0.6, spin: 14, ground: g });
+        }
+        if (power > 8) { r.mesh.userData.beam?.hit(Math.min(1, power / 30)); pod.mesh?.userData.beam?.hit(Math.min(1, power / 30)); }
+      }
+    }
+  } else {
+    const n = Math.round(Math.min(40, power * 1.2) * PQ);
+    const y = r.y - 0.3;
+    for (let k = 0; k < n; k++) {
+      emit(SPARK, x, y, z, (Math.random() - 0.5) * 30 + r.vx * 0.6, Math.random() * 12, (Math.random() - 0.5) * 30 + r.vz * 0.6, 0.25 + Math.random() * 0.5, { bright: 5 + Math.random() * 5 });
+    }
+    for (let k = 0; k < Math.min(10, power * 0.3); k++) {
+      emit(DUST, x + (Math.random() - 0.5) * 3, y, z + (Math.random() - 0.5) * 3, r.vx * 0.3 + (Math.random() - 0.5) * 10, 2 + Math.random() * 6, r.vz * 0.3 + (Math.random() - 0.5) * 10, 1 + Math.random(), { ground: g, size0: 2, size1: 7 });
+    }
+    if (rock && power > 12) {
+      for (let k = 0; k < Math.min(8, power * 0.15) * PQ; k++) {
+        DEBRIS.emit(x, y + 0.5, z, r.vx * 0.4 + (Math.random() - 0.5) * 14, 4 + Math.random() * 9, r.vz * 0.4 + (Math.random() - 0.5) * 14, 0.15 + Math.random() * 0.45);
+      }
     }
   }
+  const y = r.y - 0.3;
   if (power > 30) emit(SMOKE, x, y + 1, z, r.vx * 0.2, 3, r.vz * 0.2, 1.6, { size0: 3, size1: 10, alpha: 0.4 });
   const d = Math.hypot(x - player.x, z - player.z);
   if (d < 70) {
@@ -2153,6 +2618,25 @@ function hitFx(r, x, z, power, rock = false) {
     if (r === player) HAPTIC.pulse = Math.max(HAPTIC.pulse, clamp(power / 40, 0.3, 1));
     sfx('hit', k);
   }
+}
+// The pod reacts to a hit (F4, visual): the body rolls up on the side that was struck and pitches (a nose hit lifts
+// the nose), on a spring; the cockpit whips on its cables (the swing spring in racerFx); the struck engine is
+// knocked aside on its own spring; the body shudders with the hit.
+function kickPod(r, x, z, nx, nz, power, cap) {
+  const c = Math.cos(r.yaw), s = Math.sin(r.yaw), wx = x - r.x, wz = z - r.z;
+  const bx = wx * c - wz * s, bz = wx * s + wz * c, nbx = nx * c - nz * s;      // the contact and the push, body space
+  const k = Math.min(1, power / 45);
+  r.krv = (r.krv || 0) + Math.sign(bx || 1) * Math.min(1, Math.abs(bx) / 2.5) * k * 1.6;
+  r.kpv = (r.kpv || 0) + (bz > 2.5 ? -1 : bz < -1.5 ? 1 : 0) * k * 0.9;
+  // the cockpit hangs behind on its cables: a shove of the engines leaves it behind, a hit on it pushes it
+  r.swingV = (r.swingV || 0) + (bz > 0.5 ? 1 : -1) * nbx * k * 2.2;
+  const hc = cap != null ? r.hull.caps[cap] : null;
+  if (hc && Math.abs(hc.ax + hc.bx) > 1.5) {
+    const e = (hc.ax + hc.bx > 0 ? 0 : 1);
+    r.knock = r.knock || [{ x: 0, v: 0, y: 0, w: 0 }, { x: 0, v: 0, y: 0, w: 0 }];
+    r.knock[e].v += nbx * k * 3; r.knock[e].w += k * 2;
+  }
+  if (power > 10) r.shudder = Math.max(r.shudder || 0, Math.min(0.55, power / 80));
 }
 let toastTimer = 0;
 const toastEl = document.getElementById('toast');
@@ -2187,6 +2671,14 @@ function racerFx(r, dt, t) {
   const slipV = Math.atan2(Math.abs(r.lat || 0), Math.max(4, sp)), slideV = r.slide || 0;
   r.roll = damp(r.roll, r.steer * 0.42 * clamp(sp / 50, 0, 1) + clamp((r.lat || 0) * 0.012, -0.15, 0.15) + slideV * 0.1 * Math.sign(r.steer), 6, dt);
   ud.body.rotation.set(r.pitch, 0, -r.roll);
+  // a hit's kick (kickPod, F4): roll and pitch on a spring that rings out in about half a second
+  if (r.krv || r.kr || r.kpv || r.kp) {
+    r.krv += (-r.kr * 150 - r.krv * 9) * dt; r.kr = clamp(r.kr + r.krv * dt, -0.3, 0.3);
+    r.kpv += (-r.kp * 150 - r.kpv * 9) * dt; r.kp = clamp(r.kp + r.kpv * dt, -0.2, 0.2);
+    ud.body.rotation.z += r.kr; ud.body.rotation.x += r.kp;
+    if (Math.abs(r.kr) + Math.abs(r.krv) + Math.abs(r.kp) + Math.abs(r.kpv) < 1e-4) r.kr = r.krv = r.kp = r.kpv = 0;
+  }
+  if (r.knock) for (const kn of r.knock) { kn.v += (-kn.x * 220 - kn.v * 12) * dt; kn.x += kn.v * dt; kn.w += (-kn.y * 220 - kn.w * 12) * dt; kn.y += kn.w * dt; }
   // the cockpit hangs on its cables behind the engines: it swings out in a turn (and overshoots a little coming out
   // of it), and the outer engine leads with both engines toed into the turn. Visual only.
   const yr = dt > 0 ? wrapAngle(r.yaw - (r.fxYaw ?? r.yaw)) / dt : 0;
@@ -2210,8 +2702,11 @@ function racerFx(r, dt, t) {
   if (r.crashCD > 0) r.crashCD -= dt;
   let by = 0;
   ud.engines.forEach((e, k) => {
-    const y = 0.15 + Math.sin(t * 6.3 + k * 2.1 + r.phase) * 0.07;
+    const kn = r.knock?.[k];
+    const y = 0.15 + Math.sin(t * 6.3 + k * 2.1 + r.phase) * 0.07 + (kn ? kn.y : 0);
     e.position.y = y; by += y / 2;
+    if (e.userData.x0 === undefined) e.userData.x0 = e.position.x;
+    e.position.x = e.userData.x0 + (kn ? clamp(kn.x, -0.4, 0.4) : 0);           // (knocked aside by a hit, F4)
     e.rotation.z = Math.sin(t * 4.1 + k + r.phase) * 0.05;
     if (e.userData.z0 === undefined) e.userData.z0 = e.position.z;
     e.position.z = e.userData.z0 + 0.3 * lead * (e.position.x < 0 ? 1 : -1);    // the right engine (x < 0) leads a left turn
@@ -2242,9 +2737,9 @@ function racerFx(r, dt, t) {
     // the player's pod reflects the live cube (?gfx=refl:1) instead of the baked probes
     if (LIVE?.texture && r === player) setPodEnv(ud.pod, LIVE.texture, null, 0, PROBE_K);
     else if (PROBES) { const [base, b, w] = podProbe(r); setPodEnv(ud.pod, base, b, w, PROBE_K); }
-    ud.body.position.y = podLift(ud.pod, r, groundQuery, dt);
+    ud.body.position.y = podLift(ud.pod, r, rideOf(r), dt);
   }
-  podFx.update(r, dt, groundQuery, camera.position);       // also brings the pod's world matrices up to date
+  podFx.update(r, dt, rideOf(r), camera.position);       // also brings the pod's world matrices up to date
   ud.beam.pushFlares();
   for (const e of ud.engines) { const f = e.userData.flame; if (shown(f)) FLAMES.push(f.matrixWorld, f.userData.col); }
   // boost kicks in: shockwave ring (the ignition flash and ring of fire come from podFx)
@@ -2255,7 +2750,7 @@ function racerFx(r, dt, t) {
   r.wasBoost = r.boosting;
   if (camD > 420) return;
   const fx = Math.sin(r.yaw), fz = Math.cos(r.yaw);
-  const gy = groundQuery(r.x, r.z), h = r.y - gy;
+  const gy = rideOf(r)(r.x, r.z), h = r.y - gy;
   // dust trail: thicker on sand, nothing when flying high
   if (sp > 8 && h < 5) {
     const rate = sp * (0.32 + r.off * 1.1) * dt * PQ;
@@ -2308,10 +2803,23 @@ function racerFx(r, dt, t) {
     emit(DUST, r.x + Math.cos(a) * rr, gy + 0.3, r.z + Math.sin(a) * rr, Math.cos(a) * (6 + r.throttle * 8), 0.6 + Math.random(), Math.sin(a) * (6 + r.throttle * 8),
       1 + Math.random(), { ground: gy, size0: 1.2, size1: 5, alpha: 0.3 });
   }
-  // grinding along a wall: a stream of sparks at the contact point
+  // grinding along a wall: a stream of sparks at the contact point (F5: from where the hull touches, dragged along
+  // the face, thrown off it, cooling and skipping off the ground, with grit off the face)
   if (r.scrape > 0) {
     const n = Math.floor(r.scrape * 90 * dt * PQ + Math.random());
-    for (let k = 0; k < n; k++) {
+    if (Q.hitfx && r.scrapeN) {
+      const nx = r.scrapeNX, nz = r.scrapeNZ, vn = r.vx * nx + r.vz * nz, tx = r.vx - nx * vn, tz = r.vz - nz * vn;
+      const sy = r.y + r.scrapeY, g = groundQuery(r.scrapeX, r.scrapeZ), R = () => Math.random() - 0.5;
+      for (let k = 0; k < n * 1.4; k++) {
+        const a = 0.5 + Math.random() * 0.45, o = 1 + Math.random() * 5;
+        emit(SPARK, r.scrapeX + R() * 0.4, sy + R() * 0.6, r.scrapeZ + R() * 0.4, tx * a + nx * o + R() * 5, 0.5 + Math.random() * 5, tz * a + nz * o + R() * 5,
+          0.3 + Math.random() * 0.5, { bright: 5 + Math.random() * 4, ground: g, cool: true, bounce: 0.3 });
+      }
+      if (Math.random() < dt * 14 * r.scrape * PQ) {
+        emit(DUST, r.scrapeX + nx * 0.5, sy, r.scrapeZ + nz * 0.5, tx * 0.3 + nx * 2, 1 + Math.random() * 2, tz * 0.3 + nz * 2, 0.9 + Math.random() * 0.6,
+          { ground: g, size0: 0.8, size1: 3.5, alpha: 0.28, color: r.scrapeMat === SOLID_MAT.arena ? '#efe4d2' : undefined });
+      }
+    } else for (let k = 0; k < n; k++) {
       emit(SPARK, r.scrapeX, r.y - 0.2 + Math.random() * 0.8, r.scrapeZ, r.vx * 0.5 + (Math.random() - 0.5) * 8, 2 + Math.random() * 6, r.vz * 0.5 + (Math.random() - 0.5) * 8, 0.2 + Math.random() * 0.35, { bright: 6 });
     }
     r.scrape = Math.max(0, r.scrape - dt * 5);
@@ -2456,6 +2964,7 @@ function newRace() {
     r.topMul = r.player ? 1 : SKILL[diff] + 0.05 + v;
     Object.assign(r, { aiOff: 0, aiOffT: 0, aiBoost: false, lapStart: 0, throttle: 0, brake: 0, boostIn: false, pitch: 0, roll: 0 });
   });
+  partsReset();
   raceT = 0; countT = 3.2; finishWait = 0; lastCount = 9; throttleAt = -1; bestLapRace = Infinity; newRecord = false;
   camYaw = player.yaw; camY = player.y + 4; CAMV.dist = CAMS[camMode].d;
   stopReplay();
@@ -2606,7 +3115,7 @@ function stepSim(dt) {
       }
     }
   }
-  separate();
+  if (COL_NEW) collidePods(); else separate();
   if (state === 'finished') {
     finishWait += dt;
     if (MP.room) {               // wait for the other humans (bots don't hold up the results)
@@ -2842,15 +3351,20 @@ function recordReplay(dt) {
   if (state !== 'race' && state !== 'finished') return;
   if ((REC.acc += dt) < 1 / 30) return;
   REC.acc = 0;
-  REC.frames.push({ t: raceT, s: racers.map((r) => [r.x, r.y, r.z, r.yaw, r.fwd, r.steer, r.lat, r.pitch, r.throttle, r.boosting ? 1 : 0, r.overheat > 0 ? 1 : 0, r.off, r.vx, r.vz, r.gone ? 1 : 0, r.heat, r.brake, r.loc.s, r.crashN ?? 0, r.slide || 0]) });
+  REC.frames.push({ t: raceT, s: racers.map((r) => [r.x, r.y, r.z, r.yaw, r.fwd, r.steer, r.lat, r.pitch, r.throttle, r.boosting ? 1 : 0, r.overheat > 0 ? 1 : 0, r.off, r.vx, r.vz, r.gone ? 1 : 0, r.heat, r.brake, r.loc.s, r.crashN ?? 0, r.slide || 0, r.broken || 0]) });
   while (REC.frames.length > 360) REC.frames.shift();
 }
 function startReplay() {
   if (REC.frames.length < 90) return;
   CINE.replay = {
     t: REC.frames[0].t, station: null, look: null,
-    proxies: racers.map((r) => ({ n: r.n, mesh: r.mesh, player: r.player, phase: r.phase, roll: 0, loc: { s: 0, arena: 0 }, vy: 0, wasBoost: false, scrape: 0 })),
+    proxies: racers.map((r) => ({ n: r.n, mesh: r.mesh, player: r.player, phase: r.phase, roll: 0, loc: { s: 0, arena: 0 }, vy: 0, wasBoost: false, scrape: 0, broken: r.broken || 0, color: r.color })),
   };
+  // the pods show their parts as they were when the replay starts (the racers' own masks stay: a pod still racing
+  // on another machine keeps sending its own)
+  for (const f of FLYING) stowPart(f.pod, f.k);
+  FLYING.length = 0;
+  CINE.replay.proxies.forEach((p, n) => { p.broken = 0; partsTo(p, REC.frames[0].s[n][20] | 0, true); });
 }
 function stopReplay() { CINE.replay = null; }
 function stepReplay(dt) {
@@ -2869,6 +3383,7 @@ function stepReplay(dt) {
     p.mesh.visible = !p.gone;
     if (p.crashN !== undefined && b[18] > p.crashN) crashFx(p, p.x, p.z, 50, true);
     p.crashN = b[18];
+    if ((b[20] | 0) !== p.broken) partsTo(p, b[20] | 0);
     if (!p.gone) racerFx(p, dt, simT);
   });
 }
@@ -3285,7 +3800,7 @@ function leaveRoom() {
 }
 
 // Pod state on the wire:
-// [livery, x, y, z, yaw, vx, vz, fwd, lat, steer, throttle, flags, lap, s, finishTime, heat, pitch]
+// [livery, x, y, z, yaw, vx, vz, fwd, lat, steer, throttle, flags, lap, s, finishTime, heat, pitch, crashes, broken parts]
 const rd = (v, k = 100) => Math.round(v * k) / k;
 function netSend(dt) {
   if (!MP.room || !MP.inRace || state === 'room') return;
@@ -3295,7 +3810,7 @@ function netSend(dt) {
   for (const r of racers) {
     if (r.gone || r.ctl === 'net') continue;
     e.push([r.n, rd(r.x), rd(r.y), rd(r.z), rd(r.yaw, 1000), rd(r.vx), rd(r.vz), rd(r.fwd), rd(r.lat), rd(r.steer), rd(r.throttle),
-      (r.boosting ? 1 : 0) | (r.overheat > 0 ? 2 : 0) | (r.finished ? 4 : 0) | (r.slide > 0.5 ? 8 : 0), r.lap, rd(r.loc.s), rd(r.finishTime), Math.round(r.heat), rd(r.pitch, 1000), r.crashN ?? 0]);
+      (r.boosting ? 1 : 0) | (r.overheat > 0 ? 2 : 0) | (r.finished ? 4 : 0) | (r.slide > 0.5 ? 8 : 0), r.lap, rd(r.loc.s), rd(r.finishTime), Math.round(r.heat), rd(r.pitch, 1000), r.crashN ?? 0, r.broken || 0]);
   }
   MP.room.send('st', { e });
 }
@@ -3308,7 +3823,7 @@ function applyStates(d, pid) {
     if (!r || r.ctl !== 'net' || r.gone) continue;
     if (r.owner ? r.owner !== pid : pid !== MP.raceHost) continue;   // bots only from the race host
     r.net = { t: now, x: +e[1], y: +e[2], z: +e[3], yaw: +e[4], vx: +e[5], vz: +e[6], fwd: +e[7], lat: +e[8], steer: +e[9], th: +e[10],
-      f: e[11] | 0, lap: e[12] | 0, s: +e[13], ft: +e[14], heat: +e[15], pitch: +e[16], crash: e[17] | 0, fresh: !r.net || r.net.fresh };
+      f: e[11] | 0, lap: e[12] | 0, s: +e[13], ft: +e[14], heat: +e[15], pitch: +e[16], crash: e[17] | 0, broken: e[18] | 0, fresh: !r.net || r.net.fresh };
   }
 }
 // dead reckoning toward the last received state, smoothed
@@ -3332,6 +3847,7 @@ function netStep(r, dt) {
   r.prog = n.lap * TR.L + n.s;
   if (r.crashN !== undefined && n.crash > r.crashN) crashFx(r, r.x, r.z, 50, true);
   r.crashN = n.crash;
+  if (n.broken !== (r.broken || 0)) partsTo(r, n.broken);
 }
 
 $('createBtn').addEventListener('click', () => enterRoom(randomCode()));
@@ -3399,6 +3915,7 @@ function frame(now) {
     for (const p of POOLS) p.update(sdt);
     DEBRIS.update(sdt, groundQuery);
     METAL.update(sdt, groundQuery);
+    updateFlying(sdt);
     if (CINE.replay) stepReplay(sdt);
     else for (const r of racers) if (!r.gone) racerFx(r, sdt, simT);
     endFxFrame();
@@ -3587,6 +4104,8 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
     // the one wind (E2): the gust field at a point (0 in a lull, up to 1), at shader time t
     gust: (x, z, t = ATMO.hfTime.value) => gust(x, z, t), drift: DRIFT, get driftSheet() { return DRIFT_SHEET; }, get trickle() { return TRICKLE; }, get course() { return COURSE; }, get landmark() { return LANDMARK; }, get birds() { return BIRDS; }, setWake, LENS, tunnel: TUNNEL,
     ground: (x, z) => groundQuery(x, z), trackPoint: (s, d = 0) => { const o = {}; trackPoint(s, d, o); return o; },
+    // the solid field (F2): solid.query(x, z, hint, out) -> signed distance, out.nx/nz/mat
+    solid: SOLID,
     // ray tracing spike (D9, WebGPU): rays per second against a BVH of the static world within radius m of the camera
     async rtSpike(opts = {}) {
       if (!GPU) return 'WebGPU only';
@@ -3629,6 +4148,7 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
           recordReplay(dt * 4);
           if (state === 'race' || state === 'finished') { for (const r of racers) if (!r.gone) TRAILS.stamp(r, groundQuery(r.x, r.z)); TRAILS.render(dt * 4); }
           for (const p of POOLS) p.update(dt * 4);
+          updateFlying(dt * 4);
           if (CINE.finishT > 0) CINE.finishT = Math.max(0, CINE.finishT - dt * 4);
         }
       }
@@ -3859,7 +4379,7 @@ async function bakeGI(opts = {}) {
   } finally { for (const l of ROCKS.lods) l.update(camera.position); }
 }
 // show the game once the surface textures are in (or after 10 s, whatever happens first)
-const texturesReady = Promise.race([Promise.all([SURF.ready, GROUND_READY, ROCKS_READY, ARENA_READY, PROPS_READY, COURSE_READY, LANDMARK_READY, DRESS.ready, SKY_READY]), new Promise((r) => setTimeout(r, 15000))]);
+const texturesReady = Promise.race([Promise.all([SURF.ready, GROUND_READY, ROCKS_READY, POD_READY, ARENA_READY, PROPS_READY, COURSE_READY, LANDMARK_READY, DRESS.ready, SKY_READY]), new Promise((r) => setTimeout(r, 15000))]);
 const hot = window.claude && window.claude.hot;
 if (hot && typeof hot.snapshot === 'function') { try { hot.snapshot(() => ({ laps, diff, muted: SND.muted })); } catch { /* ignore */ } }
 if (hot && typeof hot.ready === 'function') hot.ready((d) => texturesReady.then(() => boot(d)));

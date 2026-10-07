@@ -61,8 +61,67 @@ function patchLivery(m, map, paint, trim, heat, gloss) {
   m.customProgramCacheKey = () => (coat ? 'pod-livery-coat' : 'pod-livery');
 }
 
+// ============================================================
+//  Hull: what a pod collides with (docs/visual-next-steps.md F1)
+// ============================================================
+// A few capsules in body space (three.js: +z forward, +x left, +y up), per pod model. The model carries them as nodes
+// with extras { col: 'capsule', r, half }: the capsule runs along the node's local z, half metres each way from the
+// node, radius r (models/pod/build_pod.py makes them, COL_*). A capsule under a breakable part (extras brk) goes
+// with that part. A model without them gets capsules fitted to its engines' and body's bounds (fitHull).
+// k2: the squared radius of gyration about the origin (the point the physics turns the pod about), from the capsules'
+// areas; reach: how far any of it is from the origin.
+export function makeHull(caps, { mass = 1, source = 'fitted' } = {}) {
+  let A = 0, I = 0, reach = 0;
+  for (const c of caps) {
+    const len = Math.hypot(c.bx - c.ax, c.bz - c.az), area = 2 * c.r * len + Math.PI * c.r * c.r;
+    const mx = (c.ax + c.bx) / 2, mz = (c.az + c.bz) / 2;
+    A += area; I += area * (mx * mx + mz * mz + len * len / 12 + c.r * c.r / 2);
+    reach = Math.max(reach, Math.hypot(c.ax, c.az) + c.r, Math.hypot(c.bx, c.bz) + c.r);
+  }
+  return { caps, mass, k2: I / Math.max(A, 1e-6), reach, source };
+}
+const cap = (ax, ay, az, bx, by, bz, r, bit = 0) => ({ ax, ay, az, bx, by, bz, r, bit });
+// pod_player measured (build_pod.py): the engines nose to nozzle, the cockpit tub, the outboard stabilisers, the stub
+// wings. Used until the model is in, and by the simple pod.
+export const DEFAULT_HULL = makeHull([
+  cap(1.75, 0.15, 2.7, 1.75, 0.15, 8.85, 0.86), cap(-1.75, 0.15, 2.7, -1.75, 0.15, 8.85, 0.86),
+  cap(0, 0.35, -3.6, 0, 0.35, -0.4, 1.05),
+  cap(2.78, 0.15, 2.95, 2.78, 0.15, 3.85, 0.3), cap(-2.78, 0.15, 2.95, -2.78, 0.15, 3.85, 0.3),
+  cap(0.95, 0.25, -3.0, 1.35, 0.25, -3.25, 0.4), cap(-0.95, 0.25, -3.0, -1.35, 0.25, -3.25, 0.4),
+], { source: 'default' });
+
+// the hull from the model's COL_ nodes (rest pose), or fitted to its parts; parts: the breakable parts' nodes (bit k)
+function readHull(src, parts) {
+  src.updateMatrixWorld(true);
+  const toSrc = new THREE.Matrix4().copy(src.matrixWorld).invert(), m = new THREE.Matrix4();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), caps = [];
+  src.traverse((o) => {
+    const u = o.userData;
+    if (u.col !== 'capsule') return;
+    m.multiplyMatrices(toSrc, o.matrixWorld);
+    a.set(0, 0, -u.half).applyMatrix4(m); b.set(0, 0, u.half).applyMatrix4(m);
+    let bit = 0;
+    for (let p = o; p && p !== src; p = p.parent) { const k = parts.indexOf(p); if (k >= 0) { bit = 1 << k; break; } }
+    caps.push(cap(a.x, a.y, a.z, b.x, b.y, b.z, u.r, bit));
+  });
+  if (caps.length) return makeHull(caps, { mass: src.userData.mass ?? 1, source: 'model' });
+  // fitted: a capsule along z through each engine's bounds and the body's (its widest part is the radius)
+  const box = new THREE.Box3(), fit = [];
+  for (const name of ['Engine_L', 'Engine_R', 'Body_static']) {
+    const n = src.getObjectByName(name);
+    if (!n) continue;
+    box.makeEmpty();
+    n.traverse((o) => { if (o.isMesh) { o.geometry.computeBoundingBox(); box.union(o.geometry.boundingBox.clone().applyMatrix4(m.multiplyMatrices(toSrc, o.matrixWorld))); } });
+    if (box.isEmpty()) continue;
+    const r = (box.max.x - box.min.x) / 2, x = (box.max.x + box.min.x) / 2, y = (box.max.y + box.min.y) / 2;
+    fit.push(cap(x, y, Math.min(box.min.z + r, (box.min.z + box.max.z) / 2), x, y, Math.max(box.max.z - r, (box.min.z + box.max.z) / 2), r));
+  }
+  return fit.length ? makeHull(fit) : DEFAULT_HULL;
+}
+
 // Loads the model once and returns a factory: every call builds another pod that shares the
 // geometry and textures but has its own materials (livery colours, heat glow, emitter glow).
+// The factory carries the model's hull (make.hull).
 export async function loadPodModel(renderer) {
   const [gltf, livery] = await Promise.all([
     new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(POD_URL),
@@ -76,8 +135,23 @@ export async function loadPodModel(renderer) {
     m.envMapIntensity = 1.0;     // the scene environment (sky + sand, gfx/atmosphere.js)
     for (const t of [m.map, m.normalMap, m.roughnessMap]) if (t) t.anisotropy = aniso;
   });
+  const parts = [];
+  src.traverse((o) => { if (o.userData.brk) parts.push(o); });
+  const hull = readHull(src, parts);
+  // the breakable parts (bit k = parts[k]): where each sits in the pod (its meshes' centre, rest pose), and how big
+  src.updateMatrixWorld(true);
+  const toSrc = new THREE.Matrix4().copy(src.matrixWorld).invert(), box = new THREE.Box3(), mm = new THREE.Matrix4();
+  const brk = parts.map((p) => {
+    box.makeEmpty();
+    p.traverse((o) => { if (o.isMesh) { o.geometry.computeBoundingBox(); box.union(o.geometry.boundingBox.clone().applyMatrix4(mm.multiplyMatrices(toSrc, o.matrixWorld))); } });
+    const c = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3());
+    return { name: p.name, x: c.x, y: c.y, z: c.z, size: box.isEmpty() ? 0.3 : box.getSize(new THREE.Vector3()).length() };
+  });
   mergeParts(src);
-  return () => makePod(src, livery);
+  const make = () => makePod(src, livery, brk);
+  make.hull = hull;
+  make.brk = brk;
+  return make;
 }
 
 // The livery's channels are masks, and its alpha is not coverage: load it unpremultiplied (WebGPU
@@ -195,7 +269,7 @@ function cloneRig(src) {
   return copy;
 }
 
-function makePod(src, livery) {
+function makePod(src, livery, brkInfo = []) {
   const root = cloneRig(src);
   const paint = new THREE.Color(), trim = new THREE.Color(), heat = U(new THREE.Vector2()), gloss = U(1);
   const parts = [], mats = new Map();
@@ -234,19 +308,56 @@ function makePod(src, livery) {
   });
   const node = (n) => root.getObjectByName(n);
   const engines = [node('Engine_L'), node('Engine_R')];
-  // the cockpit (hull, canopy, pennant, pilot) in one group under the body, so it can swing on its cables; the group
-  // sits at the origin, so the bones keep their rest pose
-  const cockpit = new THREE.Group();
+  // the cockpit (hull, canopy, pilot, the wings and the antenna) in one group under the body, so it can swing on its
+  // cables: everything on the body but the engines and the cables. The group sits at the origin, so the bones keep
+  // their rest pose
+  const body = node('Body'), cockpit = new THREE.Group();
   cockpit.name = 'Cockpit';
-  node('Body').add(cockpit);
-  for (const n of ['Body_static', 'Body_glass', 'Body_pennant', 'Pilot']) { const o = node(n); if (o) cockpit.add(o); }
+  for (const o of [...body.children]) if (!/^(Engine_[LR]|Body_cables)$/.test(o.name)) cockpit.add(o);
+  body.add(cockpit);
+  // the breakable parts (F6): the part's node, its stump (hidden until the part goes), the node it hangs from
+  const brk = brkInfo.map((b) => {
+    const n = node(b.name), stump = b.name.startsWith('BREAK_') ? node(b.name.replace(/^BREAK_/, 'STUMP_')) : null;
+    if (stump) stump.scale.setScalar(GONE);
+    return { ...b, node: n, stump, home: n?.parent, pos: n?.position.clone(), quat: n?.quaternion.clone() };
+  });
   // energy beam endpoints in body space (the engines have no rotation in the model)
   const beam = ['BeamAnchor_L', 'BeamAnchor_R'].map((n, k) => node(n).position.clone().add(engines[k].position));
   const flames = ['FlameAnchor_L', 'FlameAnchor_R'].map((n) => node(n).position.clone());
   return {
     root, body: node('Body'), engines, cockpit, beam, flames, parts, glow, beamMat, paint, trim, heat, gloss, env, mats: [...mats.values()], envBase: null,
-    smooth: { brake: 0, steer: 0, boost: 0, thr: 0 }, lift: 0,
+    smooth: { brake: 0, steer: 0, boost: 0, thr: 0 }, lift: 0, brk, broken: 0,
   };
+}
+
+// Breakable parts (docs/visual-next-steps.md F6). A part is a node of the skinned pod: hiding it is scaling it to
+// nothing, and flying it off is taking it out of the pod into the world (the caller attaches it to the scene and
+// moves it): the merged meshes follow their bones wherever they are, so the piece keeps the pod's own materials.
+const GONE = 1e-4;
+// mask: the parts that are off (bit k: brk[k]); the ones that come back are put home
+export function setBroken(pod, mask) {
+  pod.brk.forEach((b, k) => {
+    if (!b.node) return;
+    const off = !!(mask & (1 << k));
+    if (!off && b.node.parent !== b.home) { b.home.add(b.node); b.flying = false; }
+    if (!off) { b.node.position.copy(b.pos); b.node.quaternion.copy(b.quat); }
+    b.node.scale.setScalar(off ? GONE : 1);
+    if (b.stump) b.stump.scale.setScalar(off ? 1 : GONE);
+  });
+  pod.broken = mask;
+}
+// part k comes off: its stump shows, and the part is handed back (still in place) for the caller to fly
+export function breakPart(pod, k) {
+  const b = pod.brk[k];
+  pod.broken |= 1 << k;
+  if (b.stump) b.stump.scale.setScalar(1);
+  return b.node;
+}
+// a flown part has landed and faded: home again, and hidden
+export function stowPart(pod, k) {
+  const b = pod.brk[k];
+  b.home.add(b.node);
+  b.node.position.copy(b.pos); b.node.quaternion.copy(b.quat); b.node.scale.setScalar(GONE);
 }
 
 // Ground clearance. The physics keeps the pod's centre HOVER above the ground, but racerFx banks
