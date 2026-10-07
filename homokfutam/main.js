@@ -448,6 +448,21 @@ function rangeWhere(arr, thr) {         // contiguous index range where arr > th
 // ============================================================
 const COLLIDERS = [];   // {x, z, r} rock bases the pods can hit off-track
 const ARCH = { x: 0, z: 0 };
+// The tunnel (?gfx=tunnel:1, docs/visual-next-steps.md D7): in the second half of the canyon, past the stone bridge
+// and the canyon's light probe, the slot is roofed over by three rock slabs with two gaps of sky between them;
+// open canyon before and after. Arc-length ranges [a, b] of the slabs; roofAt(s): 1 under a slab, 0 elsewhere.
+const TUNNEL = (() => {
+  if (!Q.tunnel) return [];
+  const r = rangeWhere(TR.canyon, 0.99);
+  if (!r) return [];
+  const a = TR.s[r[0]] + 760;
+  return [[0, 52], [62, 110], [122, 190]].map(([x, y]) => [a + x, a + y]);
+})();
+function roofAt(s) {
+  let k = 0;
+  for (const [a, b] of TUNNEL) k = Math.max(k, smooth(a - 4, a + 4, s) * (1 - smooth(b - 4, b + 4, s)));
+  return k;
+}
 // Tiles of 150 m whose resolution follows the distance to the track (fine where the pods
 // fly, coarse out in the dunes), merged into 16 chunk meshes. Skirts hide the cracks
 // between tiles of different resolution; normals come from the height function so they
@@ -556,7 +571,7 @@ let TRACK_MESH = null;
   g.setAttribute('aDir', new THREE.Float32BufferAttribute(dir, 2));
   g.setAttribute('aZone', new THREE.Float32BufferAttribute(zone, 2));
   g.setIndex(index); g.computeVertexNormals();
-  const m = new THREE.Mesh(g, trackMaterial(Q, TR.L));
+  const m = new THREE.Mesh(g, trackMaterial(Q, TR.L, TUNNEL));
   m.userData.track = true;
   m.receiveShadow = true;
   scene.add(m);
@@ -627,7 +642,8 @@ let CANYON_BRIDGE = null;
           const pick = b.hard > 0.5 ? HARD[((b.k % 3) + 3) % 3] : SOFT[((b.k % 4) + 4) % 4];
           _col.copy(PAL[pick]).lerp(PAL[1], drift * 0.35)
             .multiplyScalar((0.94 + 0.08 * b.f) * (1 + 0.025 * Math.sin(y * 5.7)) * (1 + (fbm(s * 0.05, y * 0.08 + side, 2) - 0.5) * 0.12));
-          const sky = (0.32 + 0.68 * Math.pow(h, 0.65)) * (1 - 0.45 * clamp(cut / 3.5, 0, 1) * up);
+          // (under the tunnel's roof, below ~25 m, the wall sees almost no sky)
+          const sky = (0.32 + 0.68 * Math.pow(h, 0.65)) * (1 - 0.45 * clamp(cut / 3.5, 0, 1) * up) * (1 - 0.8 * roofAt(s) * smooth(27, 22, y));
           vert(o, ty - 1.5 + y + n * 2 * h, _col, sky);
         }
         _col.copy(PAL[4]).lerp(PAL[0], 0.4);
@@ -679,7 +695,88 @@ let CANYON_BRIDGE = null;
     bridge.userData.span = 2 * (TR.hw[mid] + 22);
     scene.add(bridge);
     CANYON_BRIDGE = bridge;          // gets the Blender model once rocks.glb is in
+    for (const [a, b] of TUNNEL) buildRoof(a, b);
   }
+}
+
+// One roof slab of the tunnel (D7) from arc length a to b: a closed tube swept along the track. Its cross-section is a
+// flat ceiling along a bedding plane (~29 m up, off the centre a little) that curves steeply down into the walls (a
+// squircle, meeting them ~28 m up), under a top ~9 m higher. The ceiling steps where blocks fell out of it, so it reads
+// as sandstone rather than a vault. Over the last ~6 m the ceiling and the top close into a rounded, ragged lip (the
+// gaps of sky): a flat end cap read as a tent of triangles from below. Faces point out of the rock: the light bake
+// reads back faces as "inside".
+function buildRoof(a, b) {
+  const J = 40, W = 34, ring = 2 * (J + 1);
+  const rows = [];
+  for (let s = a; s < b - 1e-3; s += 1.5) rows.push(s);
+  rows.push(b);
+  const pos = [], col = [], occ = [], index = [], tp = { x: 0, y: 0, z: 0, yaw: 0, i: 0 };
+  const centres = [];
+  const LIP = 4;            // rows over which an end closes
+  rows.forEach((s0, ri) => {
+    const end = ri < rows.length / 2 ? -1 : 1;
+    const e = Math.min(1, Math.min(ri, rows.length - 1 - ri) / LIP), f = Math.sqrt(e);
+    let cx = 0, cy = 0, cz = 0;
+    for (let k = 0; k < ring; k++) {
+      const top = k > J, j = top ? ring - 1 - k : k, u = (j / J) * 2 - 1;
+      // the ends are ragged: each column ends a little earlier or later
+      const s = s0 + end * (1 - e) * (fbm(u * 3 + a * 0.013, 0.5, 2) - 0.35) * 7;
+      trackPoint(s, 0, tp);
+      const lx = -Math.cos(tp.yaw), lz = Math.sin(tp.yaw);
+      const Hc = 29 + (fbm(s * 0.02, 1.3, 2) - 0.5) * 5;
+      const ua = Math.min(1, Math.abs(u - (fbm(s * 0.015, 4.1, 2) - 0.5) * 0.25));
+      const vault = 12 + (Hc - 12) * Math.cbrt(Math.max(0, 1 - ua * ua * ua));
+      // blocks that fell out of the ceiling (steps, long along the track), lumps, and fine roughness
+      const blk = Math.floor((fbm(s * 0.03 + 9, u * 0.9 + 2, 2) - 0.5) * 4) * 1.6;
+      const under = vault + blk + (fbm(s * 0.12 + 3, u * 4 + 7, 3) - 0.5) * 3 + (fbm(s * 0.4, u * 12 + 1, 2) - 0.5) * 1.2;
+      const over = under + 9 - 3 * u * u + (fbm(s * 0.05, u * 3 + 11, 2) - 0.5) * 4, mid = (under + over) / 2;
+      // towards an end both close on the middle of the slab: a rounded lip
+      const y = top ? mid + (over - mid) * f : mid - (mid - under) * f;
+      pos.push(tp.x + lx * u * W, tp.y + y, tp.z + lz * u * W);
+      strata(y + (fbm(s * 0.07, u * 3 + 5, 2) - 0.5) * 6, s, _col); col.push(_col.r, _col.g, _col.b);
+      occ.push(top ? 1 : 0.15 + 0.3 * (1 - e));
+      cx += tp.x; cy += tp.y + y; cz += tp.z;
+    }
+    centres.push([cx / ring, cy / ring, cz / ring]);
+  });
+  for (let ri = 0; ri < rows.length - 1; ri++) for (let k = 0; k < ring; k++) {
+    const a0 = ri * ring + k, a1 = ri * ring + (k + 1) % ring, b0 = a0 + ring, b1 = a1 + ring;
+    index.push(a0, b0, a1, a1, b0, b1);
+  }
+  // caps: a fan from the ring's centre at each end
+  for (const ri of [0, rows.length - 1]) {
+    const c = pos.length / 3, [x, y, z] = centres[ri];
+    pos.push(x, y, z); strata(y, rows[ri], _col); col.push(_col.r, _col.g, _col.b); occ.push(0.4);
+    for (let k = 0; k < ring; k++) index.push(c, ri * ring + k, ri * ring + (k + 1) % ring);
+  }
+  // every triangle facing out: away from its ring's centre (sides), along the track out of the slab (caps)
+  const P = (i) => new THREE.Vector3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
+  const sideTris = (rows.length - 1) * ring * 2;
+  trackPoint((a + b) / 2, 0, tp);
+  for (let t = 0; t < index.length / 3; t++) {
+    const A = P(index[t * 3]), B = P(index[t * 3 + 1]), Cc = P(index[t * 3 + 2]);
+    const n = B.clone().sub(A).cross(Cc.clone().sub(A));
+    let out;
+    if (t < sideTris) {
+      const ri = Math.floor(t / (ring * 2)), m = A.clone().add(B).add(Cc).divideScalar(3);
+      out = m.sub(new THREE.Vector3(...centres[ri]));
+    } else {
+      const first = t < sideTris + ring;
+      out = new THREE.Vector3(Math.sin(tp.yaw), 0, Math.cos(tp.yaw)).multiplyScalar(first ? -1 : 1);
+    }
+    if (n.dot(out) < 0) { const k = index[t * 3 + 1]; index[t * 3 + 1] = index[t * 3 + 2]; index[t * 3 + 2] = k; }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setAttribute('aAO', new THREE.Float32BufferAttribute(occ, 1));
+  g.setIndex(index);
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, canyonMat);
+  m.castShadow = m.receiveShadow = true;
+  m.userData.rock = true;
+  m.userData.tunnel = true;
+  scene.add(m);
 }
 
 // ============================================================
@@ -1900,7 +1997,7 @@ function racerFx(r, dt, t) {
     animatePlayerPod(ud.pod, r, dt, POD_FX);
     // the player's pod reflects the live cube (?gfx=refl:1) instead of the baked probes
     if (LIVE?.texture && r === player) setPodEnv(ud.pod, LIVE.texture, null, 0, PROBE_K);
-    else if (PROBES) { const [b, w] = podProbe(r); setPodEnv(ud.pod, PROBES.desert, b, w, PROBE_K); }
+    else if (PROBES) { const [base, b, w] = podProbe(r); setPodEnv(ud.pod, base, b, w, PROBE_K); }
     ud.body.position.y = podLift(ud.pod, r, groundQuery, dt);
   }
   podFx.update(r, dt, groundQuery, camera.position);       // also brings the pod's world matrices up to date
@@ -3117,7 +3214,7 @@ function celebrate() {
 }
 
 // screen effects driven by the race: speed blur, aberration, flashes, depth of field in menus
-const FX = { blur: 0, aberr: 0, flash: 0, fade: 0, center: new THREE.Vector2(0.5, 0.5), dof: { on: false, focus: new THREE.Vector3(), range: 14 }, vol: { k: 0, y: 0, center: new THREE.Vector3(), radius: 200, density: 0.01 } };
+const FX = { blur: 0, aberr: 0, flash: 0, fade: 0, center: new THREE.Vector2(0.5, 0.5), dof: { on: false, focus: new THREE.Vector3(), range: 14 }, vol: { k: 0, y: 0, center: new THREE.Vector3(), radius: 200, density: 0.01, amb: 1 } };
 // volumetric light (?gfx=vol:1): how far the camera is in the canyon or under the arch, and the track height
 // there; the dust sheets (world/haze.js) give way to the real volume as it comes in
 const _vnc = { i: 0, d: 0 };
@@ -3128,6 +3225,8 @@ function volZone() {
   const inside = 1 - smooth(TR.hw[i] + 25, TR.hw[i] + 70, _vnc.d);
   const canyon = TR.canyon[i], arch = 1 - smooth(12, 50, archGap(i));
   FX.vol.k = Math.max(canyon, arch) * inside;
+  // under the tunnel's roof (D7) the shaded dust has almost no sky to glow with
+  FX.vol.amb = 1 - 0.75 * roofAt(TR.s[i]);
   FX.vol.y = TR.py[i];
   // the canyon's dust fills the slot round the camera; the arch's hangs under and round it
   if (arch > canyon && ROCKS.arch) { FX.vol.center.set(ROCKS.arch.x, 0, ROCKS.arch.z); FX.vol.radius = 75; FX.vol.density = 0.013; }
@@ -3142,7 +3241,7 @@ function zoneEV() {
   const i = _znc.i;
   if (i < 0) return 0;
   const inside = 1 - smooth(TR.hw[i] + 25, TR.hw[i] + 70, _znc.d);
-  return Math.max(TR.canyon[i] * 1.5, (1 - smooth(12, 50, archGap(i))) * 0.9, TR.arena[i] * 0.5) * inside;
+  return Math.max(TR.canyon[i] * 1.5, roofAt(TR.s[i]) * 1.7, (1 - smooth(12, 50, archGap(i))) * 0.9, TR.arena[i] * 0.5) * inside;
 }
 const _pv = new THREE.Vector3();
 function renderFrame(dt) {
@@ -3176,7 +3275,7 @@ function renderFrame(dt) {
 // local testing hook (only on localhost): fast-forward the race without rendering every frame
 if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
   window.__homok = {
-    THREE, scene, renderer, camera, rocks: ROCKS, TSL, GPUTHREE: W, ATMO, GPU, trails: TRAILS, fx: () => ({ DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST }), get post() { return post; }, set post(v) { post = v; },
+    THREE, scene, renderer, camera, rocks: ROCKS, TR, TSL, GPUTHREE: W, ATMO, GPU, trails: TRAILS, fx: () => ({ DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST }), get post() { return post; }, set post(v) { post = v; },
     start(l = 1, d = 1, intro = false) { laps = l; diff = d; newRace(); if (!intro) endIntro(); return this.info(); },
     cine: CINE, photo: PHOTO, get mid() { return MID; }, get eye() { return EYE; }, get rt() { return RT; }, bakeGI,
     // ray tracing spike (D9, WebGPU): rays per second against a BVH of the static world within radius m of the camera
@@ -3240,7 +3339,7 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
         const p = r.mesh.userData.pod;
         if (!p || !PROBES) continue;
         if (k === 0) { for (const m of p.mats) m.envMap = null; p.envBase = null; p.env.envMapMix.value = 0; }
-        else { const [b, w] = podProbe(r); setPodEnv(p, PROBES.desert, b, w, k); }
+        else { const [base, b, w] = podProbe(r); setPodEnv(p, base, b, w, k); }
       }
       renderFrame(0.016);
     },
@@ -3273,16 +3372,21 @@ function bakePodProbes() {
   if (ar) points.arena = at(TR.idx(Math.round((ar[0] + ar[1]) / 2)));
   if (cr) points.canyon = at(TR.idx(Math.round((cr[0] + cr[1]) / 2)));
   if (ROCKS.arch) points.arch = at(ROCKS.arch.i);
+  if (TUNNEL.length) { const [a, b] = TUNNEL[TUNNEL.length - 1]; const p = { x: 0, y: 0, z: 0, yaw: 0, i: 0 }; trackPoint((a + b) / 2, 0, p); points.tunnel = new THREE.Vector3(p.x, p.y + 2, p.z); }
   const t0 = performance.now();
   const probes = bakeProbes(renderer, scene, points, (p) => { scene.userData.sky.position.copy(p); HORIZON?.update(p); });
   console.log(`HOMOKFUTAM: ${Object.keys(probes).length} light probes in ${Math.round(performance.now() - t0)} ms`);
   return probes;
 }
+// [base, blend, weight]: the open desert's probe with the zone's faded in; in the tunnel (D7) the canyon's with the
+// tunnel's faded in
 function podProbe(r) {
   const i = r.loc.i, a = TR.arena[i], c = TR.canyon[i];
+  const t = PROBES.tunnel ? roofAt(TR.s[i]) : 0;
+  if (t > 0.01) return [PROBES.canyon, PROBES.tunnel, t];
   const h = 1 - smooth(10, 45, archGap(i));
-  if (a >= c && a >= h) return [PROBES.arena, a];
-  return c >= h ? [PROBES.canyon, c] : [PROBES.arch, h];
+  if (a >= c && a >= h) return [PROBES.desert, PROBES.arena, a];
+  return c >= h ? [PROBES.desert, PROBES.canyon, c] : [PROBES.desert, PROBES.arch, h];
 }
 
 // WebGPURenderer builds a pipeline the first time it draws an object with a material, and the post
@@ -3293,7 +3397,7 @@ function podProbe(r) {
 // rebuilds their materials).
 async function precompile() {
   const t0 = performance.now(), saved = [];
-  if (PROBES) for (const r of racers) { const p = r.mesh.userData.pod; if (p) { const [b, w] = podProbe(r); setPodEnv(p, PROBES.desert, b, w, PROBE_K); } }
+  if (PROBES) for (const r of racers) { const p = r.mesh.userData.pod; if (p) { const [base, b, w] = podProbe(r); setPodEnv(p, base, b, w, PROBE_K); } }
   scene.traverse((o) => { saved.push([o, o.visible, o.frustumCulled]); o.visible = true; o.frustumCulled = false; });
   try {
     // (no compileAsync: before the post chain has drawn once its scene pass has no MRT targets yet, and
@@ -3334,7 +3438,7 @@ async function boot(data) {
     console.log(`HOMOKFUTAM: mid shadow: ${n} static casters, ${MID.draws} draws`);
   }
   // the baked light (?gfx=gi:1, D4) before the probes: they see the world lit by it
-  if (GI_ON) await loadGI(SUN_DIR);
+  if (GI_ON) await loadGI(SUN_DIR, TUNNEL.length ? 'gi_tunnel.bin' : 'gi.bin');
   try { PROBES = bakePodProbes(); } catch (e) { console.warn('HOMOKFUTAM: light probes failed', e); }
   if (PROBES?.canyon) { canyonMat.envMap = PROBES.canyon; canyonMat.needsUpdate = true; }        // sky through the slot, red rock all round
   if (Q.refl && PROBES && player) {
@@ -3375,7 +3479,7 @@ async function boot(data) {
   if (new URLSearchParams(location.search).has('bakegi')) {
     const r = await bakeGI();
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([r.buffer])); a.download = 'gi.bin'; a.click();
+    a.href = URL.createObjectURL(new Blob([r.buffer])); a.download = TUNNEL.length ? 'gi_tunnel.bin' : 'gi.bin'; a.click();
   }
 }
 // the light bake (gfx/gibake.js, D4): with every rock at the same level of detail as for the shadow bakes

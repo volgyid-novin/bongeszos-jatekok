@@ -72,7 +72,7 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
   // mid shadow, if on) lets it through. Jittered per pixel and per frame, and laid over the scene before
   // TRAA, which averages the jitter away. VOL.k: how much the camera is in such a place (main.js); 0 skips it.
   const VOL = {
-    k: uniform(0), y: uniform(0), density: uniform(0.022), frame: uniform(0), center: uniform(new THREE.Vector3()), radius: uniform(200),
+    k: uniform(0), y: uniform(0), density: uniform(0.022), frame: uniform(0), center: uniform(new THREE.Vector3()), radius: uniform(200), amb: uniform(1),
     projInv: uniform(new THREE.Matrix4()), camWorld: uniform(new THREE.Matrix4()), camPos: uniform(new THREE.Vector3()),
   };
   if (Q.vol) {
@@ -93,7 +93,7 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
         const sunL = ATMO.hfSunCol.mul(phase.mul(3.1));
         // dust in shadow still glows with the sky and the sunlit rock round it: about the shaded walls' level
         // (less where the shade is darker, D2: the eye opens up to it, and bright dust turns the slot milky)
-        const amb = ATMO.hfFogCol.mul(oneMinus(ATMO.hfShade.mul(0.55)).mul(0.32));
+        const amb = ATMO.hfFogCol.mul(oneMinus(ATMO.hfShade.mul(0.55)).mul(0.32)).mul(VOL.amb);
         const T = float(1).toVar(), acc = vec3(0).toVar();
         Loop(STEPS, () => {
           const q = VOL.camPos.add(rd.mul(t)).toVar();
@@ -402,6 +402,7 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
         VOL.y.value = v.vol?.y ?? 0;
         if (v.vol?.center) VOL.center.value.copy(v.vol.center);
         VOL.radius.value = v.vol?.radius ?? 200;
+        VOL.amb.value = v.vol?.amb ?? 1;
         VOL.density.value = v.vol?.density ?? 0.01;
         VOL.frame.value = (VOL.frame.value + 1) % 64;
         VOL.projInv.value.copy(camera.projectionMatrixInverse);

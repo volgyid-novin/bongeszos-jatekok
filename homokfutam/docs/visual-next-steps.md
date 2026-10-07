@@ -368,7 +368,7 @@ Each preset as it is now against the same preset with every key off (`?gfx=sky:0
 
 ## D. Light: eye adaptation, a hot bright desert, ray tracing: items 1–6 done
 
-**Status (October 2026).** Items 1–6 are built on both renderers, each behind a `?gfx=` key, and on by the presets below. Item 9 is built as ray-traced reflections on the pods (Ultra, WebGPU, `rtr`), after a spike that measured what GPU ray tracing in the browser can do. Item 7 is open; item 8 (SSGI) was measured and turned down.
+**Status (October 2026).** Items 1–6 are built on both renderers, each behind a `?gfx=` key, and on by the presets below. Item 9 is built as ray-traced reflections on the pods (Ultra, WebGPU, `rtr`), after a spike that measured what GPU ray tracing in the browser can do. Item 7 is built as a tunnel over part of the canyon (`tunnel`), on trial; item 8 (SSGI) was measured and turned down.
 
 The goals, from the art side:
 1. **The tunnel moment.** Driving into the canyon, the eye opens up over a couple of seconds and the exit ahead is a blown-out white hole. Coming out, the desert is blinding for a second, then settles.
@@ -383,6 +383,7 @@ The goals, from the art side:
 | 4 | `gi` (0/1) | baked ray-traced light: sky visibility and two bounces, in volumes over the canyon and the arch | High, Ultra |
 | 5 | `mirage` (0/1) | mirage on the far flats, stronger heat shimmer there | High, Ultra |
 | 6 | `sss` (0, 1, 2 = debug view) | contact shadows: screen-space rays towards the sun, only on the sun's share of the light | High, Ultra |
+| 7 | `tunnel` (0/1) | a tunnel over ~190 m of the canyon's second half, with gaps of sky | all four (on trial) |
 | 9 | `rtr` (0, 1; 2 / 3 = debug views) | ray-traced reflections on the player's pod, in place of the live cube camera (`refl`) | Ultra, WebGPU only |
 | 9 | `gloss` (0/1) | polished pods: intact paint and bare metal much smoother, the wear kept | all four |
 
@@ -490,11 +491,25 @@ Totals with the new presets against the same presets with the D keys off: see "T
   - `?gfx=sss:2`: debug view (red = in contact shadow, green = the estimated sun share).
 - **What it looks like:** the feet of bollards, rocks, grass tufts and the pods' skids get crisp contact darkening under the soft shadow map. three's `SSSNode` (screen-space shadows, Bend's method) was the cost probe; the shipped version is our own, the same on both renderers.
 
-### 7. A real tunnel (level art, open)
+### 7. A tunnel in part of the canyon (`tunnel`, on trial)
 
-- The canyon is a slot open to the sky (floor 32 m wide, walls 46–76 m, flaring outwards), so it is shade, not darkness. The full tunnel moment wants 120–200 m where the walls lean in and meet, with two or three holes in the roof: shafts of sun through the dust with `vol` (C5).
-- Inside it would be EV −7 or below: the eye stops at +1.7 EV, so it stays dark and the shafts and the exit blaze.
-- Needs the bake (item 4) to cover it (one more volume), or the sky lights the tunnel through the rock. A swept roof mesh per side: +2–4 draws.
+- **Why:** the canyon is a slot open to the sky (floor 32 m wide, walls 51–67 m), so it is shade, not darkness; the open canyon's light is worth keeping. So only part of it is roofed: about 190 m in the second half, past the stone bridge (s 2464 m) and the canyon's light probe (s 2392 m), with open canyon before and after (~155 m after it, before the canyon ends).
+- **Built (`main.js`: `TUNNEL`, `roofAt()`, `buildRoof()`):**
+  - Three rock slabs over the slot (52, 48 and 68 m long) with gaps of 10 and 12 m: shafts of sun through the dust (`vol`, C5) and patches of light on the floor.
+  - Each slab is a closed tube swept along the track: a flat ceiling along a bedding plane ~29 m up (off the centre a little) that curves steeply down into the walls (a squircle; it meets them ~28 m up), a top ~9 m higher, blocks fallen out of the ceiling (steps), lumps and fine roughness, strata colours with noise. Over the last ~6 m of a slab the ceiling and the top close into a rounded, ragged lip. Faces point out of the rock (the light bake reads back faces as "inside").
+  - The rest follows from the geometry: the world shadow and the near and mid shadows (the slabs are static casters), the volumetric light, the reflections' BVH.
+  - Light where nothing is baked: the canyon walls' sky occlusion drops by 80 % under the roof (below ~25 m); the track floor takes the slabs as arc-length ranges (`trackMaterial(Q, L, roof)`) and loses 80 % of its fill under them (without `gi`); the shaded dust's glow follows the camera's place (`FX.vol.amb`); the zone eye (`eye:2`) opens up 1.7 EV in the tunnel; the pods cross-fade from the canyon's probe to one baked under the last slab (`podProbe`).
+  - The baked light has its own file with the roof, `assets/world/gi_tunnel.bin` (`tools/bakegi.mjs` picks the name; `gi.bin` stays for `tunnel:0`).
+  - `?gfx=tunnel:0` takes it out; on in every preset for now, to be judged in play.
+- **What it does:** metered −6.4 to −7.1 EV under the roof against about −4.5 in the open canyon (High, `tools/trace.mjs`): the eye is at its +1.7 EV limit, so the tunnel stays ~2 stops darker on screen, warm with the bounce off the floor and walls (with `gi`), the ceiling near black, the gaps and the exit blazing; out of it the canyon is bleached for a moment.
+- **Measured** (against `tunnel:0`; grid / dunes / canyon / tunnel / arena, the tunnel spot inside it; two rounds; `bench.mjs --spots`):
+  - High, WebGPU, 2560×1440: GPU +0.21 / +0.13 / +0.33 / +0.21 / +0.24 ms (noise: spots that cannot see it moved as much).
+  - High, WebGL, 2560×1440: frame −0.02 / −0.16 / −0.56 / +0.18 / −0.12 ms (noise).
+  - Low, WebGL, 1920×1080: frame +0.33 / +0.03 / +0.07 / −0.01 / −0.01 ms.
+  - +3 draws (+3 in the shadow pass), ~19k triangles. The bake: 406k triangles (387k without the roof), same time and size.
+- **Things that bit:**
+  - **A pointed arch with strata colours read as a pitched timber roof**, and the slabs' flat end caps (a fan of triangles) as a tent from below. The flat-ceilinged squircle and the closing lips fixed both.
+  - **The dust under the roof glowed with sky light it does not get there**, and the tunnel turned milky; its glow now follows the camera's place.
 
 ### 8. Screen-space GI (`ssgi`): measured, not worth it now
 
@@ -598,7 +613,7 @@ Each preset as it is now against the same preset with the D keys off (`?gfx=eye:
 
 ### What is left in D
 
-1. **Item 7, the tunnel** (level art), and a bake volume for it.
+1. **Item 7, the tunnel:** keep it or not, after a look in play (`?gfx=tunnel:0` to compare); if kept, `gi.bin` can go.
 1. **Item 9's follow-ups** (its "What is left").
 2. **A bake volume over the arena** (the stands' shade and the bounce off the paving), and per-zone strength (`hfGIK` is global).
 3. **The arch's renderer difference** (above).

@@ -411,7 +411,12 @@ export function trackNodeMaterial(Q, trackLength, u) {
     // (hfShade, D2: deeper, as the floor of a real slot sees ~10-25 % of the sky)
     const shade = ATMO.hfShade;
     // (the baked light, gi, has the real thing)
-    if (!GI_ON) ao.mulAssign(oneMinus(canyon.mul(smoothstep(0.55, 1, edge).mul(mix(0.25, 0.2, shade)).add(mix(0.35, 0.62, shade)))));
+    if (!GI_ON) {
+      ao.mulAssign(oneMinus(canyon.mul(smoothstep(0.55, 1, edge).mul(mix(0.25, 0.2, shade)).add(mix(0.35, 0.62, shade)))));
+      // under the tunnel's roof (D7)
+      const roofK = (r) => smoothstep(r.x.sub(4), r.x.add(4), s).mul(oneMinus(smoothstep(r.y.sub(4), r.y.add(4), s)));
+      ao.mulAssign(oneMinus(max(roofK(u.kRoof0), max(roofK(u.kRoof1), roofK(u.kRoof2))).mul(0.8)));
+    }
     sAO.assign(ao);
     sAlb.assign(col.mul(mix(1, gS.ao, 0.35)));
     const polish = groove.mul(0.2).add(trail.r.mul(0.1)).add(oil.mul(0.42));

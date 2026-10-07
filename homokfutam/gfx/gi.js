@@ -76,10 +76,11 @@ vec3 hfGI( vec3 wp, vec3 n ) {
 `;
 
 // fetch and install assets/world/gi.bin; resolves to the header, or null (no file, wrong version)
-export async function loadGI(sunDir) {
+// (gi_tunnel.bin: baked with the tunnel's roof, ?gfx=tunnel:1)
+export async function loadGI(sunDir, file = 'gi.bin') {
   if (!GI_ON) return null;
   try {
-    const r = await fetch(new URL('../assets/world/gi.bin', import.meta.url).href);
+    const r = await fetch(new URL(`../assets/world/${file}`, import.meta.url).href);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const buf = await r.arrayBuffer();
     const dv = new DataView(buf);

@@ -52,10 +52,10 @@ export async function open(browser, query, { tries = 4, timeout = 120000 } = {})
 export const SPOTS = [['grid', 0], ['dunes', 10], ['canyon', 10], ['arena', 20]];
 
 // perf at the four spots of a race started fresh
-export async function benchSpots(page, frames = 150) {
+export async function benchSpots(page, frames = 150, spots = SPOTS) {
   const out = {};
   await page.evaluate(() => window.__homok.start(1, 1, false));
-  for (const [name, t] of SPOTS) {
+  for (const [name, t] of spots) {
     if (t) await page.evaluate((t) => window.__homok.sim(t), t);
     await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
     out[name] = await page.evaluate((f) => window.__homok.perf(f), frames);

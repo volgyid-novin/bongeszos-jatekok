@@ -180,7 +180,7 @@ const VOL_F = /* glsl */`
   uniform sampler2D depthBuffer;
   uniform mat4 uProjInv, uCamWorld;
   uniform vec3 uCamPos, uCenter;
-  uniform float uK, uY, uDensity, uRadius;
+  uniform float uK, uY, uDensity, uRadius, uAmb;
   varying vec2 vUv;
   float ign( vec2 p ) { return fract( 52.9829189 * fract( dot( p, vec2( 0.06711056, 0.00583715 ) ) ) ); }
   void main() {
@@ -193,7 +193,7 @@ const VOL_F = /* glsl */`
     float ds = dist / float( STEPS ), t = ds * ign( gl_FragCoord.xy );
     float c = dot( rd, hfSunDir ), g = 0.55;
     float phase = ( 1.0 - g * g ) / ( 12.5663706 * pow( 1.0 + g * g - 2.0 * g * c, 1.5 ) ) * 0.75 + 0.25 / 12.5663706;
-    vec3 sunL = hfSunCol * phase * 3.1, amb = hfFogCol * 0.32 * ( 1.0 - 0.55 * hfShade );
+    vec3 sunL = hfSunCol * phase * 3.1, amb = hfFogCol * 0.32 * ( 1.0 - 0.55 * hfShade ) * uAmb;
     vec2 drift = hfTime * vec2( 0.011, 0.004 );
     float T = 1.0;
     vec3 acc = vec3( 0.0 );
@@ -221,7 +221,7 @@ class VolPass extends Pass {
       uniforms: Object.assign({}, ATMO, {
         depthBuffer: { value: null }, uProjInv: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() },
         uCamPos: { value: new THREE.Vector3() }, uCenter: { value: new THREE.Vector3() },
-        uK: { value: 0 }, uY: { value: 0 }, uDensity: { value: 0.01 }, uRadius: { value: 200 },
+        uK: { value: 0 }, uY: { value: 0 }, uDensity: { value: 0.01 }, uRadius: { value: 200 }, uAmb: { value: 1 },
       }),
       vertexShader: 'varying vec2 vUv; varying vec3 vHfWorld; void main() { vUv = position.xy * 0.5 + 0.5; vHfWorld = vec3( 0.0 ); gl_Position = vec4( position.xy, 1.0, 1.0 ); }',
       fragmentShader: VOL_F, depthWrite: false, depthTest: false,
@@ -463,7 +463,7 @@ export function createPost(renderer, scene, camera, Q, sunDir) {
     update(dt, v) {
       if (vol) {
         const u = vol.fullscreenMaterial.uniforms;
-        u.uK.value = v.vol?.k ?? 0; u.uY.value = v.vol?.y ?? 0; u.uDensity.value = v.vol?.density ?? 0.01; u.uRadius.value = v.vol?.radius ?? 200;
+        u.uK.value = v.vol?.k ?? 0; u.uY.value = v.vol?.y ?? 0; u.uDensity.value = v.vol?.density ?? 0.01; u.uRadius.value = v.vol?.radius ?? 200; u.uAmb.value = v.vol?.amb ?? 1;
         if (v.vol?.center) u.uCenter.value.copy(v.vol.center);
         vol.enabled = volMix.enabled = u.uK.value > 0.01;           // outside the canyon and the arch: no passes at all
       }

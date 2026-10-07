@@ -3,13 +3,15 @@
 import { launch, open, benchSpots } from './lib.mjs';
 
 const argv = process.argv.slice(2);
-let dpr = 1, rounds = 2, frames = 150, w = 1920, h = 1080;
+let dpr = 1, rounds = 2, frames = 150, w = 1920, h = 1080, spots = undefined;
 const qs = [];
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--dpr') dpr = +argv[++i];
   else if (argv[i] === '--rounds') rounds = +argv[++i];
   else if (argv[i] === '--frames') frames = +argv[++i];
   else if (argv[i] === '--size') { [w, h] = argv[++i].split('x').map(Number); }
+  // --spots name:seconds,... (sim seconds from the previous spot; default grid / dunes / canyon / arena)
+  else if (argv[i] === '--spots') spots = argv[++i].split(',').map((p) => { const [n, t] = p.split(':'); return [n, +t]; });
   else qs.push(argv[i]);
 }
 const res = qs.map(() => []);
@@ -18,7 +20,7 @@ for (let r = 0; r < rounds; r++) {
     const browser = await launch({ w, h, dpr, webgpu: !/renderer=webgl/.test(qs[k]) });
     try {
       const page = await open(browser, qs[k]);
-      const out = await benchSpots(page, frames);
+      const out = await benchSpots(page, frames, spots);
       res[k].push(out);
       const errs = page.logs.filter((l) => /error|PAGEERROR/i.test(l));
       console.log(`[${r}] ${qs[k]}\n  ` + Object.entries(out).map(([s, v]) => `${s} ${v.fps}fps js${v.jsMs}${v.gpuMs != null ? ' gpu' + v.gpuMs : ''} ${v.calls}dc ${(v.tris / 1e6).toFixed(2)}Mt`).join(' | ') + (errs.length ? '\n  ERR ' + errs.slice(0, 3).join(' / ') : ''));

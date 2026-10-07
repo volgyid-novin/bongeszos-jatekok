@@ -1,4 +1,5 @@
-// node bakegi.mjs ["query"] : runs __homok.bakeGI() and writes homokfutam/assets/world/gi.bin
+// node bakegi.mjs ["query"] [file] : runs __homok.bakeGI() and writes homokfutam/assets/world/<file>; the file is
+// gi_tunnel.bin unless the query turns the tunnel off (?gfx=tunnel:0 -> gi.bin)
 import fs from 'node:fs';
 import path from 'node:path';
 import { launch, open, ASSETS } from './lib.mjs';
@@ -13,7 +14,7 @@ const r = await page.evaluate(async () => {
   for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
   return { b64: btoa(s), header: r.header, ms: r.ms, triangles: r.triangles };
 });
-const out = path.join(ASSETS, 'world', 'gi.bin');
+const out = path.join(ASSETS, 'world', process.argv[3] || (/tunnel:0/.test(q) ? 'gi.bin' : 'gi_tunnel.bin'));
 fs.writeFileSync(out, Buffer.from(r.b64, 'base64'));
 console.log('wrote', out, fs.statSync(out).size, 'bytes;', Math.round(r.ms), 'ms;', r.triangles, 'triangles');
 console.log(JSON.stringify(r.header.boxes.map((b) => ({ n: b.name, cells: b.n, size: b.size.map(Math.round) }))));

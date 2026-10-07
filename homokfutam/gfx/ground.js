@@ -482,14 +482,17 @@ export function terrainMaterial(Q) {
 //  aTr = (lateral metres, arc length metres, racing line lateral metres, half width)
 //  aDir = track direction (x, z), aZone = (arena, canyon)
 // ---------------------------------------------------------------------------
-export function trackMaterial(Q, trackLength) {
+// roof: the tunnel's slabs as arc-length ranges [a, b] (D7; at most 3): the floor under them sees almost no sky
+export function trackMaterial(Q, trackLength, roof = []) {
   const reps = Math.max(1, Math.round(trackLength / TILE[4]));
-  const u = { kL: U(trackLength), kTile: U(trackLength / reps), kTrail: T(null), kTrailOn: U(0) };
+  const R = [0, 1, 2].map((k) => new THREE.Vector2(...(roof[k] || [-1e6, -1e6])));
+  const u = { kL: U(trackLength), kTile: U(trackLength / reps), kTrail: T(null), kTrailOn: U(0), kRoof0: U(R[0]), kRoof1: U(R[1]), kRoof2: U(R[2]) };
   if (GPU) return N.trackNodeMaterial(Q, trackLength, u);
   const m = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2 });
   const pom = !!Q.pom && (Q.groundQ ?? 2) > 1;
   return patch(m, 'hf-track2', pom ? { GQ: Q.groundQ ?? 2, HF_POM: 1 } : { GQ: Q.groundQ ?? 2 }, u, {
-    pars: /* glsl */`uniform sampler2D kTrail; uniform float kL, kTile, kTrailOn; varying vec4 vTr; varying vec2 vDir, vZone;`,
+    pars: /* glsl */`uniform sampler2D kTrail; uniform float kL, kTile, kTrailOn; uniform vec2 kRoof0, kRoof1, kRoof2; varying vec4 vTr; varying vec2 vDir, vZone;
+      float kRoofK( vec2 r, float s ) { return smoothstep( r.x - 4.0, r.x + 4.0, s ) * ( 1.0 - smoothstep( r.y - 4.0, r.y + 4.0, s ) ); }`,
     chunks: {
       map_fragment: GEO_N + /* glsl */`
         vec2 xz = vHfWorld.xz;
@@ -579,6 +582,8 @@ export function trackMaterial(Q, trackLength) {
         // (the baked light, gi, has the real thing)
         #ifndef HF_GI
           gAO *= 1.0 - canyon * ( mix( 0.35, 0.62, hfShade ) + mix( 0.25, 0.2, hfShade ) * smoothstep( 0.55, 1.0, edge ) );
+          // under the tunnel's roof (D7)
+          gAO *= 1.0 - 0.8 * max( kRoofK( kRoof0, s ), max( kRoofK( kRoof1, s ), kRoofK( kRoof2, s ) ) );
         #endif
         diffuseColor.rgb *= mix( 1.0, gS.ao, 0.35 );
         float polish = groove * 0.2 + trail.r * 0.1 + oil * 0.42;

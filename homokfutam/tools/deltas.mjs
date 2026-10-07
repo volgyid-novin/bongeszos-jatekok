@@ -14,12 +14,13 @@ for (let i = 0; i < txt.length; i++) {
   runs.push({ round: +m[1], q: m[2], spots });
 }
 const qs = [...new Set(runs.map((r) => r.q))];
+function SPOTS_OF(rs) { return Object.keys(rs[0]?.spots || {}); }
 const base = qs[0];
 const f = (v) => (v >= 0 ? '+' : '') + v.toFixed(2);
 console.log('base:', base);
 for (const q of qs) {
   const rows = [];
-  for (const spot of ['grid', 'dunes', 'canyon', 'arena']) {
+  for (const spot of SPOTS_OF(runs)) {
     const d = { ms: [], js: [], gpu: [] };
     for (const r of runs.filter((x) => x.q === q)) {
       const b = runs.find((x) => x.q === base && x.round === r.round);
@@ -29,6 +30,6 @@ for (const q of qs) {
     const mean = (a) => a.reduce((s, x) => s + x, 0) / a.length;
     rows.push(`${spot} frame ${d.ms.map(f).join('/')} js ${d.js.map(f).join('/')}${d.gpu.length ? ' gpu ' + d.gpu.map(f).join('/') + ' (avg ' + f(mean(d.gpu)) + ')' : ' (avg frame ' + f(mean(d.ms)) + ')'}`);
   }
-  const absRows = ['grid', 'dunes', 'canyon', 'arena'].map((s) => { const rr = runs.filter((x) => x.q === q && x.spots[s]); return `${s} ${(rr.reduce((a, x) => a + x.spots[s].ms, 0) / rr.length).toFixed(2)}ms${rr[0]?.spots[s].gpu != null ? ' gpu ' + (rr.reduce((a, x) => a + x.spots[s].gpu, 0) / rr.length).toFixed(2) : ''}`; });
+  const absRows = SPOTS_OF(runs).map((s) => { const rr = runs.filter((x) => x.q === q && x.spots[s]); return `${s} ${(rr.reduce((a, x) => a + x.spots[s].ms, 0) / rr.length).toFixed(2)}ms${rr[0]?.spots[s].gpu != null ? ' gpu ' + (rr.reduce((a, x) => a + x.spots[s].gpu, 0) / rr.length).toFixed(2) : ''}`; });
   console.log(`\n${q}\n  abs: ${absRows.join(' | ')}\n  ` + (q === base ? '' : rows.join('\n  ')));
 }
