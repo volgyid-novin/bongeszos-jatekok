@@ -22,20 +22,30 @@ const damp = (a, b, k, dt) => a + (b - a) * (1 - Math.exp(-k * dt));
 // The baked base colour is the pod with neutral paint; the livery map says where the primary
 // (R) and accent (G) paint is still intact, and the shader tints it there. Its B channel is the
 // heat mask: as the engines heat up the metal glows, starting in the nozzles and creeping forward.
-function patchLivery(m, map, paint, trim, heat) {
+// Polish (setPodGloss, gloss 0..1): intact paint (the livery's masks) towards an enamel gloss, bare metal
+// (the metalness map) polished; rubber, leather, soot and the worn scratches keep the model's roughness.
+export const GLOSS = { paint: 0.2, metal: 0.45, min: 0.06 };
+function patchLivery(m, map, paint, trim, heat, gloss) {
   if (m.userData.livery) return;
   m.userData.livery = true;
   const coat = m.isMeshPhysicalMaterial && m.clearcoat > 0;
   m.onBeforeCompile = (sh) => {
     atmoUniforms(sh);
-    Object.assign(sh.uniforms, { liveryMap: { value: map }, liveryPaint: { value: paint }, liveryTrim: { value: trim }, liveryHeat: heat });
+    Object.assign(sh.uniforms, { liveryMap: { value: map }, liveryPaint: { value: paint }, liveryTrim: { value: trim }, liveryHeat: heat, liveryGloss: gloss });
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform sampler2D liveryMap;\nuniform vec3 liveryPaint;\nuniform vec3 liveryTrim;\nuniform vec2 liveryHeat;')
+      .replace('#include <common>', '#include <common>\nuniform sampler2D liveryMap;\nuniform vec3 liveryPaint;\nuniform vec3 liveryTrim;\nuniform vec2 liveryHeat;\nuniform float liveryGloss;')
       .replace('#include <map_fragment>', `#include <map_fragment>
         vec3 livery = texture2D(liveryMap, vMapUv).rgb;
         diffuseColor.rgb *= mix(vec3(1.0), liveryPaint, livery.r) * mix(vec3(1.0), liveryTrim, livery.g);`)
+      .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
+        {
+          float paintK = smoothstep( 0.35, 0.8, max( livery.r, livery.g ) );
+          float k = mix( mix( 1.0, ${GLOSS.metal.toFixed(2)}, smoothstep( 0.4, 0.8, metalnessFactor ) ), ${GLOSS.paint.toFixed(2)}, paintK );
+          roughnessFactor = max( roughnessFactor * mix( 1.0, k, liveryGloss ), ${GLOSS.min.toFixed(2)} );
+        }`)
       .replace('#include <lights_physical_fragment>', coat ? `#include <lights_physical_fragment>
-        material.clearcoat *= smoothstep( 0.35, 0.8, max( livery.r, livery.g ) );` : '#include <lights_physical_fragment>')
+        // (polished pods: the coat also over paint that is partly worn)
+        material.clearcoat *= smoothstep( mix( 0.35, 0.2, liveryGloss ), mix( 0.8, 0.55, liveryGloss ), max( livery.r, livery.g ) );` : '#include <lights_physical_fragment>')
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         {
           // liveryHeat.x = heat level 0..1, .y = backfire flash
@@ -172,7 +182,7 @@ function cloneRig(src) {
 
 function makePod(src, livery) {
   const root = cloneRig(src);
-  const paint = new THREE.Color(), trim = new THREE.Color(), heat = U(new THREE.Vector2());
+  const paint = new THREE.Color(), trim = new THREE.Color(), heat = U(new THREE.Vector2()), gloss = U(1);
   const parts = [], mats = new Map();
   const env = { envMapB: { value: null }, envMapMix: { value: 0 } };
   let glow = null, beamMat = null;
@@ -182,7 +192,7 @@ function makePod(src, livery) {
     let m = mats.get(o.material);
     if (!m && GPU) {
       // node materials (gfx/tsl/pod.js); the probe blend is set up by setPodEnv
-      m = o.material.name.startsWith('PodAtlas') ? N.podLiveryMaterial(o.material, livery, paint, trim, heat, COAT ? COAT_ROUGH : 0) : N.toNodeMaterial(o.material);
+      m = o.material.name.startsWith('PodAtlas') ? N.podLiveryMaterial(o.material, livery, paint, trim, heat, COAT ? COAT_ROUGH : 0, gloss, GLOSS) : N.toNodeMaterial(o.material);
       if (m.transparent && m.side === THREE.DoubleSide) m.forceSinglePass = true;
       mats.set(o.material, m);
     }
@@ -190,7 +200,7 @@ function makePod(src, livery) {
       m = o.material.clone();
       if (m.name.startsWith('PodAtlas')) {
         if (COAT) m = withCoat(m);
-        patchLivery(m, livery, paint, trim, heat);
+        patchLivery(m, livery, paint, trim, heat, gloss);
       }
       // transparent + double-sided is drawn in two passes, each flagging the material for a
       // shader re-check; the canopy is thin enough that one pass looks the same
@@ -213,7 +223,7 @@ function makePod(src, livery) {
   const beam = ['BeamAnchor_L', 'BeamAnchor_R'].map((n, k) => node(n).position.clone().add(engines[k].position));
   const flames = ['FlameAnchor_L', 'FlameAnchor_R'].map((n) => node(n).position.clone());
   return {
-    root, body: node('Body'), engines, beam, flames, parts, glow, beamMat, paint, trim, heat, env, mats: [...mats.values()], envBase: null,
+    root, body: node('Body'), engines, beam, flames, parts, glow, beamMat, paint, trim, heat, gloss, env, mats: [...mats.values()], envBase: null,
     smooth: { brake: 0, steer: 0, boost: 0, thr: 0 }, lift: 0,
   };
 }
@@ -275,6 +285,8 @@ export function setPodLivery(pod, color, accent) {
   pod.paint.set(color);
   pod.trim.set(accent);
 }
+// how polished the pod is, 0 (as modelled: worn) .. 1 (paint and metal polished)
+export function setPodGloss(pod, g) { pod.gloss.value = g; }
 
 // Moving parts. Each pivot carries its settings as glTF extras: anim, axis, sign, max (rad or scale).
 // fx (optional): { hot: engine heat glow 0..1, flash: backfire flash, beam: beam brightness, beamCol }

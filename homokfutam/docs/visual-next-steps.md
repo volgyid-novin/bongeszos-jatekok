@@ -384,6 +384,7 @@ The goals, from the art side:
 | 5 | `mirage` (0/1) | mirage on the far flats, stronger heat shimmer there | High, Ultra |
 | 6 | `sss` (0, 1, 2 = debug view) | contact shadows: screen-space rays towards the sun, only on the sun's share of the light | High, Ultra |
 | 9 | `rtr` (0, 1; 2 / 3 = debug views) | ray-traced reflections on the player's pod, in place of the live cube camera (`refl`) | Ultra, WebGPU only |
+| 9 | `gloss` (0/1) | polished pods: intact paint and bare metal much smoother, the wear kept | all four |
 
 - **Load-time choices, like C's:** every key changes what is built (shader variants, passes, the sun all the bakes use), so switching one reloads the page. `?gfx=noon:0` brings golden hour back (with its own exposure and grade).
 - **Decision rule:** C's (≤ 0.3 ms: High if the gain is visible; 0.3–1.5 ms: Ultra unless the gain is large). Low and Medium get only what costs nothing measurable: `noon`, and the eye driven by where the camera is.
@@ -556,8 +557,15 @@ Totals with the new presets against the same presets with the D keys off: see "T
   1. Rocks at their lowest level of detail in the BVH, and a narrower corridor (1.09M triangles is more than reflections need).
   2. The arena's seating (custom shader materials, left out by the collection's rules; the probe shows it instead).
   3. A bounding test per pod before its three boxes, and no boxes for pods far away (the grid case).
-  4. Glossier pods (polished trims, a fresh coat on some liveries) would show the traced reflections far more.
+  4. ~~Glossier pods~~: done, see "Polished pods" below.
   5. Rivals close to the camera could trace too (`pod.rtOn`), at +0.2–0.5 ms each when near.
+#### Polished pods (`gloss`)
+
+- **Why:** the traced reflections (and the probes' and the cube's) barely showed on the pods: their paint and metal are worn and mostly rough (roughness ~0.6–0.8 in the model).
+- **Built (`patchLivery` in `playerPod.js`, `podLiveryMaterial` in `gfx/tsl/pod.js`, constants `GLOSS`):** per pod a polish amount (`setPodGloss`, 0..1): where the livery's masks say the paint is intact, roughness × 0.2 (an enamel gloss); bare metal (the metalness map) × 0.45; rubber, leather, soot and the worn scratches keep the model's roughness, so the pods stay battle-worn, but cared for. With the clear coat (High, Ultra) the coat also covers paint that is partly worn. The player's pod is fully polished, the rivals between 0.55 and 1 (fixed per racer). `?gfx=gloss:0` brings back the finish as modelled.
+- **What it looks like:** the canyon wall and the sky slide across the hull as a clean band, the paving shows in the lower hull, the engines read as polished copper; the sun's highlight is crisp.
+- **Cost** (High, both renderers, against `gloss:0`, two rounds): WebGPU GPU +0.12 / −0.05 / −0.01 / 0.00 ms; WebGL frame −0.31 / −0.01 / −0.30 / +0.45 ms (noise). Free; on every preset.
+
 - **`VXGINode`** (voxel cone-traced GI) is in three releases after r186: WebGPU only, a static scene, at most 256 voxels along the longest axis. A local volume (canyon, arena) at best.
 
 ### Things that bit

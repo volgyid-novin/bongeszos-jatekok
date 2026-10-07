@@ -3,7 +3,7 @@ import { GPU, FORCE_GL, W, TSL, N, U, loadNodes, RENDERER, WEBGPU_MISSING, saveR
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RaceRoom, selfId } from './net.js';
-import { loadPodModel, setPodLivery, setPodEnv, animatePlayerPod, podLift } from './playerPod.js';
+import { loadPodModel, setPodLivery, setPodGloss, setPodEnv, animatePlayerPod, podLift } from './playerPod.js';
 import { pickQuality, saveQuality, createDynRes, ORDER as GFX_ORDER } from './gfx/quality.js';
 import { createEye } from './gfx/eye.js';
 import { loadGI, GI_ON } from './gfx/gi.js';
@@ -1481,6 +1481,9 @@ function attachDetailPods() {
     if (!r.player && !Q.rivals) { swapMesh(r, r.baseMesh); continue; }
     if (!r.detailMesh) r.detailMesh = wrapDetailedPod(podFactory());
     setPodLivery(r.detailMesh.userData.pod, r.color, r.accent);
+    // polish (?gfx=gloss:0 for the worn finish as modelled): the player's pod fully, the rivals between 0.55 and 1,
+    // fixed per racer
+    setPodGloss(r.detailMesh.userData.pod, !Q.gloss ? 0 : r.player ? 1 : 0.55 + 0.45 * ((racers.indexOf(r) * 0.618034) % 1));
     swapMesh(r, r.detailMesh);
   }
 }

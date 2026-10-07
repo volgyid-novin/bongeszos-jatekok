@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
   Fn, If, vec3, uniform, uv, texture, materialColor, materialEmissive, diffuseColor, roughness, pmremTexture,
-  mix, clamp, dot, smoothstep, max, float, vec4, positionView, cameraWorldMatrix, reflectVector,
+  mix, clamp, dot, smoothstep, max, float, vec4, positionView, cameraWorldMatrix, reflectVector, materialRoughness, materialMetalness,
 } from 'three/tsl';
 
 // ============================================================
@@ -30,7 +30,8 @@ export function toNodeMaterial(m, C = NODE_CLASS[m.type]) {
 // the livery map says where the primary (R) and accent (G) paint is still intact; B is the heat mask:
 // as the engines heat up the metal glows, from the nozzles creeping forward (heat: x level, y backfire flash)
 // coat: the roughness of a clear coat over the paint that is still intact, or 0 (?gfx=coat:1, playerPod.js)
-export function podLiveryMaterial(m, liveryMap, paint, trim, heat, coat = 0) {
+// gloss: how polished, 0..1, with G = { paint, metal, min } (playerPod.js, GLOSS)
+export function podLiveryMaterial(m, liveryMap, paint, trim, heat, coat = 0, gloss = null, G = null) {
   const n = toNodeMaterial(m, coat ? THREE.MeshPhysicalNodeMaterial : NODE_CLASS[m.type]);
   n.userData.liveryMap = liveryMap;
   // the livery shares the base map's uvs, including its transform (gltfpack dequantizes uvs through it)
@@ -38,8 +39,14 @@ export function podLiveryMaterial(m, liveryMap, paint, trim, heat, coat = 0) {
   if (m.map) { m.map.updateMatrix(); luv = uniform(m.map.matrix).mul(vec3(luv, 1)).xy; }
   const liv = texture(liveryMap, luv).rgb;
   n.colorNode = materialColor.mul(mix(vec3(1), uniform(paint), liv.r)).mul(mix(vec3(1), uniform(trim), liv.g));
+  if (gloss && G) {
+    // intact paint towards an enamel gloss, bare metal polished; the rest as modelled
+    const k = mix(mix(float(1), G.metal, smoothstep(0.4, 0.8, materialMetalness)), G.paint, smoothstep(0.35, 0.8, max(liv.r, liv.g)));
+    n.roughnessNode = max(materialRoughness.mul(mix(float(1), k, gloss)), G.min);
+  }
   if (coat) {
-    n.clearcoatNode = smoothstep(0.35, 0.8, max(liv.r, liv.g));
+    // (polished pods, gloss: the coat also over paint that is partly worn)
+    n.clearcoatNode = gloss ? smoothstep(mix(0.35, 0.2, gloss), mix(0.8, 0.55, gloss), max(liv.r, liv.g)) : smoothstep(0.35, 0.8, max(liv.r, liv.g));
     n.clearcoatRoughnessNode = float(coat);
   }
   n.emissiveNode = Fn(() => {
