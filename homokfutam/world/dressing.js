@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ATMO, SUN_DIR } from '../gfx/atmosphere.js';
 import { WIND_DIR } from '../gfx/ground.js';
+import { GUST_ON, GUST_GLSL, gust, WAKE_ON, WAKE, WAKE_GLSL, wakeAt } from '../gfx/wind.js';
 import { GPU, U, T, N } from '../gfx/backend.js';
 
 // ============================================================
@@ -28,7 +29,7 @@ function canvasTexture(w, h, draw, srgb = true) {
 const CROWD_V = /* glsl */`
 attribute vec4 iPos;       // xyz feet, w along-track metres
 attribute vec4 iCol;       // shirt rgb, seed
-uniform float uTime, uCheer, uWave;
+uniform float uTime, uCheer, uWave, uStand;
 uniform vec3 hfSunDir;
 uniform sampler2DShadow hfShadowMap;
 uniform mat4 hfShadowMatrix;
@@ -40,7 +41,7 @@ void main() {
   // stadium wave travelling along the stands + random jumping when excited
   float wave = uWave * smoothstep( 0.6, 1.0, sin( iPos.w * 0.045 - uTime * 3.2 ) );
   float jump = uCheer * max( 0.0, sin( uTime * ( 7.0 + seed * 5.0 ) + seed * 40.0 ) ) * 0.35;
-  float stand = max( wave, smoothstep( 0.2, 0.6, uCheer ) * step( 0.35, fract( seed * 7.3 ) ) );
+  float stand = max( max( wave, smoothstep( 0.2, 0.6, uCheer ) * step( 0.35, fract( seed * 7.3 ) ) ), uStand );
   float arms = max( wave, uCheer * step( 0.5, fract( seed * 3.1 ) ) );
   // sitting: the same figure sunk behind the row in front of it
   vec3 feet = iPos.xyz + vec3( 0.0, jump + wave * 0.4 - ( 1.0 - stand ) * 0.5, 0.0 );
@@ -85,26 +86,67 @@ void main() {
 }`;
 
 // --- cloth: vertex displacement on a standard material (lit, shadowed) ---
-function clothMaterial(params, { amp = 0.4, freq = 1.2, speed = 3.5, fixedEdge = 'x', length = 3 } = {}) {
+// With the one wind (?gfx=gust:1, E2) the gust at the cloth's place swells the waves and adds a fast flutter
+// (the flags snap), and a strong gust holds a flag out straighter; the waves travel at the same speed either
+// way (a speed that followed the gust would jump the phase).
+// cells: the map is a 2 x 2 atlas and each copy shows the cell its iCell attribute (uv offset) names
+export function clothMaterial(params, { amp = 0.4, freq = 1.2, speed = 3.5, fixedEdge = 'x', length = 3, cells = false } = {}) {
   const u = { uTime: ATMO.hfTime, uAmp: U(amp), uFreq: U(freq), uSpeed: U(speed), uLen: U(length) };
-  if (GPU) return N.clothNodeMaterial({ side: THREE.DoubleSide, roughness: 0.85, ...params }, { ...u, fixedEdge });
+  if (GPU) return N.clothNodeMaterial({ side: THREE.DoubleSide, roughness: 0.85, ...params }, { ...u, fixedEdge, gust: GUST_ON, cells });
   const m = new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, roughness: 0.85, ...params });
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, ATMO, u);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nuniform float uTime, uAmp, uFreq, uSpeed, uLen;')
+      .replace('#include <common>', '#include <common>\nuniform float uTime, uAmp, uFreq, uSpeed, uLen;\n' + (cells ? 'attribute vec2 iCell;\n' : '') + (GUST_ON ? GUST_GLSL : ''))
+      .replace('#include <uv_vertex>', cells ? '#include <uv_vertex>\n#ifdef USE_MAP\nvMapUv = vMapUv * 0.5 + iCell;\n#endif' : '#include <uv_vertex>')
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         float ph = 0.0;
+        vec2 org = modelMatrix[ 3 ].xz;
         #ifdef USE_INSTANCING
           ph = instanceMatrix[3].x * 0.37 + instanceMatrix[3].z * 0.21;
+          org = ( modelMatrix * instanceMatrix[ 3 ] ).xz;
         #endif
         float along = ${fixedEdge === 'x' ? 'position.x' : '( - position.y )'};
         float k = clamp( along / uLen, 0.0, 1.0 );
         float w = sin( along * uFreq - uTime * uSpeed + ph ) + 0.5 * sin( along * uFreq * 2.3 - uTime * uSpeed * 1.7 + ph * 2.0 );
+        ${GUST_ON ? `
+        float g = hfGust( org, uTime );
+        w += g * 0.45 * sin( along * uFreq * 4.1 - uTime * uSpeed * 2.9 + ph * 3.0 );
+        transformed.z += w * uAmp * ( 0.45 + 0.85 * g ) * k;
+        ${fixedEdge === 'x' ? 'transformed.y -= k * k * 0.25 * ( 1.2 - g );' : ''}` : `
         transformed.z += w * uAmp * k;
-        ${fixedEdge === 'x' ? 'transformed.y -= k * k * 0.25;' : ''}`);
+        ${fixedEdge === 'x' ? 'transformed.y -= k * k * 0.25;' : ''}`}`);
   };
-  m.customProgramCacheKey = () => 'cloth-' + fixedEdge;
+  m.customProgramCacheKey = () => 'cloth-' + fixedEdge + (GUST_ON ? '-gust' : '') + (cells ? '-cells' : '');
+  return m;
+}
+
+// Dry scrub in the one wind (E2): stiff and woody, the top bows downwind in a gust and shivers. The copies
+// are turned at random, so the push is worked out in the world and turned back into the copy's frame.
+function swayMaterial(params, amp) {
+  const u = { uTime: ATMO.hfTime, uWind: U(new THREE.Vector2(WIND_DIR.x, WIND_DIR.y)), uAmp: U(amp) };
+  if (GPU) return N.swayNodeMaterial(params, { ...u, wake: WAKE_ON });
+  const m = new THREE.MeshStandardMaterial(params);
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, ATMO, u, WAKE_ON ? WAKE : {});
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float uTime, uAmp;\nuniform vec2 uWind;\n' + GUST_GLSL + (WAKE_ON ? WAKE_GLSL : ''))
+      .replace('#include <begin_vertex>', /* glsl */`#include <begin_vertex>
+        #ifdef USE_INSTANCING
+        {
+          mat4 im = modelMatrix * instanceMatrix;
+          vec2 wp = ( im * vec4( transformed, 1.0 ) ).xz;
+          float y = clamp( position.y, 0.0, 1.0 ), k = y * y;
+          float g = hfGust( wp, uTime );
+          float lean = 0.25 + 0.1 * sin( uTime * 1.3 + dot( wp, uWind ) * 0.07 ) + g * 1.2;
+          float shiver = sin( uTime * 11.0 + wp.x * 0.4 + wp.y * 0.35 ) * 0.3 * g;
+          vec2 d = ( uWind * lean + vec2( - uWind.y, uWind.x ) * shiver ) * uAmp * k;
+          ${WAKE_ON ? '// a passing pod (E7): thrashed by the jets, then springing back\n          d += hfWake( vec3( wp.x, im[ 3 ].y, wp.y ), 8 ).xy * 0.3 * k;' : ''}
+          transformed += inverse( mat3( im ) ) * vec3( d.x, - uAmp * k * lean * 0.2, d.y );
+        }
+        #endif`);
+  };
+  m.customProgramCacheKey = () => 'sway' + (WAKE_ON ? '-wake' : '');
   return m;
 }
 
@@ -140,8 +182,35 @@ export function buildDressing(ctx) {
   const side = (i, s, o, y) => P.set(TR.px[i] - TR.tz[i] * s * o, y, TR.pz[i] + TR.tx[i] * s * o);
 
   // crowd
-  const crowdU = { uTime: ATMO.hfTime, uCheer: U(0), uWave: U(0), uAmbient: U(C('#7d6f63')), uSunCol: U(C('#ffd9b0')),
+  const crowdU = { uTime: ATMO.hfTime, uCheer: U(0), uWave: U(0), uStand: U(0), uAmbient: U(C('#7d6f63')), uSunCol: U(C('#ffd9b0')),
     uAtlas: T(crowdAtlas(atlasReady)) };
+  // a group of spectators out on the course (E4, world/course.js): the same sprites, always standing (no row in
+  // front to sit behind), cheering on their own; pos: feet xyz + seed-ish w per person, col: shirt rgb + seed
+  out.crowdGroup = (pos, col) => {
+    const u = { ...crowdU, uCheer: U(0), uWave: U(0), uStand: U(1) };
+    const g = new THREE.InstancedBufferGeometry();
+    const quad = new THREE.PlaneGeometry(1, 1);
+    g.index = quad.index; g.attributes.position = quad.attributes.position;
+    g.setAttribute('iPos', new THREE.InstancedBufferAttribute(new Float32Array(pos), 4));
+    g.setAttribute('iCol', new THREE.InstancedBufferAttribute(new Float32Array(col), 4));
+    g.instanceCount = pos.length / 4;
+    const mat = GPU ? N.crowdMaterial(u) : new THREE.ShaderMaterial({
+      vertexShader: CROWD_V, fragmentShader: CROWD_F, side: THREE.DoubleSide, fog: true,
+      uniforms: Object.assign({}, THREE.UniformsUtils.clone(THREE.UniformsLib.fog), ATMO, u),
+    });
+    // (a group is small: culled by a sphere round its people, unlike the arena's crowd)
+    const c = new THREE.Vector3(), n = pos.length / 4;
+    for (let k = 0; k < n; k++) c.add(new THREE.Vector3(pos[k * 4], pos[k * 4 + 1], pos[k * 4 + 2]));
+    c.divideScalar(Math.max(n, 1));
+    let r = 0;
+    for (let k = 0; k < n; k++) r = Math.max(r, c.distanceTo(new THREE.Vector3(pos[k * 4], pos[k * 4 + 1], pos[k * 4 + 2])));
+    g.boundingSphere = new THREE.Sphere(c, r + 3);
+    const m = new THREE.Mesh(g, mat);
+    m.userData.dynamic = true;
+    scene.add(m);
+    return { mesh: m, uniforms: u };
+  };
+  out.shirts = ['#c8342c', '#2f6fd0', '#e8772e', '#efe6d4', '#e2b93b', '#3c8f6a', '#7a4fc0', '#1d1a18', '#9c4a2a', '#5a7da8'].map(C);
   if (arenaSamples.length && Q.crowd > 0) {
     const pos = [], col = [];
     const shirts = ['#c8342c', '#2f6fd0', '#e8772e', '#efe6d4', '#e2b93b', '#3c8f6a', '#7a4fc0', '#1d1a18', '#9c4a2a', '#5a7da8'].map(C);
@@ -401,7 +470,7 @@ export function buildDressing(ctx) {
         g.beginPath(); g.moveTo(x, 14); g.lineTo(x + 46, 64); g.lineTo(x, 114); g.lineTo(x + 30, 114); g.lineTo(x + 76, 64); g.lineTo(x + 30, 14); g.closePath(); g.fill();
       }
     });
-    const boards = [];
+    const boards = out.boards = [];
     let lastK = -999;
     for (let k = 0; k < TR.N; k++) {
       const kk = TR.k[k];
@@ -620,7 +689,8 @@ export function buildDressing(ctx) {
     });
     const card = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
     const g = mergeGeometries([card.clone(), card.clone().rotateY(Math.PI / 2)]);
-    const mat = new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 1 });
+    const params = { map: tex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 1 };
+    const mat = GUST_ON ? swayMaterial(params, 0.16) : new THREE.MeshStandardMaterial(params);
     const list = [];
     for (let k = 0; k < 900 * D; k++) {
       const i = TR.idx(Math.floor(rand() * TR.N));
@@ -715,19 +785,34 @@ export function buildDressing(ctx) {
     for (const f of updaters) f(dt, t);
     crowdU.uCheer.value = out.cheer;
     crowdU.uWave.value = out.wave;
-    // tumbleweeds: respawn upwind of the camera, roll and bounce downwind
+    // tumbleweeds: respawn upwind of the camera, roll and bounce downwind (with the one wind, E2: they all but
+    // stop in a lull and race in a gust; the roll and the hops follow the distance travelled)
     for (const w of weeds) {
       const u = w.userData;
       if (Math.hypot(u.x - camPos.x, u.z - camPos.z) > 260) {
         const a = Math.random() * TAU, d = 60 + Math.random() * 160;
         u.x = camPos.x + Math.cos(a) * d - WIND_DIR.x * 80; u.z = camPos.z + Math.sin(a) * d - WIND_DIR.y * 80;
       }
-      u.x += WIND_DIR.x * u.sp * dt; u.z += WIND_DIR.y * u.sp * dt;
-      const g = groundQuery(u.x, u.z);
-      const hop = Math.abs(Math.sin(t * 2.2 + u.ph)) * 1.4;
-      w.position.set(u.x, g + u.r + hop, u.z);
+      const sp = GUST_ON ? u.sp * (0.25 + 1.5 * gust(u.x, u.z, ATMO.hfTime.value)) : u.sp;
+      let g = groundQuery(u.x, u.z);
+      // a passing pod (E7) kicks it: thrown along by the jets' blast and up into the air
+      u.kx = u.kx || 0; u.kz = u.kz || 0; u.jy = u.jy || 0; u.jv = u.jv || 0;
+      if (WAKE_ON) {
+        const k = wakeAt(u.x, u.z, g + u.r);
+        const f = Math.hypot(k.x, k.z);
+        if (f > 0.05) { u.kx += k.x * 45 * dt; u.kz += k.z * 45 * dt; if (u.jy <= 0) u.jv = Math.max(u.jv, Math.min(9, f * 14)); }
+        const dk = Math.exp(-dt * 1.4);
+        u.kx *= dk; u.kz *= dk;
+        u.jv -= 9.8 * dt; u.jy += u.jv * dt;
+        if (u.jy < 0) { u.jy = 0; u.jv = 0; }
+      }
+      u.x += (WIND_DIR.x * sp + u.kx) * dt; u.z += (WIND_DIR.y * sp + u.kz) * dt;
+      u.roll = (u.roll || 0) + (sp + Math.hypot(u.kx, u.kz)) * dt;
+      g = groundQuery(u.x, u.z);
+      const hop = GUST_ON ? Math.abs(Math.sin(u.roll * 0.3 + u.ph)) * Math.min(1.8, 0.3 + sp * 0.14) : Math.abs(Math.sin(t * 2.2 + u.ph)) * 1.4;
+      w.position.set(u.x, g + u.r + hop + u.jy, u.z);
       w.scale.setScalar(u.r);
-      w.rotation.set(t * u.sp / u.r * 0.9, Math.atan2(WIND_DIR.x, WIND_DIR.y), 0);
+      w.rotation.set(GUST_ON ? u.roll / u.r * 0.9 : t * u.sp / u.r * 0.9, Math.atan2(WIND_DIR.x, WIND_DIR.y), 0);
     }
     for (const b of birds) {
       const u = b.userData, a = t * u.w + u.ph;

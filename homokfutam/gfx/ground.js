@@ -483,16 +483,22 @@ export function terrainMaterial(Q) {
 //  aDir = track direction (x, z), aZone = (arena, canyon)
 // ---------------------------------------------------------------------------
 // roof: the tunnel's slabs as arc-length ranges [a, b] (D7; at most 3): the floor under them sees almost no sky
-export function trackMaterial(Q, trackLength, roof = []) {
+// drift: the stretches where sand streams across the track (E1; at most 4): fresh tongues of sand lie on the road,
+// long along the wind
+export function trackMaterial(Q, trackLength, roof = [], drift = []) {
   const reps = Math.max(1, Math.round(trackLength / TILE[4]));
   const R = [0, 1, 2].map((k) => new THREE.Vector2(...(roof[k] || [-1e6, -1e6])));
-  const u = { kL: U(trackLength), kTile: U(trackLength / reps), kTrail: T(null), kTrailOn: U(0), kRoof0: U(R[0]), kRoof1: U(R[1]), kRoof2: U(R[2]) };
-  if (GPU) return N.trackNodeMaterial(Q, trackLength, u);
+  const D = [0, 1, 2, 3].map((k) => new THREE.Vector2(...(drift[k] || [-1e6, -1e6])));
+  const u = { kL: U(trackLength), kTile: U(trackLength / reps), kTrail: T(null), kTrailOn: U(0), kRoof0: U(R[0]), kRoof1: U(R[1]), kRoof2: U(R[2]),
+    kDrift0: U(D[0]), kDrift1: U(D[1]), kDrift2: U(D[2]), kDrift3: U(D[3]) };
+  if (GPU) return N.trackNodeMaterial(Q, trackLength, u, drift.length > 0);
   const m = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2 });
   const pom = !!Q.pom && (Q.groundQ ?? 2) > 1;
-  return patch(m, 'hf-track2', pom ? { GQ: Q.groundQ ?? 2, HF_POM: 1 } : { GQ: Q.groundQ ?? 2 }, u, {
-    pars: /* glsl */`uniform sampler2D kTrail; uniform float kL, kTile, kTrailOn; uniform vec2 kRoof0, kRoof1, kRoof2; varying vec4 vTr; varying vec2 vDir, vZone;
-      float kRoofK( vec2 r, float s ) { return smoothstep( r.x - 4.0, r.x + 4.0, s ) * ( 1.0 - smoothstep( r.y - 4.0, r.y + 4.0, s ) ); }`,
+  const defs = { GQ: Q.groundQ ?? 2, ...(pom ? { HF_POM: 1 } : {}), ...(drift.length ? { HF_DRIFT: 1 } : {}) };
+  return patch(m, 'hf-track2', defs, u, {
+    pars: /* glsl */`uniform sampler2D kTrail; uniform float kL, kTile, kTrailOn; uniform vec2 kRoof0, kRoof1, kRoof2, kDrift0, kDrift1, kDrift2, kDrift3; varying vec4 vTr; varying vec2 vDir, vZone;
+      float kRoofK( vec2 r, float s ) { return smoothstep( r.x - 4.0, r.x + 4.0, s ) * ( 1.0 - smoothstep( r.y - 4.0, r.y + 4.0, s ) ); }
+      float kDriftK( vec2 r, float s ) { return smoothstep( r.x - 30.0, r.x + 20.0, s ) * ( 1.0 - smoothstep( r.y - 20.0, r.y + 30.0, s ) ); }`,
     chunks: {
       map_fragment: GEO_N + /* glsl */`
         vec2 xz = vHfWorld.xz;
@@ -508,6 +514,16 @@ export function trackMaterial(Q, trackLength, roof = []) {
         float edge = abs( d ) / hw;
         float drift = smoothstep( 0.74, 1.0, edge + ( n1 - 0.5 ) * 0.5 );
         drift = max( drift, smoothstep( 0.63, 0.76, n2 ) * smoothstep( 0.3, 0.8, edge ) * 0.85 );
+        #ifdef HF_DRIFT
+        {
+          // where sand streams across the track (E1): fresh tongues blown over the road, long along the wind
+          float dk = max( max( kDriftK( kDrift0, s ), kDriftK( kDrift1, s ) ), max( kDriftK( kDrift2, s ), kDriftK( kDrift3, s ) ) );
+          vec2 W = gWind;
+          float wa = dot( xz, W ), wc = xz.y * W.x - xz.x * W.y;
+          float tn = texture2D( hfCloudTex, vec2( wa / 120.0, wc / 18.0 ) ).r * 0.7 + texture2D( hfCloudTex, vec2( wa / 40.0, wc / 6.0 ) + 0.5 ).r * 0.3;
+          drift = max( drift, dk * smoothstep( 0.56, 0.7, tn ) * 0.9 );
+        }
+        #endif
         drift *= 1.0 - arena * 0.9;
         float w[ ${NL} ];
         float tw[ ${NL} ];
@@ -606,7 +622,8 @@ export function trackMaterial(Q, trackLength, roof = []) {
 //  rock (needs the macro height map); cliffs get desert varnish streaks.
 // ---------------------------------------------------------------------------
 export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast = 1, normal = 1, rough = [0.55, 0.6], vertexColors = true, color = '#ffffff',
-  macro = 0.3, side = THREE.FrontSide, flat = false, sand = 1, foot = 2.5, varnish = 0, ao = false, aoAlbedo = 0.45, aoGI = 1, arena = false, metalness = 0 } = {}) {
+  macro = 0.3, side = THREE.FrontSide, flat = false, sand = 1, foot = 2.5, varnish = 0, ao = false, aoAlbedo = 0.45, aoGI = 1, arena = false, metalness = 0,
+  fade = null } = {}) {
   const u = {
     // arena: the building texture set, used for its own colour (not relative to its mean)
     gRC: arena ? GU.gAC : GU.gRC, gRN: arena ? GU.gAN : GU.gRN,
@@ -616,12 +633,16 @@ export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast 
     // with the baked light (gi): how much of the geometry's own occlusion (aAO) to keep (the canyon's is
     // analytic sky visibility, which the bake replaces; the rocks' Blender AO is finer than the bake)
     rAOgi: U(aoGI),
+    // fade: { far, depth }: copies of a culled scatter field (world/scatter.js) rise out of the ground over the last
+    // ~28 % of its draw distance instead of popping in (sunk by depth metres at far)
+    rFadeFar: U(fade?.far ?? 1e6), rFadeDepth: U(fade?.depth ?? 0),
   };
-  if (GPU) return N.rockNodeMaterial(Q, { color, roughness: 1, metalness, side, flatShading: flat }, u, { vertexColors, ao, arena });
+  if (GPU) return N.rockNodeMaterial(Q, { color, roughness: 1, metalness, side, flatShading: flat }, u, { vertexColors, ao, arena, fade: !!fade });
   const m = new THREE.MeshStandardMaterial({ vertexColors, color, roughness: 1, metalness, side, flatShading: flat });
   const defs = { GQ: Q.groundQ ?? 2 };
   if (ao) defs.ROCK_AO = 1;          // the geometry carries the occlusion baked in Blender (aAO)
   if (arena) defs.ABSOLUTE = 1;
+  if (fade) defs.HF_FADE = 1;        // (also keeps the program apart in three's cache: the vertex shader differs)
   return patch(m, 'hf-rock2', defs, u, {
     pars: /* glsl */`uniform highp sampler2DArray gRC, gRN; uniform float rLayer, rScale, rChroma, rContrast, rNormal, rMacro, rSand, rFoot, rVarnish, rAOAlb, rAOgi; uniform vec2 rRough;
       #ifdef ROCK_AO
@@ -699,9 +720,18 @@ export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast 
       lights_fragment_begin: 'vec3 gSun = vec3( 0.0 );\n' + lightsBegin(),
       aomap_fragment: AO,
     },
-  }, ao ? (sh) => {
-    sh.vertexShader = sh.vertexShader
+  }, ao || fade ? (sh) => {
+    if (ao) sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nattribute float aAO;\nvarying float vRockAO;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRockAO = aAO;');
+    if (fade) sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float rFadeFar, rFadeDepth;')
+      .replace('#include <begin_vertex>', /* glsl */`#include <begin_vertex>
+        #ifdef USE_INSTANCING
+        {
+          float f = 1.0 - smoothstep( rFadeFar * 0.72, rFadeFar, distance( ( modelMatrix * instanceMatrix[ 3 ] ).xyz, cameraPosition ) );
+          transformed.y -= ( 1.0 - f ) * rFadeDepth / max( length( instanceMatrix[ 1 ].xyz ), 1e-3 );
+        }
+        #endif`);
   } : null);
 }

@@ -6,7 +6,8 @@ import {
 import { N8AOPostPass } from 'n8ao';
 import { ATMO, ATMO_FUNCS, GRADE, PALETTE, SUN_DIR } from './atmosphere.js';
 import { METER_W, METER_H } from './eye.js';
-import { horizonUv, CONTACT, sunShare } from './screen.js';
+import { horizonUv, CONTACT, sunShare, LENS, lensDirt, GRIT_GLSL } from './screen.js';
+import { WAKE_ON, WAKE, WAKE_GLSL } from './wind.js';
 
 // ============================================================
 //  Post-processing chain (pmndrs/postprocessing + N8AO):
@@ -134,6 +135,24 @@ class FlareEffect extends Effect {
   }
 }
 
+// --- lens touches (?gfx=lens:1, E8; gfx/screen.js LENS): dirt on the glass lit by the bloom's bright areas,
+// grains hitting the lens in the sand streams; added in front of the tone mapping ---
+const LENS_FRAG = /* glsl */`
+uniform sampler2D uBloom, uDirt;
+uniform float uK, uGrit, uTime;
+${GRIT_GLSL}
+void mainImage( const in vec4 inputColor, const in vec2 uv, out vec4 outputColor ) {
+  vec3 c = texture2D( uBloom, uv ).rgb * texture2D( uDirt, uv ).rgb * uK + hfGrit( uv, uTime, uGrit );
+  outputColor = vec4( inputColor.rgb + c, inputColor.a );
+}`;
+class LensEffect extends Effect {
+  constructor(bloomTexture) {
+    super('LensEffect', LENS_FRAG, {
+      uniforms: new Map([['uBloom', new THREE.Uniform(bloomTexture)], ['uDirt', new THREE.Uniform(lensDirt())], ['uK', LENS.k], ['uGrit', LENS.grit], ['uTime', ATMO.hfTime]]),
+    });
+  }
+}
+
 // --- grade after tone mapping: warm highlights / cool shadows, contrast, saturation, vignette, grain ---
 const GRADE_FRAG = /* glsl */`
 uniform float uSat, uContrast, uVignette, uGrain, uFade, uFlash;
@@ -177,6 +196,7 @@ class GradeEffect extends Effect {
 // per-pixel pattern (no shimmer), softened by the bilinear upsampling in VolEffect.
 const VOL_F = /* glsl */`
   ${ATMO_FUNCS}
+  ${WAKE_ON ? WAKE_GLSL : ''}
   uniform sampler2D depthBuffer;
   uniform mat4 uProjInv, uCamWorld;
   uniform vec3 uCamPos, uCenter;
@@ -199,9 +219,13 @@ const VOL_F = /* glsl */`
     vec3 acc = vec3( 0.0 );
     for ( int k = 0; k < STEPS; k ++ ) {
       vec3 q = uCamPos + rd * t;
-      float n = texture2D( hfCloudTex, q.xz / 37.0 + drift ).r * texture2D( hfCloudTex, ( q.xz + q.y * 0.8 ) / 11.0 - drift * 2.0 ).r * 2.6;
+      ${WAKE_ON ? `// the pods' wakes (E7): the dust swirls (its wisps pushed along) and a lane behind each pod is blown clear
+      vec3 wk = hfWake( q, 2 );
+      vec2 qs = q.xz - wk.xy * 2.5;` : 'vec2 qs = q.xz;'}
+      float n = texture2D( hfCloudTex, qs / 37.0 + drift ).r * texture2D( hfCloudTex, ( qs + q.y * 0.8 ) / 11.0 - drift * 2.0 ).r * 2.6;
       float zone = 1.0 - smoothstep( uRadius * 0.6, uRadius, length( q.xz - uCenter.xz ) );
       float sig = uDensity * uK * zone * exp( - max( q.y - uY, 0.0 ) / 16.0 ) * smoothstep( 0.15, 0.75, n );
+      ${WAKE_ON ? 'sig *= 1.0 - 0.75 * clamp( wk.z, 0.0, 1.0 );' : ''}
       acc += ( sunL * hfStaticShadow( q, vec3( 0.0 ) ) + amb ) * sig * T * ds;
       T *= exp( - sig * ds );
       t += ds;
@@ -218,7 +242,7 @@ class VolPass extends Pass {
     this.target.texture.generateMipmaps = false;
     this.fullscreenMaterial = new THREE.ShaderMaterial({
       defines: { STEPS: steps },
-      uniforms: Object.assign({}, ATMO, {
+      uniforms: Object.assign({}, ATMO, WAKE_ON ? WAKE : {}, {
         depthBuffer: { value: null }, uProjInv: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() },
         uCamPos: { value: new THREE.Vector3() }, uCenter: { value: new THREE.Vector3() },
         uK: { value: 0 }, uY: { value: 0 }, uDensity: { value: 0.01 }, uRadius: { value: 200 }, uAmb: { value: 1 },
@@ -440,6 +464,7 @@ export function createPost(renderer, scene, camera, Q, sunDir) {
   const expo0 = renderer.toneMappingExposure || 1;
   const bloom = new BloomEffect({ mipmapBlur: true, luminanceThreshold: 0.92 * (eyeOn ? expo0 : 1), luminanceSmoothing: 0.25 * (eyeOn ? expo0 : 1), intensity: Q.bloom ? 0.85 : 0, radius: 0.72 });
   effects.push(bloom);
+  if (Q.lens && Q.bloom) effects.push(new LensEffect(bloom.texture));
   const flare = new FlareEffect();
   flare.uniforms.get('uIntensity').value = Q.flare ? 1 : 0;
   effects.push(flare);

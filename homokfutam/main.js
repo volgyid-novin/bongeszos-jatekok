@@ -11,11 +11,18 @@ import { installAtmosphere, ATMO, SUN_DIR, PALETTE, skyMaterial, cloudTexture, b
 import { loadSurfaces, triplanarMaterial } from './gfx/surfaces.js';
 import { collectStatic } from './gfx/bvhscene.js';
 import { loadGround, terrainMaterial, trackMaterial, rockMaterial, groundDebug, ROCK as ROCKL, ARENA, WIND_DIR } from './gfx/ground.js';
+import { GUST_ON, gust, WAKE_ON, updateWake, setWake } from './gfx/wind.js';
+import { LENS } from './gfx/screen.js';
 import { bakeMacro } from './world/macro.js';
 import { loadRockModels, LodInstances } from './world/rocks.js';
 import { buildScatter } from './world/scatter.js';
 import { buildHorizon } from './world/horizon.js';
 import { buildHaze } from './world/haze.js';
+import { buildDrift } from './world/drift.js';
+import { placeFalls, buildTrickle } from './world/trickle.js';
+import { buildCourse, COURSE_URL } from './world/course.js';
+import { LANDMARK_URL, placeLandmark, buildLandmark } from './world/landmark.js';
+import { buildBirds } from './world/birds.js';
 import { createPost } from './gfx/post.js';
 import { bakeProbes, createLiveEnv } from './gfx/probes.js';
 import { Particles, loadFlipbooks } from './gfx/particles.js';
@@ -463,6 +470,51 @@ function roofAt(s) {
   for (const [a, b] of TUNNEL) k = Math.max(k, smooth(a - 4, a + 4, s) * (1 - smooth(b - 4, b + 4, s)));
   return k;
 }
+// Sand streaming across the track (?gfx=drift:1, docs/visual-next-steps.md E1): a few stretches of 100-260 m where the
+// wind crosses the open track (|tangent . wind| < 0.5, not in the canyon or the arena) with tall dunes upwind, so it is
+// an event and not wallpaper. Arc-length ranges [a, b], the best first, at least 400 m apart; driftAt(s): 0..1.
+const DRIFT = (() => {
+  if (!Q.drift) return [];
+  const N = TR.N, score = new Float32Array(N), step = TR.L / N;
+  for (let i = 0; i < N; i++) {
+    const along = Math.abs(TR.tx[i] * WDX + TR.tz[i] * WDZ);
+    if (along > 0.5 || TR.canyon[i] > 0.02 || TR.arena[i] > 0.02) continue;
+    let up = 0;
+    for (let d = 70; d <= 270; d += 25) up += smooth(6, 16, dunePhase(TR.px[i] - WDX * d, TR.pz[i] - WDZ * d, _dp).amp);
+    score[i] = Math.sqrt(1 - along / 0.5) * (0.3 + 0.7 * up / 9);
+  }
+  // the best window of up to 260 m inside each run of good samples (at least 100 m)
+  const cands = [], WIN = Math.round(260 / step), MIN = Math.round(100 / step);
+  for (let i = 0; i < N; i++) {
+    if (score[i] < 0.3 || score[TR.idx(i - 1)] >= 0.3) continue;
+    let j = i; while (score[TR.idx(j + 1)] >= 0.3 && j - i < N) j++;
+    if (j - i + 1 < MIN) continue;
+    let best = -1, at = i;
+    for (let k = i; k + Math.min(WIN, j - i + 1) - 1 <= j; k++) {
+      let sum = 0; for (let m = k; m < k + Math.min(WIN, j - i + 1); m++) sum += score[TR.idx(m)];
+      if (sum > best) { best = sum; at = k; }
+    }
+    cands.push({ a: TR.s[TR.idx(at)], len: Math.min(WIN, j - i + 1) * step, sum: best });
+  }
+  cands.sort((p, q) => q.sum - p.sum);
+  const out = [];
+  const gap = (p, q) => { const d = Math.abs(p - q) % TR.L; return Math.min(d, TR.L - d); };
+  for (const c of cands) {
+    if (out.length >= 4) break;
+    if (c.a < 40 || c.a + c.len > TR.L - 40) continue;            // not over the line (the track's s wraps there)
+    if (out.some(([a, b]) => gap((a + b) / 2, c.a + c.len / 2) < 400 + (b - a + c.len) / 2)) continue;
+    out.push([c.a, c.a + c.len]);
+  }
+  out.sort((p, q) => p[0] - q[0]);
+  console.log('HOMOKFUTAM: sand drifts at', out.map(([a, b]) => `${Math.round(a)}-${Math.round(b)} m`).join(', ') || 'none');
+  return out;
+})();
+// 1 on a stretch, fading over ~50 m at its ends (as the sheet and the road's sand do)
+function driftAt(s) {
+  let k = 0;
+  for (const [a, b] of DRIFT) k = Math.max(k, smooth(a - 30, a + 20, s) * (1 - smooth(b - 20, b + 30, s)));
+  return k;
+}
 // Tiles of 150 m whose resolution follows the distance to the track (fine where the pods
 // fly, coarse out in the dunes), merged into 16 chunk meshes. Skirts hide the cracks
 // between tiles of different resolution; normals come from the height function so they
@@ -533,27 +585,44 @@ const TERRAIN = { cx: 90, cz: -690, size: 7200 };
 // ============================================================
 //  Track surface, start line, edge posts
 // ============================================================
-let TRACK_MESH = null;
+let TRACK_MESH = null, DRIFT_SHEET = null;
+// Across the track: the packed surface over the half-width, then on each side a berm of sand
+// the pods have pushed up (a low ridge ~2.6 m out) running down to meet the terrain ~7 m out.
+// Only the look: physics keeps using groundAt. No berm in the arena or the canyon.
+// bermB: how much berm at sample i, arc length s, side c (-1 left, 1 right); bermH: its height over the
+// track e metres past the edge (the track mesh's columns are at 1.2, 2.6, 4.5 and 7 m)
+const BERM_OUT = [1.2, 2.6, 4.5, 7.0];
+function bermB(i, s, c) { return (1 - TR.arena[i]) * (1 - TR.canyon[i]) * (0.6 + 0.8 * fbm(s * 0.021, c * 13.1, 2)); }
+function bermH(e, b) { return e < 2 ? 0.06 + 0.1 * b : e < 3 ? 0.02 + 0.55 * b - (1 - b) * 0.06 : e < 5 ? -0.14 + 0.26 * b : -0.3; }
+// the drawn surface at arc length s, lateral d (sample i, world x, z): the road, the berm, then the terrain
+function surfaceAt(i, s, d, x, z) {
+  const hw = TR.hw[i], e = Math.abs(d) - hw;
+  if (e <= 0) return TR.py[i] + 0.06;
+  if (e >= 7) return groundQuery(x, z);
+  const b = bermB(i, s, d < 0 ? -1 : 1);
+  let e0 = 0, h0 = 0.06;
+  for (const e1 of BERM_OUT) {
+    const h1 = bermH(e1, b);
+    if (e <= e1) return TR.py[i] + h0 + (h1 - h0) * (e - e0) / (e1 - e0);
+    e0 = e1; h0 = h1;
+  }
+  return groundQuery(x, z);
+}
 {
-  // Across the track: the packed surface over the half-width, then on each side a berm of sand
-  // the pods have pushed up (a low ridge ~2.6 m out) running down to meet the terrain ~7 m out.
-  // Only the look: physics keeps using groundAt. No berm in the arena or the canyon.
   const pos = [], tr = [], dir = [], zone = [], index = [];
   const IN = [-1, -0.5, 0, 0.5, 1];                // multiples of the half-width
-  const OUT = [1.2, 2.6, 4.5, 7.0];                // metres past the edge
+  const OUT = BERM_OUT;                            // metres past the edge
   const cols = [...OUT.slice().reverse().map((e) => [-1, e]), ...IN.map((c) => [c, null]), ...OUT.map((e) => [1, e])];
   const NC = cols.length;
   for (let k = 0; k <= TR.N; k++) {
     const i = TR.idx(k), hw = TR.hw[i], y = TR.py[i], s = TR.s[k];
     const rx = -TR.tz[i], rz = TR.tx[i];
-    const open = (1 - TR.arena[i]) * (1 - TR.canyon[i]);
     for (const [c, e] of cols) {
       let o, h;
       if (e === null) { o = c * hw; h = 0.06; }
       else {
-        const b = open * (0.6 + 0.8 * fbm(s * 0.021, c * 13.1, 2));
         o = c * (hw + e);
-        h = e < 2 ? 0.06 + 0.1 * b : e < 3 ? 0.02 + 0.55 * b - (1 - b) * 0.06 : e < 5 ? -0.14 + 0.26 * b : -0.3;
+        h = bermH(e, bermB(i, s, c));
       }
       pos.push(TR.px[i] + rx * o, y + h, TR.pz[i] + rz * o);
       tr.push(o, s, TR.line[i], hw);
@@ -571,11 +640,13 @@ let TRACK_MESH = null;
   g.setAttribute('aDir', new THREE.Float32BufferAttribute(dir, 2));
   g.setAttribute('aZone', new THREE.Float32BufferAttribute(zone, 2));
   g.setIndex(index); g.computeVertexNormals();
-  const m = new THREE.Mesh(g, trackMaterial(Q, TR.L, TUNNEL));
+  const m = new THREE.Mesh(g, trackMaterial(Q, TR.L, TUNNEL, DRIFT));
   m.userData.track = true;
   m.receiveShadow = true;
   scene.add(m);
   TRACK_MESH = m;
+  // the streams of sand over the drift stretches (E1): one layer of grains on LOW
+  DRIFT_SHEET = buildDrift({ scene, TR, trackPoint, surfaceAt, ranges: DRIFT, layers: Q.name === 'low' ? 1 : 2 });
 
   // checkered start/finish line
   const line = new THREE.Mesh(new THREE.PlaneGeometry(TR.hw[0] * 2, 3.2), new THREE.MeshStandardMaterial({ map: TEX.checker, roughness: 0.8, polygonOffset: true, polygonOffsetFactor: -4 }));
@@ -590,6 +661,7 @@ let TRACK_MESH = null;
 //  Canyon
 // ============================================================
 let CANYON_BRIDGE = null;
+const CANYON_WALLS = [];
 {
   const r = rangeWhere(TR.canyon, 0.01);
   if (r) {
@@ -618,11 +690,19 @@ let CANYON_BRIDGE = null;
     for (const side of [-1, 1]) {
       const pos = [], col = [], occ = [], index = [];
       let rows = 0, M = 0;
-      const vert = (o, y, rgb, a) => { pos.push(tp.x + tp.rx * o, y, tp.z + tp.rz * o); col.push(rgb.r, rgb.g, rgb.b); occ.push(a); };
+      // the wall's profile per row, for placing things against it and on top of it (the sand falls, E3; the
+      // spectators on the rim, E4): lateral offset and height of every vertex up the face (0..J), then the rim and
+      // the slope beyond (J+1..J+4); side 1 is the left of the direction of travel
+      const prof = { side, rows: [] };
+      CANYON_WALLS.push(prof);
+      let pr = null;
+      const vert = (o, y, rgb, a) => { pos.push(tp.x + tp.rx * o, y, tp.z + tp.rz * o); col.push(rgb.r, rgb.g, rgb.b); occ.push(a); if (pr && pr.n < pr.o.length) { pr.o[pr.n] = o; pr.y[pr.n++] = y; } };
       for (let s = s0; s <= s0 + len + 1e-3; s += STEP) {
         trackPoint(s, 0, tp);
         tp.rx = -Math.cos(tp.yaw) * side; tp.rz = Math.sin(tp.yaw) * side;
         const c = at(TR.canyon, s), H = at(TR.wallH, s) * c, hw = at(TR.hw, s), ty = tp.y;
+        pr = { s, x: tp.x, z: tp.z, rx: tp.rx, rz: tp.rz, ty, H, hw, c, J, o: new Float32Array(J + 5), y: new Float32Array(J + 5), n: 0 };
+        prof.rows.push(pr);
         const jn = 1 - Math.abs(2 * fbm(s * 0.05 + side * 9, side * 3.1, 2) - 1);
         const joint = Math.pow(jn, 10) * 2.6;                                 // narrow vertical slots
         const butt = (fbm(s * 0.013 + side * 4, 1.7, 3) - 0.5) * 9;          // buttresses and bays
@@ -693,6 +773,7 @@ let CANYON_BRIDGE = null;
     bridge.castShadow = bridge.receiveShadow = true;
     bridge.userData.rock = true;
     bridge.userData.span = 2 * (TR.hw[mid] + 22);
+    bridge.userData.s = TR.s[mid];
     scene.add(bridge);
     CANYON_BRIDGE = bridge;          // gets the Blender model once rocks.glb is in
     for (const [a, b] of TUNNEL) buildRoof(a, b);
@@ -1089,7 +1170,8 @@ const rockMatAO = rockMaterial(Q, ROCKL.cliff, CLIFF_AO);
 // the same surface for the single meshes (arch, bridge): a material drawn by both instanced and
 // plain meshes makes three.js switch shader programs at every switch between them
 const rockMatAOSolo = rockMaterial(Q, ROCKL.cliff, CLIFF_AO);
-const boulderMatAO = rockMaterial(Q, ROCKL.boulder, { scale: 1 / 6, chroma: 0.45, contrast: 1.05, rough: [0.6, 0.35], foot: 1.2, ao: true });
+const BOULDER_AO = { scale: 1 / 6, chroma: 0.45, contrast: 1.05, rough: [0.6, 0.35], foot: 1.2, ao: true };
+const boulderMatAO = rockMaterial(Q, ROCKL.boulder, BOULDER_AO);
 const mesaMatAO = rockMaterial(Q, ROCKL.cliff, { scale: 1 / 40, chroma: 0.3, normal: 0.6, macro: 0.4, varnish: 1, foot: 14, ao: true });
 {
   const rand = rng(1999);
@@ -1191,6 +1273,7 @@ function buildRockVisuals(models) {
   arch.rotation.y = A.yaw;
   arch.scale.set(A.sx, 1, 1);
   scene.add(arch);
+  ROCKS.archMesh = arch;
   if (CANYON_BRIDGE) {
     const b = CANYON_BRIDGE;
     b.geometry.dispose();
@@ -1243,10 +1326,16 @@ function buildRockFallback() {
   arch.castShadow = arch.receiveShadow = true;
   arch.userData.rock = true;
   scene.add(arch);
+  ROCKS.archMesh = arch;
 }
 let PROPS_MODELS = null;          // assets/world/props.glb: ground clutter, placed at boot (needs the macro map)
 const PROPS_READY = loadRockModels(new URL('./assets/world/props.glb', import.meta.url).href).then((m) => { PROPS_MODELS = m; })
   .catch((e) => console.warn('HOMOKFUTAM: props failed, no ground clutter', e));
+// assets/world/course.glb: the trackside markers and the spectators' camps (E4, E5), placed at boot
+let COURSE_MODELS = null, LANDMARK_MODELS = null;
+const COURSE_READY = Q.markers || Q.camps ? loadRockModels(COURSE_URL).then((m) => { COURSE_MODELS = m; }).catch((e) => console.warn('HOMOKFUTAM: course props failed', e)) : Promise.resolve();
+// assets/world/landmark.glb: the wreck in the dunes (E6), placed at boot
+const LANDMARK_READY = Q.landmark ? loadRockModels(LANDMARK_URL).then((m) => { LANDMARK_MODELS = m; }).catch((e) => console.warn('HOMOKFUTAM: landmark failed', e)) : Promise.resolve();
 const ROCKS_READY = Promise.all([loadRockModels(), Q.geo && loadRockModels(new URL('./assets/world/rocks_spires_hi.glb', import.meta.url).href)
   .catch((e) => { console.warn('HOMOKFUTAM: detailed spires failed, using the regular ones', e); return null; })])
   .then(([models, hi]) => { if (hi) for (const [k, g] of hi) models.set(k, g); buildRockVisuals(models); }).catch((e) => {
@@ -1417,8 +1506,10 @@ const WIND = new Particles(scene, { capacity: 240, kind: 'spark', size: [0.045, 
 const SAND = new Particles(scene, { capacity: 260 * PQ, kind: 'lit', size: [4, 11], alpha: 0.12, drag: 0.15, grav: 0, color: '#e6c597', fadeIn: 0.4 });
 // ?gfx=parts:1: sand streaming low across the track in the wind at speed (thin streaks, a few at a time)
 const STREAM = Q.parts ? new Particles(scene, { capacity: 700, kind: 'spark', size: [0.11, 0.06], alpha: 0.3, drag: 0.4, grav: 0.6, color: '#f0d6ab', stretch: 0.12, fadeIn: 0.15 }) : null;
+// ?gfx=drift:1 (E1): the gust's sheet of sand over the drift stretches, low and wide, and the puffs off the berms
+const DRIFTP = DRIFT.length ? new Particles(scene, { capacity: 420 * PQ, kind: 'lit', size: [2, 7], alpha: 0.12, drag: 0.2, grav: 0.15, color: '#e6c597', fadeIn: 0.3 }) : null;
 function emit(pool, x, y, z, vx, vy, vz, life, p) { pool.emit(x, y, z, vx, vy, vz, life, p); }
-const POOLS = [DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST, ...(STREAM ? [STREAM] : [])];
+const POOLS = [DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST, ...(STREAM ? [STREAM] : []), ...(DRIFTP ? [DRIFTP] : [])];
 loadFlipbooks().catch((e) => console.warn('HOMOKFUTAM: particle flipbooks failed to load, using plain puffs', e));
 heatLayer = Q.post && Q.heat ? new HeatLayer() : null;
 const podFx = createPodFx(scene, heatLayer, {
@@ -1798,6 +1889,8 @@ function updateAudio(dt, live) {
   AV.env.canyon = _anc.i >= 0 ? TR.canyon[_anc.i] * near : 0;
   AV.env.arena = _anc.i >= 0 ? TR.arena[_anc.i] * near : 0;
   AV.env.arch = Math.max(0, 1 - Math.hypot(camera.position.x - ARCH.x, camera.position.z - ARCH.z) / 45);
+  // the one wind (E2): the sound swells as a gust front reaches the camera (half as much down in the canyon)
+  AV.gust = GUST_ON ? gust(camera.position.x, camera.position.z, ATMO.hfTime.value) * (1 - 0.5 * AV.env.canyon) : undefined;
   AV.crowd = CROWD.cheer;
   AV.intensity = state === 'menu' || state === 'room' || state === 'loading' ? 0.2
     : state === 'countdown' ? (CINE.introT > 0 ? 0.3 : 0.5)
@@ -2080,6 +2173,7 @@ function racerFx(r, dt, t) {
 const _v3 = new THREE.Vector3();
 
 // air streaks that rush past the camera at speed, and sand blowing across the dunes
+const _wnc = { i: 0, d: 0 }, _wtp = { x: 0, y: 0, z: 0, yaw: 0, i: 0 };
 function updateWind(dt) {
   const racing = state === 'race' || state === 'finished';
   const sp = Math.abs(player.fwd), k = racing ? clamp((sp - 60) / 120, 0, 1) : 0;
@@ -2092,34 +2186,69 @@ function updateWind(dt) {
     const y = camera.position.y + Math.sin(a) * rad * 0.5 + 1;
     emit(WIND, x, y, z, -player.vx * 0.15, 0, -player.vz * 0.15, 0.5 + Math.random() * 0.3, { alpha: 0.25 + k * 0.35 });
   }
-  // streamers: ribbons of grains sliding across the track ahead, faster than the air above them
+  // the one wind (?gfx=gust:1, E2): the sand moves with the gust where it is; without it, a steady 0.5
+  const t = ATMO.hfTime.value, G = (x, z) => (GUST_ON ? gust(x, z, t) : 0.5);
+  // the drift stretches (E1) near the camera: a gust lifts a low sheet of sand across the road, and puffs it up
+  // where the stream pours over the berm on the downwind side
+  let onDrift = 0;
+  if (DRIFTP) {
+    nearestCoarse(camera.position.x, camera.position.z, _wnc);
+    if (_wnc.i >= 0 && _wnc.d < 140) onDrift = driftAt(TR.s[_wnc.i]);
+    for (let r = Math.floor(dt * 70 * PQ * onDrift + Math.random()); r > 0; r--) {
+      const s = TR.s[_wnc.i] + (Math.random() - 0.3) * 160;
+      const kd = driftAt(s);
+      if (kd <= 0 || Math.random() > kd) continue;
+      trackPoint(((s % TR.L) + TR.L) % TR.L, 0, _wtp);
+      const hw = TR.hw[_wtp.i], rx = -Math.cos(_wtp.yaw), rz = Math.sin(_wtp.yaw);
+      const berm = Math.random() < 0.3, down = rx * WIND_DIR.x + rz * WIND_DIR.y > 0 ? 1 : -1;
+      const d = berm ? down * (hw + 2 + Math.random() * 2) : (Math.random() * 2 - 1) * (hw + 18);
+      const x = _wtp.x + rx * d, z = _wtp.z + rz * d, gu = G(x, z);
+      if (Math.random() > (berm ? gu * gu * 1.6 : 0.1 + 0.9 * gu)) continue;
+      const y = surfaceAt(_wtp.i, s, d, x, z), v = (8 + Math.random() * 4) * (0.6 + 0.7 * gu);
+      if (berm) emit(DRIFTP, x, y + 0.6, z, WIND_DIR.x * v * 0.7, 1.4 + Math.random() * 1.6, WIND_DIR.y * v * 0.7, 1.6 + Math.random() * 1.2,
+        { ground: y, size0: 1.5 + Math.random(), size1: 6 + Math.random() * 4, alpha: 0.1 + 0.14 * gu });
+      else emit(DRIFTP, x, y + 0.3 + Math.random() * 0.8, z, WIND_DIR.x * v, 0.2 + Math.random() * 0.3, WIND_DIR.y * v, 1.8 + Math.random() * 1.4,
+        { ground: y, size0: 2 + Math.random() * 1.5, size1: 5 + Math.random() * 4, alpha: 0.05 + 0.13 * gu });
+    }
+  }
+  // grains hitting the lens in the sand streams (?gfx=lens:1, E8), more in a gust and at speed
+  if (Q.lens) LENS.grit.value = onDrift * Math.min(1, 0.3 + 1.2 * G(camera.position.x, camera.position.z)) * (0.4 + 0.6 * k);
+  // streamers: ribbons of grains sliding across the track ahead, faster than the air above them (more on the drift
+  // stretches)
   if (STREAM && k > 0) {
-    for (let r = Math.floor(k * 26 * dt + Math.random()); r > 0; r--) {
+    const gp = G(player.x, player.z);
+    for (let r = Math.floor(k * 26 * (0.4 + 1.2 * gp) * (1 + 2 * onDrift) * dt + Math.random()); r > 0; r--) {
       const along = 12 + Math.random() * 70, side = (Math.random() - 0.5) * 50;
       let x = player.x + fx * along - fz * side, z = player.z + fz * along + fx * side;
-      const v = 9 + Math.random() * 6, n = 3 + Math.floor(Math.random() * 5);
+      const v = (9 + Math.random() * 6) * (0.7 + 0.6 * gp), n = 3 + Math.floor(Math.random() * 5);
       for (let j = 0; j < n; j++) {
         x += WIND_DIR.y * (Math.random() - 0.5) * 0.8 - WIND_DIR.x * 0.4; z -= WIND_DIR.x * (Math.random() - 0.5) * 0.8 + WIND_DIR.y * 0.4;
         const g = groundQuery(x, z);
         emit(STREAM, x, g + 0.08 + Math.random() * 0.35, z, WIND_DIR.x * v, 0.2 + Math.random() * 0.4, WIND_DIR.y * v, 0.5 + Math.random() * 0.5,
-          { alpha: 0.2 + k * 0.25, ground: g });
+          { alpha: (0.2 + k * 0.25) * (0.6 + 0.8 * gp), ground: g });
       }
     }
   }
-  if (Math.random() < dt * 18 * PQ) {
+  {
     const a = Math.random() * TAU, d = 25 + Math.random() * 110;
-    const x = camera.position.x + Math.cos(a) * d, z = camera.position.z + Math.sin(a) * d, g = groundQuery(x, z);
-    emit(SAND, x, g + 0.8 + Math.random() * 2, z, WIND_DIR.x * (5 + Math.random() * 5), 0.3, WIND_DIR.y * (5 + Math.random() * 5), 4 + Math.random() * 3, { ground: g });
+    const x = camera.position.x + Math.cos(a) * d, z = camera.position.z + Math.sin(a) * d, gu = G(x, z);
+    if (Math.random() < dt * 18 * PQ * (0.25 + 1.5 * gu)) {
+      const g = groundQuery(x, z), v = 0.7 + 0.6 * gu;
+      emit(SAND, x, g + 0.8 + Math.random() * 2, z, WIND_DIR.x * (5 + Math.random() * 5) * v, 0.3, WIND_DIR.y * (5 + Math.random() * 5) * v, 4 + Math.random() * 3, { ground: g });
+    }
   }
-  // spindrift: thin veils of sand streaming off the dune brinks downwind
-  for (let k = Math.floor(dt * 60 * PQ + Math.random()); k > 0; k--) {
+  // spindrift: thin veils of sand streaming off the dune brinks downwind (in a gust they thicken and fly
+  // faster; a lull leaves a few wisps)
+  for (let k = Math.floor(dt * 60 * PQ * (GUST_ON ? 2 : 1) + Math.random()); k > 0; k--) {
     const a = Math.random() * TAU, d = 40 + Math.random() * 260;
     const x = camera.position.x + Math.cos(a) * d, z = camera.position.z + Math.sin(a) * d;
     const cr = duneCrest(x, z);
     if (cr < 0.25 || Math.random() > cr) continue;
-    const g = groundQuery(x, z), v = 7 + Math.random() * 6;
+    const gu = G(x, z);
+    if (GUST_ON && Math.random() > 0.15 + 0.85 * gu) continue;
+    const g = groundQuery(x, z), v = (7 + Math.random() * 6) * (0.7 + 0.6 * gu);
     emit(SAND, x, g + 0.3, z, WIND_DIR.x * v, 0.6 + Math.random() * 0.8, WIND_DIR.y * v, 2.2 + Math.random() * 1.5,
-      { ground: g - 3, size0: 1.5 + Math.random(), size1: 6 + Math.random() * 5, alpha: 0.1 + cr * 0.08 });
+      { ground: g - 3, size0: 1.5 + Math.random(), size1: 6 + Math.random() * 5, alpha: (0.1 + cr * 0.08) * (0.7 + 0.6 * gu) });
   }
 }
 
@@ -3110,6 +3239,7 @@ function frame(now) {
     netSend(dt);
     roomTimers(dt);
     updateWind(sdt);
+    if (WAKE_ON) updateWake(racers, camera.position);       // pods disturb the world (E7): their wakes for the shaders
     if (toastTimer > 0 && (toastTimer -= dt) <= 0) toastEl.hidden = true;
     if (centerTimer > 0 && (centerTimer -= dt) <= 0) centerEl.textContent = '';
   }
@@ -3161,6 +3291,9 @@ function arenaLife(dt) {
   CROWD.wave = damp(CROWD.wave, waveOn ? 1 : 0, 1.5, dt);
   DRESS.cheer = CROWD.cheer; DRESS.wave = CROWD.wave;
   DRESS.update(dt, simT, camera.position);
+  TRICKLE?.update(dt, camera.position, racers);
+  COURSE?.update(dt, camera.position, racers);
+  BIRDS?.update(dt, racers);
   for (const l of ROCKS.lods) l.update(camera.position);
   HORIZON?.update(camera.position);
   if ((ROCKS.tick++ & 3) === 0) for (const l of ROCKS.scatter) l.update(camera.position);
@@ -3275,9 +3408,12 @@ function renderFrame(dt) {
 // local testing hook (only on localhost): fast-forward the race without rendering every frame
 if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
   window.__homok = {
-    THREE, scene, renderer, camera, rocks: ROCKS, TR, TSL, GPUTHREE: W, ATMO, GPU, trails: TRAILS, fx: () => ({ DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST }), get post() { return post; }, set post(v) { post = v; },
+    THREE, scene, renderer, camera, rocks: ROCKS, TR, TSL, GPUTHREE: W, ATMO, GPU, trails: TRAILS, fx: () => ({ DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST, STREAM, DRIFTP }), get post() { return post; }, set post(v) { post = v; },
     start(l = 1, d = 1, intro = false) { laps = l; diff = d; newRace(); if (!intro) endIntro(); return this.info(); },
     cine: CINE, photo: PHOTO, get mid() { return MID; }, get eye() { return EYE; }, get rt() { return RT; }, bakeGI,
+    // the one wind (E2): the gust field at a point (0 in a lull, up to 1), at shader time t
+    gust: (x, z, t = ATMO.hfTime.value) => gust(x, z, t), drift: DRIFT, get driftSheet() { return DRIFT_SHEET; }, get trickle() { return TRICKLE; }, get course() { return COURSE; }, get landmark() { return LANDMARK; }, get birds() { return BIRDS; }, setWake, LENS, tunnel: TUNNEL,
+    ground: (x, z) => groundQuery(x, z), trackPoint: (s, d = 0) => { const o = {}; trackPoint(s, d, o); return o; },
     // ray tracing spike (D9, WebGPU): rays per second against a BVH of the static world within radius m of the camera
     async rtSpike(opts = {}) {
       if (!GPU) return 'WebGPU only';
@@ -3417,14 +3553,49 @@ async function precompile() {
 // static sun shadow for the whole world, rendered once everything static exists
 let MID = null;          // the cached mid-distance shadow (?gfx=csm:1)
 let HAZE = null;         // the dust sheets in the canyon and under the arch (world/haze.js)
+let TRICKLE = null;      // the sand falls (world/trickle.js, E3)
+let COURSE = null;       // the trackside markers and the camps (world/course.js, E4, E5)
+let LANDMARK = null;     // the wreck in the dunes (world/landmark.js, E6)
+let BIRDS = null;        // the birds on the canyon rim that startle (world/birds.js, E7)
 const WORLD_BOUNDS = new THREE.Box3(new THREE.Vector3(-1850, -70, -2450), new THREE.Vector3(2050, 270, 1000));
 async function boot(data) {
   if (PB_SKY) { await SKY_READY; scene.environment = buildEnvironment(renderer); }       // (the loading timeout may have won the race)
   try { await bakeMacro(renderer, scene, { x0: TERRAIN.cx - TERRAIN.size / 2, z0: TERRAIN.cz - TERRAIN.size / 2, size: TERRAIN.size, res: 1024 }); }
   catch (e) { console.warn('HOMOKFUTAM: macro map failed', e); }
   if (PROPS_MODELS) {
-    try { ROCKS.scatter = buildScatter({ scene, TR, Q, groundQuery, rng, models: PROPS_MODELS, rockMat: boulderMatAO, metalMat: ARENA_MATS.metal }); }
+    try {
+      ROCKS.scatter = buildScatter({ scene, TR, Q, groundQuery, rng, models: PROPS_MODELS, rockMat: boulderMatAO, metalMat: ARENA_MATS.metal,
+        // (each field its own copy, whose copies rise out of the ground towards its draw distance)
+        fadeRock: (fade) => rockMaterial(Q, ROCKL.boulder, { ...BOULDER_AO, fade }),
+        fadeMetal: (fade) => AM(ARENA.metal, { ao: true, scale: 1 / 2, sand: 0.2, macro: 0, metalness: 0.2, fade }) });
+    }
     catch (e) { console.warn('HOMOKFUTAM: ground clutter failed', e); }
+  }
+  // the trackside markers and the spectators' camps (?gfx=markers:1, camps:1; E4, E5): static, so before the bakes
+  if (COURSE_MODELS) {
+    try {
+      COURSE = buildCourse({
+        scene, TR, Q, groundQuery, surfaceAt, trackPoint, rng, models: COURSE_MODELS, rockMat: boulderMatAO, dress: DRESS, walls: CANYON_WALLS, tunnel: TUNNEL,
+        arch: ROCKS.arch && ROCKS.archMesh ? { mesh: ROCKS.archMesh, s: TR.s[ROCKS.arch.i] } : null, bridge: CANYON_BRIDGE,
+        fx: { smoke: (x, y, z) => emit(SMOKE, x, y, z, WIND_DIR.x * 0.7 + (Math.random() - 0.5) * 0.3, 0.9 + Math.random() * 0.4, WIND_DIR.y * 0.7 + (Math.random() - 0.5) * 0.3,
+          6 + Math.random() * 2, { size0: 0.4, size1: 3.5 + Math.random() * 2, alpha: 0.2, color: '#a39c92', ground: y - 0.4 }) },
+      });
+      console.log('HOMOKFUTAM: course:', JSON.stringify(COURSE.counts));
+    } catch (e) { console.warn('HOMOKFUTAM: course props failed', e); }
+  }
+  // birds on the canyon rim that startle as the pack comes in (?gfx=wake:1, E7)
+  if (Q.wake && CANYON_WALLS.length) {
+    try { BIRDS = buildBirds({ scene, walls: CANYON_WALLS, roofAt, rng, avoid: CANYON_BRIDGE ? [CANYON_BRIDGE.userData.s] : [] }); }
+    catch (e) { console.warn('HOMOKFUTAM: birds failed', e); }
+  }
+  // the landmark (?gfx=landmark:1, E6): the wreck in the dunes, placed where several straights look at it
+  if (LANDMARK_MODELS) {
+    try {
+      const obstacles = [...ROCKS.spires.map((s) => ({ x: s.x, z: s.z, r: s.r })), ...ROCKS.mesas.map((m) => ({ x: m.x, z: m.z, r: m.w * 0.6 }))];
+      const t0 = performance.now(), spot = placeLandmark({ TR, groundQuery, obstacles });
+      if (spot) LANDMARK = buildLandmark({ scene, models: LANDMARK_MODELS, spot, groundQuery, lod: Q.lod ?? 1 });
+      console.log(`HOMOKFUTAM: landmark at ${spot ? `${Math.round(spot.x)}, ${Math.round(spot.z)} (nearest pass ${Math.round(spot.near)} m, score ${spot.score.toFixed(0)})` : 'nowhere'} in ${Math.round(performance.now() - t0)} ms`);
+    } catch (e) { console.warn('HOMOKFUTAM: landmark failed', e); }
   }
   // the ray tracer's BVH builds in a worker while the shadows and probes bake (?gfx=rtr:1, D9)
   const rtReady = RTR ? rtStart() : null;
@@ -3453,6 +3624,29 @@ async function boot(data) {
     scene.traverse((o) => { if (o.isMesh && o.castShadow && !moves(o)) o.castShadow = false; });
   }
   try { HAZE = buildHaze({ scene, TR, rangeWhere, arch: ROCKS.arch, Q }); } catch (e) { console.warn('HOMOKFUTAM: haze failed', e); }
+  // sand pouring from the rock (?gfx=trickle:1, E3): off the canyon rim, the tunnel's lips and ceiling, the arch and
+  // the bridge; placed against the built rock (raycasts up into the overhangs, the walls' own profiles)
+  if (Q.trickle) {
+    try {
+      scene.updateMatrixWorld(true);
+      const slabs = [];
+      scene.traverse((o) => { if (o.isMesh && o.userData.tunnel) slabs.push(o); });
+      const overheads = [];
+      if (ROCKS.archMesh && ROCKS.arch) overheads.push({ mesh: ROCKS.archMesh, s: TR.s[ROCKS.arch.i], reach: 60, n: 5 });
+      if (CANYON_BRIDGE) overheads.push({ mesh: CANYON_BRIDGE, s: CANYON_BRIDGE.userData.s, reach: 40, n: 4 });
+      const t0 = performance.now();
+      const falls = placeFalls({ TR, trackPoint, groundQuery, rng, walls: CANYON_WALLS, roofAt, tunnel: TUNNEL, slabs, overheads });
+      TRICKLE = buildTrickle({
+        scene, falls, fx: {
+          puff: (x, y, z, k) => emit(DUST, x, y, z, WIND_DIR.x * 0.6 + (Math.random() - 0.5) * 0.6, 0.3 + Math.random() * 0.4, WIND_DIR.y * 0.6 + (Math.random() - 0.5) * 0.6,
+            2 + Math.random() * 1.5, { size0: 0.6 + Math.random() * 0.5, size1: 2.5 + Math.random() * 2 * k, alpha: 0.1 + 0.08 * Math.min(k, 1.5), ground: y - 0.2 }),
+          pebble: (x, y, z) => emit(CONFETTI, x, y, z, (Math.random() - 0.5) * 1.5, -2 - Math.random() * 3, (Math.random() - 0.5) * 1.5, 6,
+            { color: Math.random() < 0.5 ? '#8a6446' : '#a7825c', size0: 0.12 + Math.random() * 0.12, size1: 0.12, grav: 9.8, drag: 0.05, spin: 6, ground: groundQuery(x, z) }),
+        },
+      });
+      console.log(`HOMOKFUTAM: ${falls.length} sand falls placed in ${Math.round(performance.now() - t0)} ms`);
+    } catch (e) { console.warn('HOMOKFUTAM: sand falls failed', e); }
+  }
   if (Q.post) {
     try {
       post = GPU ? N.createNodePost(renderer, scene, camera, Q, SUN_DIR, heatLayer) : createPost(renderer, scene, camera, Q, SUN_DIR);
@@ -3491,7 +3685,7 @@ async function bakeGI(opts = {}) {
   } finally { for (const l of ROCKS.lods) l.update(camera.position); }
 }
 // show the game once the surface textures are in (or after 10 s, whatever happens first)
-const texturesReady = Promise.race([Promise.all([SURF.ready, GROUND_READY, ROCKS_READY, ARENA_READY, PROPS_READY, DRESS.ready, SKY_READY]), new Promise((r) => setTimeout(r, 15000))]);
+const texturesReady = Promise.race([Promise.all([SURF.ready, GROUND_READY, ROCKS_READY, ARENA_READY, PROPS_READY, COURSE_READY, LANDMARK_READY, DRESS.ready, SKY_READY]), new Promise((r) => setTimeout(r, 15000))]);
 const hot = window.claude && window.claude.hot;
 if (hot && typeof hot.snapshot === 'function') { try { hot.snapshot(() => ({ laps, diff, muted: SND.muted })); } catch { /* ignore */ } }
 if (hot && typeof hot.ready === 'function') hot.ready((d) => texturesReady.then(() => boot(d)));

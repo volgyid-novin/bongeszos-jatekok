@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ATMO } from '../gfx/atmosphere.js';
 import { WIND_DIR } from '../gfx/ground.js';
+import { GUST_ON, GUST_GLSL, WAKE_ON, WAKE, WAKE_GLSL, WAKE_N } from '../gfx/wind.js';
 import { GPU, U, N } from '../gfx/backend.js';
 
 // ============================================================
@@ -59,9 +60,13 @@ export function tuftGeometry(seed, blades = 30) {
 // does the rest). A per-tuft distance test, as the rock fields do, would re-sort and re-upload tens of
 // thousands of matrices as the camera moves (~2 ms of CPU a frame on WebGPU).
 // tufts: { s (arc length of the track beside it), x, y, z, m (Matrix4) }; returns { update(cam) }
+// A chunk switches on whole, so the tufts themselves grow in: each shrinks to nothing towards its root over the
+// last third of dist (by its own distance), and is gone before its chunk can switch off (a tuft within dist of the
+// camera is always in a chunk that is shown). iRoot: each copy's root, for the node material (WebGL reads the
+// instance matrix).
 const CHUNK = 130;
 export function buildGrass(scene, tufts, trackLength, dist) {
-  const shapes = [tuftGeometry(2, 34)], mat = grassMaterial();
+  const shapes = [tuftGeometry(2, 34)], mat = grassMaterial(dist);
   const n = Math.ceil(trackLength / CHUNK), cells = Array.from({ length: n }, () => [[]]);
   for (const t of tufts) cells[Math.min(n - 1, Math.floor(t.s / CHUNK))][0].push(t);
   const chunks = [];
@@ -70,12 +75,15 @@ export function buildGrass(scene, tufts, trackLength, dist) {
     let cnt = 0;
     cell.forEach((list, g) => {
       if (!list.length) return;
-      const im = new THREE.InstancedMesh(shapes[g], mat, list.length);
+      const geo = shapes[g].clone();
+      geo.setAttribute('iRoot', new THREE.InstancedBufferAttribute(new Float32Array(list.flatMap((t) => [t.x, t.y, t.z])), 3));
+      const im = new THREE.InstancedMesh(geo, mat, list.length);
       list.forEach((t, k) => { im.setMatrixAt(k, t.m); c.x += t.x; c.y += t.y; c.z += t.z; cnt++; });
       im.computeBoundingSphere();
       im.receiveShadow = true;
       im.userData.noBake = true;
       im.userData.scatter = true;
+      im.name = 'grass';
       im.visible = false;
       scene.add(im);
       meshes.push(im);
@@ -97,30 +105,49 @@ export function buildGrass(scene, tufts, trackLength, dist) {
   };
 }
 
-// sway: the tips move along the wind (gusts travelling with it) and a little across it
-export function grassMaterial() {
-  const u = { uTime: ATMO.hfTime, uWind: U(new THREE.Vector2(WIND_DIR.x, WIND_DIR.y)), uAmp: U(0.11) };
+// sway: the tips move along the wind (gusts travelling with it) and a little across it. With the one wind
+// (?gfx=gust:1, E2) the gust field bows them: a front crossing a field of grass is a visible wave, and
+// between fronts only a slow breath and a little flutter are left.
+// far: the distance the grass is drawn to (the tufts grow in over its last third, see buildGrass)
+export function grassMaterial(far = 75) {
+  const u = { uTime: ATMO.hfTime, uWind: U(new THREE.Vector2(WIND_DIR.x, WIND_DIR.y)), uAmp: U(0.11), uFar: U(far) };
   const params = { vertexColors: true, roughness: 0.92, metalness: 0, side: THREE.DoubleSide };
-  if (GPU) return N.grassNodeMaterial(params, u);
+  if (GPU) return N.grassNodeMaterial(params, { ...u, gust: GUST_ON, wake: WAKE_ON });
   const m = new THREE.MeshStandardMaterial(params);
   m.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, ATMO, u);
+    Object.assign(sh.uniforms, ATMO, u, WAKE_ON ? WAKE : {});
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nuniform float uTime, uAmp;\nuniform vec2 uWind;')
+      .replace('#include <common>', '#include <common>\nuniform float uTime, uAmp, uFar;\nuniform vec2 uWind;\n' + (GUST_ON ? GUST_GLSL : '') + (WAKE_ON ? WAKE_GLSL : ''))
       .replace('#include <begin_vertex>', /* glsl */`#include <begin_vertex>
         {
           vec2 wp = vec2( 0.0 );
           #ifdef USE_INSTANCING
             wp = instanceMatrix[3].xz;
+            // grows in towards the edge of the grass's distance (shrinks to nothing at its root)
+            transformed *= 1.0 - smoothstep( uFar * 0.62, uFar * 0.96, distance( ( modelMatrix * instanceMatrix[ 3 ] ).xyz, cameraPosition ) );
           #endif
           float k = transformed.y * transformed.y * 2.0;        // tips sway, roots stay
+          ${GUST_ON ? /* glsl */`
+          float g = hfGust( wp, uTime );
+          float gust = clamp( 0.2 + 0.12 * sin( uTime * 1.6 + dot( wp, uWind ) * 0.11 ) + g * 1.6, 0.0, 2.0 );
+          float flick = sin( uTime * 7.3 + wp.x * 1.7 + wp.y * 2.3 + transformed.x * 9.0 ) * 0.25 * ( 0.4 + g );
+          vec2 d = uWind * ( 0.35 + gust ) + vec2( - uWind.y, uWind.x ) * flick;
+          transformed.xz += d * uAmp * k;
+          transformed.y -= uAmp * k * gust * 0.25;` : /* glsl */`
           float gust = sin( dot( wp, uWind ) * 0.06 - uTime * 1.9 ) * 0.5 + 0.5;
           float flick = sin( uTime * 7.3 + wp.x * 1.7 + wp.y * 2.3 + transformed.x * 9.0 ) * 0.25;
           vec2 d = uWind * ( 0.35 + gust ) + vec2( - uWind.y, uWind.x ) * flick;
           transformed.xz += d * uAmp * k;
-          transformed.y -= uAmp * k * gust * 0.15;
+          transformed.y -= uAmp * k * gust * 0.15;`}
+          ${WAKE_ON ? /* glsl */`
+          // a passing pod (E7): flattened by the jets behind it, whipping back and forth as it springs up
+          #ifdef USE_INSTANCING
+          vec3 wk = hfWake( vec3( wp.x, instanceMatrix[ 3 ].y, wp.y ), ${WAKE_N} );
+          transformed.xz += wk.xy * 0.42 * k;
+          transformed.y -= length( wk.xy ) * 0.12 * k;
+          #endif` : ''}
         }`);
   };
-  m.customProgramCacheKey = () => 'grass';
+  m.customProgramCacheKey = () => 'grass' + (GUST_ON ? '-gust' : '') + (WAKE_ON ? '-wake' : '');
   return m;
 }

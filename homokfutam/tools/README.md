@@ -1,6 +1,6 @@
 # HOMOKFUTAM tools
 
-The measurement harness behind `docs/visual-next-steps.md` (sections B, C, D), and the light bake. Headless Chrome
+The measurement harness behind `docs/visual-next-steps.md` (sections B to E), and the light bake. Headless Chrome
 driven by `puppeteer-core`, against the game on a local Vite dev server. Dev only: nothing here ships.
 
 ## Setup
@@ -27,6 +27,7 @@ npx vite --host 127.0.0.1 --port 5199       # from the repo root, in another ter
 | `batch.mjs jobs.txt [--name n] [--port p]` | freezes the tree into a snapshot, serves it on its own port and runs a list of `bench.mjs` jobs against it (edits made meanwhile cannot reload the pages); logs in `out/<name>_<label>.log` |
 | `deltas.mjs out/<log>` | per spot and round, each variant's change against the first one in a `bench.mjs` log |
 | `shots.mjs name [--views a,b] [--size WxH] [--js snippet] "query" …` | the same fixed views for each query, paused, shader time and grain frozen, tiled side by side in `out/` |
+| `clip.mjs name "query" [--view v \| --eye x,y,z --look x,y,z \| --ground x,z,h,lx,lz,lh \| --track s,d,h,ahead,lh \| --tuft x,z,d,h] [--from t] [--every s] [--frames n] [--crop x,y,w,h[,up]] [--real]` | things that move (gusts, falls, wakes, E): steps the shader clock through `--frames` times from a fixed camera with the race paused and tiles the frames into `out/<name>_clip.png`; `--real` lets the game run and captures in real time instead. `--tuft` frames the grass tuft nearest x, z from across the wind |
 | `lum.mjs tag "query"` | HDR brightness of the scene pass per view (EV, centre-weighted EV, median, percentiles); WebGPU |
 | `trace.mjs tag "query" [--from s] [--until s] [--shots t,…] [--every a:b:step]` | a race in real time through the canyon with the chase camera, logging the eye adaptation every 100 ms, screenshots at race times |
 | `eyecheck.mjs "query"` | the eye's metered EV, target and exposure at a few points of a race |

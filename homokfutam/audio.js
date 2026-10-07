@@ -349,12 +349,15 @@ export function createAudio() {
     }
     for (const s of voices.values()) if (s.seen !== frame) set(s.g.gain, 0, t, 0.06);
 
-    // wind with gusts
-    gustT -= dt;
-    if (gustT <= 0) { gustT = rnd(2, 5); gustGoal = Math.random() < 0.5 ? rnd(0, 1) : 0; }
-    gust += (gustGoal - gust) * Math.min(1, dt * 0.7);
+    // wind with gusts: the gust field at the camera when the world has one (v.gust, gfx/wind.js), else at random
+    if (v.gust !== undefined) gust += (v.gust - gust) * Math.min(1, dt * 3);
+    else {
+      gustT -= dt;
+      if (gustT <= 0) { gustT = rnd(2, 5); gustGoal = Math.random() < 0.5 ? rnd(0, 1) : 0; }
+      gust += (gustGoal - gust) * Math.min(1, dt * 0.7);
+    }
     const amb = state !== 'loading';
-    set(N.windG.gain, amb ? (live ? Math.min(0.32, sp / 520) : 0.03) + 0.03 + gust * (0.05 + sp * 0.0004) : 0, t, 0.15);
+    set(N.windG.gain, amb ? (live ? Math.min(0.32, sp / 520) : 0.03) + 0.03 + gust * ((v.gust !== undefined ? 0.08 : 0.05) + sp * 0.0004) : 0, t, 0.15);
     set(N.windF.frequency, 400 + sp * 9 + gust * 250, t, 0.15);
     set(N.scG.gain, live ? clamp(p.scrape, 0, 1) * 0.22 : 0, t, 0.03);
 

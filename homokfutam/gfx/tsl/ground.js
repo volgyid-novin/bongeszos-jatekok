@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 import {
   Fn, If, Loop, Break, float, int, vec2, vec3, vec4, mix, max, min, clamp, abs, pow, sqrt, exp, dot, normalize, length, fract, floor, sin, cos,
   uniformArray,
-  select, smoothstep, step, saturate, dFdx, dFdy, property, attribute, positionWorld, cameraPosition, cameraViewMatrix,
+  select, smoothstep, step, saturate, dFdx, dFdy, property, attribute, positionWorld, positionLocal, cameraPosition, cameraViewMatrix,
   normalWorldGeometry, faceDirection, materialColor, vertexColor, normalView, positionViewDirection, roughness,
 } from 'three/tsl';
 import { ATMO } from '../atmosphere.js';
@@ -318,7 +318,7 @@ export function terrainNodeMaterial(Q) {
 //  Track. aTr = (lateral m, arc length m, racing line lateral m, half width), aDir = track
 //  direction (x, z), aZone = (arena, canyon)
 // ---------------------------------------------------------------------------
-export function trackNodeMaterial(Q, trackLength, u) {
+export function trackNodeMaterial(Q, trackLength, u, hasDrift = false) {
   const GQ = Q.groundQ ?? 2, pom = !!Q.pom && GQ > 1;
   const m = new SurfaceMaterial({ roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2 }, (mat) => {
     const hfGN = geoNormal(mat);
@@ -338,6 +338,14 @@ export function trackNodeMaterial(Q, trackLength, u) {
     const edge = abs(d).div(hw).toVar();
     const drift = smoothstep(0.74, 1, edge.add(n1.sub(0.5).mul(0.5))).toVar();
     drift.assign(max(drift, smoothstep(0.63, 0.76, n2).mul(smoothstep(0.3, 0.8, edge)).mul(0.85)));
+    if (hasDrift) {
+      // where sand streams across the track (E1): fresh tongues blown over the road, long along the wind
+      const driftK = (r) => smoothstep(r.x.sub(30), r.x.add(20), s).mul(oneMinus(smoothstep(r.y.sub(20), r.y.add(30), s)));
+      const dk = max(max(driftK(u.kDrift0), driftK(u.kDrift1)), max(driftK(u.kDrift2), driftK(u.kDrift3))).toVar();
+      const wa = dot(xz, vec2(WIND.x, WIND.y)), wc = xz.y.mul(WIND.x).sub(xz.x.mul(WIND.y));
+      const tn = cloud(vec2(wa.div(120), wc.div(18))).mul(0.7).add(cloud(vec2(wa.div(40), wc.div(6)).add(0.5)).mul(0.3));
+      drift.assign(max(drift, dk.mul(smoothstep(0.56, 0.7, tn)).mul(0.9)));
+    }
     drift.mulAssign(oneMinus(arena.mul(0.9)));
     const tw = gDesertWeights(xz, vec3(0, 1, 0), max(e, 0), mac, mac2);
     const bed = oneMinus(drift);
@@ -437,7 +445,7 @@ const unpackN = (t, k) => {
   const xy = t.rg.mul(2).sub(1).mul(k).toVar();
   return vec3(xy, sqrt(max(oneMinus(dot(xy, xy)), 0)));
 };
-export function rockNodeMaterial(Q, params, u, { vertexColors, ao, arena }) {
+export function rockNodeMaterial(Q, params, u, { vertexColors, ao, arena, fade = false }) {
   const m = new SurfaceMaterial(params, (mat) => {
     const hfGN = geoNormal(mat);
     const wp = positionWorld.toVar();
@@ -503,6 +511,9 @@ export function rockNodeMaterial(Q, params, u, { vertexColors, ao, arena }) {
     const nSand = normalize(vec3(nd.x, 1, nd.y));
     sNW.assign(normalize(mix(nRock, normalize(mix(wn, nSand, 0.6)), sandK)));
   }, false);
+  // fade (a culled scatter field, world/scatter.js): the copies rise out of the ground over the last ~28 % of its
+  // draw distance (positionLocal is already in the world here: the instanced meshes sit at the origin)
+  if (fade) m.positionNode = positionLocal.sub(vec3(0, smoothstep(u.rFadeFar.mul(0.72), u.rFadeFar, length(positionLocal.sub(cameraPosition))).mul(u.rFadeDepth), 0));
   m.userData.uniforms = u;
   return m;
 }

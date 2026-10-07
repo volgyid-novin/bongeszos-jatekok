@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
   Fn, If, Loop, Break, float, vec2, vec3, vec4, uniform, uv, pass, mrt, output, velocity, time, screenSize, screenCoordinate,
-  mix, max, min, clamp, pow, exp, abs, sin, cos, atan, length, dot, fract, step, select, smoothstep, rtt, renderOutput,
+  mix, max, min, clamp, pow, exp, abs, sin, cos, atan, length, dot, fract, floor, step, select, smoothstep, rtt, renderOutput,
   texture, interleavedGradientNoise, getViewPosition, normalize, log2, exp2, perspectiveDepthToViewZ,
 } from 'three/tsl';
 import { ATMO, GRADE, PALETTE, SUN_DIR } from '../atmosphere.js';
@@ -13,7 +13,9 @@ import { dof as dofNode } from 'three/addons/tsl/display/DepthOfFieldNode.js';
 import { denoise } from 'three/addons/tsl/display/DenoiseNode.js';
 import { ss, hash12, oneMinus } from './common.js';
 import { METER_W, METER_H } from '../eye.js';
-import { horizonUv, CONTACT, sunShare } from '../screen.js';
+import { horizonUv, CONTACT, sunShare, LENS, lensDirt } from '../screen.js';
+import { WAKE_ON } from '../wind.js';
+import { hfWake } from './wind.js';
 
 // ============================================================
 //  Post-processing on WebGPURenderer (TSL nodes), the same look as gfx/post.js:
@@ -98,10 +100,14 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
         Loop(STEPS, () => {
           const q = VOL.camPos.add(rd.mul(t)).toVar();
           const drift = ATMO.hfTime.mul(vec2(0.011, 0.004));
-          const n = ATMO.hfCloudTex.sample(q.xz.div(37).add(drift)).r.mul(ATMO.hfCloudTex.sample(q.xz.add(vec2(q.y.mul(0.8))).div(11).sub(drift.mul(2))).r).mul(2.6);
+          // the pods' wakes (E7): the dust swirls (its wisps pushed along) and a lane behind each pod is blown clear
+          const wk = WAKE_ON ? hfWake(q, 2).toVar() : null;
+          const qs = WAKE_ON ? q.xz.sub(wk.xy.mul(2.5)) : q.xz;
+          const n = ATMO.hfCloudTex.sample(qs.div(37).add(drift)).r.mul(ATMO.hfCloudTex.sample(qs.add(vec2(q.y.mul(0.8))).div(11).sub(drift.mul(2))).r).mul(2.6);
           // the dust lies low in the slot or round the arch (centre, radius), in drifting wisps
           const zone = oneMinus(smoothstep(VOL.radius.mul(0.6), VOL.radius, length(q.xz.sub(VOL.center.xz))));
           const sig = VOL.density.mul(VOL.k).mul(zone).mul(exp(max(q.y.sub(VOL.y), 0).div(-16))).mul(smoothstep(0.15, 0.75, n)).toVar();
+          if (WAKE_ON) sig.mulAssign(oneMinus(clamp(wk.z, 0, 1).mul(0.75)));
           const vis = hfStaticShadow(q, vec3(0));
           acc.addAssign(sunL.mul(vis).add(amb).mul(sig).mul(T).mul(ds));
           T.mulAssign(exp(sig.mul(ds).negate()));
@@ -326,6 +332,16 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
 
   const exposure = eyeOn ? 1 : expo0;
   const bloomStrength = Q.bloom ? 0.85 : 0;
+  const lensTex = Q.lens ? texture(lensDirt()) : null;
+  // a few cells of a grid over the screen hold a speck for a moment, streaking across with the wind
+  const grit = Fn(([p, t, k]) => {
+    const g = p.mul(vec2(32, 18)), id = floor(g), f = fract(g);
+    const h = fract(sin(vec4(dot(id, vec2(127.1, 311.7)), dot(id, vec2(269.5, 183.3)), dot(id, vec2(419.2, 371.9)), dot(id, vec2(61.7, 97.3)))).mul(43758.5453)).toVar();
+    const life = fract(t.mul(h.x.add(0.7)).add(h.y)).toVar();
+    const on = step(h.z, k.mul(0.22)).mul(smoothstep(0, 0.03, life)).mul(oneMinus(smoothstep(0.12, 0.3, life)));
+    const d = f.sub(vec2(h.w.mul(0.5).add(0.15).add(life.mul(2.2)), fract(h.x.mul(7.3)).mul(0.6).add(0.2))).mul(vec2(1, 3.2)).toVar();
+    return vec3(1, 0.9, 0.74).mul(exp(dot(d, d).mul(-260))).mul(on).mul(0.9);
+  });
   const finish = (base) => {
     let hdr = base.rgb;
     if (rays) hdr = hdr.add(rays.rgb.mul(F.uRays).mul(EXPO));
@@ -333,6 +349,9 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
     const bl = bloom(base, bloomStrength, 0.72, 0.92 * (eyeOn ? expo0 : 1));
     bl.smoothWidth.value = 0.25 * (eyeOn ? expo0 : 1);
     hdr = hdr.add(bl.rgb).add(flare(uv()).mul(EXPO));
+    // lens touches (?gfx=lens:1, E8; GLSL version: gfx/post.js LensEffect): dirt on the glass lit by the bloom,
+    // grains hitting the lens in the sand streams
+    if (Q.lens && Q.bloom) hdr = hdr.add(bl.rgb.mul(lensTex.sample(uv()).rgb).mul(LENS.k)).add(grit(uv(), ATMO.hfTime, LENS.grit));
     // AgX: highlights roll off to white instead of skewing yellow; the grade puts back saturation and contrast
     const mapped = vec4(hdr, 1).toneMapping(THREE.AgXToneMapping, exposure);
     return renderOutput(vec4(grade(mapped.rgb), 1), THREE.NoToneMapping, renderer.outputColorSpace);

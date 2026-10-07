@@ -2,14 +2,39 @@ import * as THREE from 'three';
 import { LodInstances } from './rocks.js';
 import { MACRO, macroAt } from './macro.js';
 import { buildGrass } from './grass.js';
+import { ATMO } from '../gfx/atmosphere.js';
+import { GPU, W, TSL } from '../gfx/backend.js';
 
 // ============================================================
 //  Ground clutter from assets/world/props.glb (models/world/build_props.py): pebbles and
 //  stones (densest where the macro map says gravel: around rocks, in the flats, upwind scour),
 //  dry shrubs, a few carcasses and bones, and scrap from crashed pods along the track.
-//  Instanced, drawn only near the camera; counts follow the dressing setting.
+//  Instanced, drawn only near the camera; counts follow the dressing setting. Each field's copies rise out of the
+//  ground over the last ~28 % of its draw distance (they popped in at it): the materials are made per field with
+//  that distance (fadeRock, fadeMetal: main.js; the plain ones here).
 // ============================================================
-export function buildScatter({ scene, TR, Q, groundQuery, rng, models, rockMat, metalMat }) {
+
+// a vertex-coloured standard material whose copies rise out of the ground (sunk by depth m) towards far
+function fadedStandard(params, far, depth) {
+  if (GPU) {
+    const { positionLocal, cameraPosition, vec3, smoothstep, length } = TSL;
+    const m = new W.MeshStandardNodeMaterial(params);
+    m.positionNode = positionLocal.sub(vec3(0, smoothstep(far * 0.72, far, length(positionLocal.sub(cameraPosition))).mul(depth), 0));
+    return m;
+  }
+  const m = new THREE.MeshStandardMaterial(params);
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, ATMO);
+    sh.vertexShader = sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      #ifdef USE_INSTANCING
+        transformed.y -= smoothstep( ${(far * 0.72).toFixed(2)}, ${far.toFixed(2)}, distance( ( modelMatrix * instanceMatrix[ 3 ] ).xyz, cameraPosition ) ) * ${depth.toFixed(2)} / max( length( instanceMatrix[ 1 ].xyz ), 1e-3 );
+      #endif`);
+  };
+  m.customProgramCacheKey = () => `scatter-fade-${far}-${depth}`;
+  return m;
+}
+
+export function buildScatter({ scene, TR, Q, groundQuery, rng, models, rockMat, metalMat, fadeRock, fadeMetal }) {
   const rand = rng(5150), D = Q.dressing;
   const TAU = Math.PI * 2;
   const P = new THREE.Vector3(), S = new THREE.Vector3(), E = new THREE.Euler(), QQ = new THREE.Quaternion();
@@ -28,10 +53,15 @@ export function buildScatter({ scene, TR, Q, groundQuery, rng, models, rockMat, 
   };
   const gravelish = (x, z) => MACRO.ready ? Math.min(1, macroAt(MACRO.apron, x, z) * 1.2 + macroAt(MACRO.basin, x, z) * 0.6 + macroAt(MACRO.bedrock, x, z)) : 0.3;
   const out = [];
-  const field = (variants, items, mat, dist, opts = {}) => {
+  // mat: a material, or a function of the fade ({ far, depth }) that makes one for this field
+  const field = (variants, items, mat, dist, opts = {}, depth = 1) => {
     if (!items.length || variants.some((v) => !v)) return;
-    out.push(new LodInstances(scene, variants.map((g) => [g]), mat, items, [dist * (Q.lod ?? 1)], { cull: true, flag: 'scatter', noBake: true, ...opts }));
+    const far = dist * (Q.lod ?? 1);
+    const m = typeof mat === 'function' ? mat({ far, depth }) : mat;
+    out.push(new LodInstances(scene, variants.map((g) => [g]), m, items, [far], { cull: true, flag: 'scatter', noBake: true, ...opts }));
   };
+  const rockF = fadeRock || rockMat, metalF = fadeMetal || metalMat;
+  const plainF = (params) => ({ far, depth }) => fadedStandard(params, far, depth);
 
   // pebbles and stones
   const pebbles = [], stones = [];
@@ -52,11 +82,11 @@ export function buildScatter({ scene, TR, Q, groundQuery, rng, models, rockMat, 
     const s = 0.5 + rand() * rand() * 1.8;
     stones.push(item(k % 3, p.x, p.z, s, 0.08 * s, 0.5));
   }
-  field([models.get('pebble0'), models.get('pebble1'), models.get('pebble2')], pebbles, rockMat, 110, { shadow: false });
-  field([models.get('stone0'), models.get('stone1'), models.get('stone2')], stones, rockMat, 260);
+  field([models.get('pebble0'), models.get('pebble1'), models.get('pebble2')], pebbles, rockF, 110, { shadow: false }, 0.4);
+  field([models.get('stone0'), models.get('stone1'), models.get('stone2')], stones, rockF, 260, {}, 1.5);
 
   // dry shrubs on the sand, not on steep slopes
-  const bushMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 });
+  const bushMat = plainF({ vertexColors: true, roughness: 0.95 });
   const bushes = [];
   for (let k = 0, n = Math.round(260 * D); k < n; k++) {
     const p = beside(7 + 170 * Math.pow(rand(), 1.4));
@@ -66,7 +96,7 @@ export function buildScatter({ scene, TR, Q, groundQuery, rng, models, rockMat, 
     const s = 0.7 + rand() * 0.8;
     bushes.push(item(k % 2, p.x, p.z, s, 0.1, 0.2, s * (0.8 + rand() * 0.4)));
   }
-  field([models.get('bush0'), models.get('bush1')], bushes, bushMat, 320);
+  field([models.get('bush0'), models.get('bush1')], bushes, bushMat, 320, {}, 3);
 
   // ?gfx=grass:1: tufts of dry grass on the sand by the track, thickest along the berm, none on gravel,
   // slopes or in the canyon; drawn within ~75 m (they are small, and a pixel or less further out)
@@ -90,12 +120,12 @@ export function buildScatter({ scene, TR, Q, groundQuery, rng, models, rockMat, 
   }
 
   // the remains of animals that didn't make it across
-  const boneMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 });
+  const boneMat = plainF({ vertexColors: true, roughness: 0.7 });
   const carc = [], bones = [];
   for (let k = 0; k < 7; k++) { const p = beside(14 + rand() * 70); if (p) carc.push(item(0, p.x, p.z, 1.2 + rand() * 0.8, 0.12, 0.15)); }
   for (let k = 0; k < 16; k++) { const p = beside(6 + rand() * 60); if (p) bones.push(item(0, p.x, p.z, 0.9 + rand() * 0.5, 0.02, 0.1)); }
-  field([models.get('carcass')], carc, boneMat, 260);
-  field([models.get('bones')], bones, boneMat, 160, { shadow: false });
+  field([models.get('carcass')], carc, boneMat, 260, {}, 1.2);
+  field([models.get('bones')], bones, boneMat, 160, { shadow: false }, 0.3);
 
   // scrap from pods that crashed here: a panel, a pipe and sometimes a burnt engine, together
   const panels = [], pipes = [], engines = [];
@@ -107,8 +137,8 @@ export function buildScatter({ scene, TR, Q, groundQuery, rng, models, rockMat, 
     pipes.push(item(0, p.x + Math.cos(a) * 3, p.z + Math.sin(a) * 3, 0.8 + rand() * 0.6, 0.04, 0.3));
     if (rand() < 0.4) engines.push(item(0, p.x - Math.cos(a) * 5, p.z - Math.sin(a) * 5, 0.9 + rand() * 0.4, 0.35, 0.5));
   }
-  field([models.get('scrap_panel')], panels, metalMat, 240);
-  field([models.get('scrap_pipe')], pipes, metalMat, 180, { shadow: false });
-  field([models.get('scrap_engine')], engines, metalMat, 320);
+  field([models.get('scrap_panel')], panels, metalF, 240, {}, 1);
+  field([models.get('scrap_pipe')], pipes, metalF, 180, { shadow: false }, 0.5);
+  field([models.get('scrap_engine')], engines, metalF, 320, {}, 1.6);
   return out;
 }
