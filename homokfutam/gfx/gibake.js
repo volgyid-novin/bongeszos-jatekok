@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { buildBVH, traceClosest, traceAny } from './bvh.js';
+import { collectStatic } from './bvhscene.js';
 import { GI_VERSION } from './gi.js';
 
 // ============================================================
@@ -39,64 +40,6 @@ const FIB = (() => {
 })();
 
 function rng(seed) { let s = seed >>> 0; return () => { s = (s + 0x6d2b79f5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
-
-// what the light bake leaves out: as the world shadow bake (gfx/atmosphere.js), and anything under a mover
-function excluded(o) {
-  for (let p = o; p; p = p.parent) if (p.userData.dynamic || p.userData.noBake || p.userData.scatter) return true;
-  if (o.isPoints || o.isSprite || o.isLine || o.isSkinnedMesh) return true;
-  const m = Array.isArray(o.material) ? o.material[0] : o.material;
-  return !m || m.transparent || m.isShaderMaterial || m.isMeshBasicMaterial || m.isMeshBasicNodeMaterial;
-}
-
-// The static triangles that touch region (a Box3), with an albedo each. Canyon walls (userData.canyonWall)
-// are double sided: their triangles are turned to face the track (towards) so back-face hits mean "inside rock".
-function collect(scene, region, towards) {
-  const tris = [], alb = [];
-  const v = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()], m4 = new THREE.Matrix4(), im = new THREE.Matrix4();
-  const tb = new THREE.Box3(), c = new THREE.Color();
-  const add = (o, mw) => {
-    const g = o.geometry, pos = g.attributes.position, col = g.attributes.color, ix = g.index;
-    const mat = Array.isArray(o.material) ? o.material[0] : o.material;
-    const base = o.userData.terrain || o.userData.track ? SAND : null;
-    const mc = mat.color || new THREE.Color(1, 1, 1);
-    const n = ix ? ix.count / 3 : pos.count / 3;
-    for (let t = 0; t < n; t++) {
-      const a = ix ? ix.getX(t * 3) : t * 3, b = ix ? ix.getX(t * 3 + 1) : t * 3 + 1, d = ix ? ix.getX(t * 3 + 2) : t * 3 + 2;
-      v[0].fromBufferAttribute(pos, a).applyMatrix4(mw); v[1].fromBufferAttribute(pos, b).applyMatrix4(mw); v[2].fromBufferAttribute(pos, d).applyMatrix4(mw);
-      tb.makeEmpty().expandByPoint(v[0]).expandByPoint(v[1]).expandByPoint(v[2]);
-      if (!tb.intersectsBox(region)) continue;
-      let [p0, p1, p2] = v;
-      if (o.userData.canyonWall && towards) {
-        // steep faces towards the nearest centre-line point, flat ones (the plateau) up
-        const ex = p1.x - p0.x, ey = p1.y - p0.y, ez = p1.z - p0.z, fx = p2.x - p0.x, fy = p2.y - p0.y, fz = p2.z - p0.z;
-        const nx = ey * fz - ez * fy, ny = ez * fx - ex * fz, nz = ex * fy - ey * fx;
-        if (Math.abs(ny) > 0.7 * Math.hypot(nx, ny, nz)) { if (ny < 0) [p1, p2] = [p2, p1]; }
-        else { const [tx, tz] = towards(p0.x, p0.z); if (nx * (tx - p0.x) + nz * (tz - p0.z) < 0) [p1, p2] = [p2, p1]; }
-      }
-      tris.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
-      if (base) alb.push(...base);
-      else if (col) {
-        let r = 0, gg = 0, bb = 0;
-        for (const k of [a, b, d]) { r += col.getX(k); gg += col.getY(k); bb += col.getZ(k); }
-        alb.push(r / 3 * mc.r, gg / 3 * mc.g, bb / 3 * mc.b);
-      } else if (mat.map || (mc.r > 0.99 && mc.g > 0.99 && mc.b > 0.99)) alb.push(STONE[0] * mc.r, STONE[1] * mc.g, STONE[2] * mc.b);
-      else { c.copy(mc); alb.push(c.r, c.g, c.b); }
-    }
-  };
-  scene.updateMatrixWorld(true);
-  scene.traverse((o) => {
-    if (!o.isMesh || excluded(o)) return;
-    // a LOD contributes its finest level only; LodInstances levels: only the visible (forced) one
-    if (o.parent?.isLOD && o.parent.levels[0]?.object !== o) return;
-    let vis = true;
-    for (let p = o; p; p = p.parent) if (!p.visible && !(p.parent?.isLOD)) vis = false;
-    if (!vis) return;
-    if (o.isInstancedMesh) {
-      for (let k = 0; k < o.count; k++) { o.getMatrixAt(k, im); m4.multiplyMatrices(o.matrixWorld, im); add(o, m4); }
-    } else add(o, o.matrixWorld);
-  });
-  return { tris: new Float32Array(tris), alb: new Float32Array(alb) };
-}
 
 // the sky model of the bake: the hemisphere light's sky half and the environment (the sky dome) above the
 // horizon. Radiance in the units of three's lights (irradiance = pi x mean radiance).
@@ -182,7 +125,7 @@ export async function bakeGI({ scene, TR, rangeWhere, arch, palette: P, sunDir, 
   region.max.y += 120;
   // the nearest centre-line point, for orienting the canyon walls
   const towards = (x, z) => { let best = 0, bd = Infinity; for (let i = 0; i < TR.N; i += 2) { const d = (TR.px[i] - x) ** 2 + (TR.pz[i] - z) ** 2; if (d < bd) { bd = d; best = i; } } return [TR.px[best], TR.pz[best]]; };
-  const geo = collect(scene, region, towards);
+  const geo = collectStatic(scene, region, towards, { sand: SAND, stone: STONE });
   const nTri = geo.tris.length / 9;
   const bvh = buildBVH(geo.tris);
   // per triangle (leaf order): unit normal and albedo

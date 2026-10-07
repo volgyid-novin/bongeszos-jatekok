@@ -33,6 +33,7 @@ npx vite --host 127.0.0.1 --port 5199       # from the repo root, in another ter
 | `canyontime.mjs` | seconds and metres the player spends in the canyon and under the arch at race speed |
 | `bakegi.mjs ["query"]` | runs the light bake (`__homok.bakeGI()`, ~2 minutes) and writes `../assets/world/gi.bin` |
 | `gidecode.mjs x,y,z …` | the baked light at world points, as E(n) / E_open(n) for the six axis normals |
+| `rtspike.mjs [--radius 300,700] [--views canyonFwd,dunes,grid] [--ordered]` | GPU ray tracing (`gfx/tsl/rt.js`) against the static world round fixed cameras: rays per second for primary, random and shadow rays, checked against the CPU BVH |
 | `nanscan.mjs ["query"] [view]` | WebGL: NaN / Inf in the post chain's buffers after each pass (one NaN pixel blacks out the frame through the bloom) |
 
 Examples:

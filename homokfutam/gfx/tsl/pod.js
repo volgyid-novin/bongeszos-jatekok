@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
-  Fn, vec3, uniform, uv, texture, materialColor, materialEmissive, diffuseColor, roughness, pmremTexture,
-  mix, clamp, dot, smoothstep, max, float,
+  Fn, If, vec3, uniform, uv, texture, materialColor, materialEmissive, diffuseColor, roughness, pmremTexture,
+  mix, clamp, dot, smoothstep, max, float, vec4, positionView, cameraWorldMatrix, reflectVector,
 } from 'three/tsl';
 
 // ============================================================
@@ -57,4 +57,40 @@ export function podLiveryMaterial(m, liveryMap, paint, trim, heat, coat = 0) {
 export function podEnvNodes(a, b) {
   const A = pmremTexture(a), B = pmremTexture(b || a), k = uniform(0);
   return { A, B, k, node: mix(A, B, k) };
+}
+
+// Ray-traced reflections (?gfx=rtr:1, docs/visual-next-steps.md D9; gfx/tsl/rt.js createReflections). The lighting
+// model's indirect specular takes the traced radiance instead of the probes' where the surface is smooth (and under
+// the clear coat), and keeps the probes where the ray left the world it knows (the ground, the far desert) or the
+// surface is rough. on: a uniform per pod (only the player's pod traces). The diffuse light stays the probes'.
+const RT_MAX = 150;                 // metres: further, the probe has it
+// debug (?gfx=rtr:2): every surface a mirror, the traced light only (magenta where a ray missed)
+export function podTracedReflections(material, refl, on, debug = false) {
+  const setup = material.setupLightingModel.bind(material);
+  material.setupLightingModel = (builder) => {
+    const lm = setup(builder);
+    const spec = lm.indirectSpecular.bind(lm);
+    lm.indirectSpecular = (b) => {
+      const ctx = b.context;
+      If(on.greaterThan(0.5), () => {
+        const w = smoothstep(0.15, 0.5, roughness).oneMinus().toVar();
+        const cc = lm.clearcoatRadiance;
+        If(w.greaterThan(0.01).or(float(cc ? 1 : 0).greaterThan(0.5)), () => {
+          // from view space (positionWorld leaves out the pods' skinning here); the probes' own reflection vector
+          const R = reflectVector.toVar();
+          const ro = cameraWorldMatrix.mul(vec4(positionView, 1)).xyz.add(R.mul(0.05));
+          const h = refl.trace(ro, R, RT_MAX).toVar();
+          if (debug === 3) { ctx.radiance.assign(R.mul(0.5).add(0.5).mul(2)); if (cc) cc.assign(ctx.radiance); }
+          else if (debug) { ctx.radiance.assign(mix(vec3(1, 0, 1), h.rgb, h.a)); if (cc) cc.assign(ctx.radiance); }
+          else {
+            ctx.radiance.assign(mix(ctx.radiance, h.rgb, h.a.mul(w)));
+            if (cc) cc.assign(mix(cc, h.rgb, h.a));
+          }
+        });
+      });
+      spec(b);
+    };
+    return lm;
+  };
+  material.needsUpdate = true;
 }

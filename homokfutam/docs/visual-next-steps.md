@@ -368,7 +368,7 @@ Each preset as it is now against the same preset with every key off (`?gfx=sky:0
 
 ## D. Light: eye adaptation, a hot bright desert, ray tracing: items 1–6 done
 
-**Status (October 2026).** Items 1–6 are built on both renderers, each behind a `?gfx=` key, and on by the presets below. Items 7–9 are open. Item 8 (SSGI) was measured and turned down; see its section.
+**Status (October 2026).** Items 1–6 are built on both renderers, each behind a `?gfx=` key, and on by the presets below. Item 9 is built as ray-traced reflections on the pods (Ultra, WebGPU, `rtr`), after a spike that measured what GPU ray tracing in the browser can do. Item 7 is open; item 8 (SSGI) was measured and turned down.
 
 The goals, from the art side:
 1. **The tunnel moment.** Driving into the canyon, the eye opens up over a couple of seconds and the exit ahead is a blown-out white hole. Coming out, the desert is blinding for a second, then settles.
@@ -383,6 +383,7 @@ The goals, from the art side:
 | 4 | `gi` (0/1) | baked ray-traced light: sky visibility and two bounces, in volumes over the canyon and the arch | High, Ultra |
 | 5 | `mirage` (0/1) | mirage on the far flats, stronger heat shimmer there | High, Ultra |
 | 6 | `sss` (0, 1, 2 = debug view) | contact shadows: screen-space rays towards the sun, only on the sun's share of the light | High, Ultra |
+| 9 | `rtr` (0, 1; 2 / 3 = debug views) | ray-traced reflections on the player's pod, in place of the live cube camera (`refl`) | Ultra, WebGPU only |
 
 - **Load-time choices, like C's:** every key changes what is built (shader variants, passes, the sun all the bakes use), so switching one reloads the page. `?gfx=noon:0` brings golden hour back (with its own exposure and grade).
 - **Decision rule:** C's (≤ 0.3 ms: High if the gain is visible; 0.3–1.5 ms: Ultra unless the gain is large). Low and Medium get only what costs nothing measurable: `noon`, and the eye driven by where the camera is.
@@ -505,10 +506,58 @@ Totals with the new presets against the same presets with the D keys off: see "T
 
 - Over the 1.5 ms line even at its cheapest, and ~2.25× that at 4K. Most of the bounce here is static and item 4 has it for ~0.1 ms. What SSGI would add is the moving part (engine glow on the ground and walls, the liveries' colour on the track): revisit at half resolution (a patched node), Ultra only.
 
-### 9. Ray tracing at run time: not yet
+### 9. Ray tracing at run time: a spike, then reflections on the pods (`rtr`, Ultra, WebGPU)
 
-- **Hardware ray tracing is not in the browsers' WebGPU** (October 2026): ray-tracing extensions are proposals; only experimental forks exist (a Dawn ray-tracing branch, WebRTX). When Chrome ships ray queries, the two things a bake cannot do are worth it: soft, ray-traced pod shadows, and reflections in place of the cube camera (`refl`, C4).
-- **Software ray tracing in a compute shader:** a full-frame path trace is out of budget (3.5M triangles, many samples per pixel, a denoiser). What could fit on Ultra: one ray per pixel at quarter resolution against a low-poly BVH (`gfx/bvh.js`'s layout, as in lisyarus/webgpu-raytracer's WGSL traversal), accumulated over frames, for moving one-bounce light or ray-traced AO: ~230k rays a frame at 1440p. The CPU bake does ~0.45M rays/s on one thread; measure a WGSL port's rays per second before deciding.
+- **No hardware ray tracing in the browsers' WebGPU** (October 2026: ray-tracing extensions are proposals; only experimental forks such as a Dawn branch and WebRTX). Everything below is a BVH walked by a shader.
+
+#### The spike (`tools/rtspike.mjs`, `__homok.rtSpike()`)
+
+- **Built (`gfx/tsl/rt.js`):** the static world round a camera (`gfx/bvhscene.js` `collectStatic`) into `gfx/bvh.js`'s BVH, packed depth first with a skip link per node (`packBVH`; lisyarus/webgpu-raytracer's node idea: a box plus one word that is the first child or the first triangle), as two read-only storage buffers. Two walks in TSL, in a fragment pass (the way a post pass would use it):
+  - `traceTSL`: stackless (hit: next node, miss: the skip). One `while` loop, no arrays.
+  - `traceOrderedTSL`: the nearer child first, the other on a 48-entry local stack (`array('int', 48)`).
+- **Measured** (960×540 = 518k rays a pass, GPU timestamps, the game's frame loop held; every configuration checked against the CPU BVH, 64/64):
+
+  | Place, radius | Triangles | Stackless: primary / random / shadow (M rays/s) | Ordered: primary / random / shadow | Nodes per ray (random, stackless → ordered) |
+  |---|---|---|---|---|
+  | Canyon, 300 m | 153k | 82 / 58 / 155 | 125 / 97 / 104 | 83 → 30 |
+  | Canyon, 700 m | 459k | 99 / 80 / 259 | 129 / 99 / 374 | 114 → 46 |
+  | Dunes, 300 m | 272k | 954 / 401 / 690 | 802 / 665 / 717 | 32 → 15 |
+  | Dunes, 700 m | 746k | 180 / 82 / 186 | 120 / 95 / 111 | 42 → 19 |
+  | Arena, 300 m | 405k | 274 / 98 / 202 | 148 / 109 / 122 | 67 → 29 |
+  | Arena, 700 m | 825k | 127 / 47 / 161 | 105 / 77 / 92 | 85 → 38 |
+
+  - About 100M incoherent closest-hit rays a second where the world is dense (canyon, arena), several hundred million in the open. The ordered walk visits a third of the nodes but is only up to ~1.7× faster: the local array lives in slow private memory, and each step loads both children's boxes. Shadow rays (any hit) are often faster stackless.
+  - **Verdict:** full-screen effects (one-bounce GI or ray-traced AO at quarter resolution: ~230k rays a frame at 1440p, plus denoising) are out of budget. Reflections on the pods are not: rays only from pod pixels.
+
+#### Reflections on the pods (`rtr`)
+
+- **Built:**
+  - **BVH:** at boot, the static world in a corridor 180 m either side of the track, without the ground (terrain, track): 1.09M triangles, collected in 0.3 s, built in a worker (`gfx/bvh.worker.js`, 2 s) while the shadows and probes bake. Boot waits for it before the pipelines compile, so nothing recompiles later. ~70 MB of GPU memory.
+  - **The other pods:** three boxes each (hull, two engines) in their own frames, updated every frame (`createReflections().setBoxes`, a storage buffer).
+  - **The pod materials (`podTracedReflections` in `gfx/tsl/pod.js`):** the lighting model's `indirectSpecular` traces one ray per pixel along three's reflection vector (out to 150 m) and puts the result in place of the probes' radiance where the surface is smooth (roughness 0.15 → 0.5) and under the clear coat. A ray that misses keeps the probe, which has the sky, the ground and the far desert. A hit is lit like the scene: the triangle's albedo × (sun × the static world shadow × cos + the fill lights × the baked light, `gi`) / π, then the fog. Only the player's pod traces (`pod.rtOn`).
+  - It replaces the live cube camera (`refl`, C4) on WebGPU; WebGL keeps the cube.
+  - **Debug views:** `?gfx=rtr:2` turns the pod into a mirror showing only the traced light (magenta where a ray missed); `rtr:3` paints the reflection direction.
+- **Measured** (Ultra, WebGPU; grid / dunes / canyon / arena; two interleaved rounds):
+
+  | | Cube camera (`refl`, as before) | Probes only | Traced (`rtr`) |
+  |---|---|---|---|
+  | GPU, 3840×2160 | 11.29 / 11.56 / 14.66 / 9.72 ms | 12.54 / 11.28 / 14.19 / 9.15 ms | 13.45 / 10.81 / 15.10 / 9.12 ms |
+  | Frame, 1280×720 (CPU-bound) | 9.01 / 8.26 / 8.50 / 8.32 ms | 7.29 / 6.92 / 7.50 / 7.48 ms | 7.12 / 7.01 / 7.76 / 7.46 ms |
+
+  - **CPU:** tracing costs what the probes cost; the cube camera's 0.8–1.9 ms a frame is gone. Ultra on WebGPU is CPU-bound at most sizes, so this is the number that matters most.
+  - **GPU:** +0.4–0.9 ms against the probes where the pod is surrounded (the canyon; the grid with five pods beside it), ~0 in the open. The grid's probes-only GPU time is an outlier in both rounds; against the cube the grid is +2.2 ms.
+- **What it looks like:** per-pixel reflections with the right parallax (the canyon wall slides across the hull, the pods beside you show in the engine shells), where the cube saw everything from the pod's centre. On these pods the gain is modest: the paint and metal are worn and mostly rough, so only the clear coat and the polished parts mirror.
+- **Things that bit:**
+  - **`positionWorld` in the pods' lighting leaves out their skinning:** the rays started at the bind pose, far from the pod, and missed everything. The origin is now the camera's world matrix × `positionView`, and the direction three's `reflectVector`.
+  - **WebGPURenderer compiles pipelines asynchronously and draws nothing until one is ready:** the first spike timed empty passes. Now: `compileAsync()`, then draw until the output is real.
+  - **Never `await` with a render target bound:** the game's frame loop runs meanwhile, and the post chain draws its output into whatever target is bound (the spike read back sand colours). The spike also holds the frame loop, so the GPU timestamps cover only its own passes.
+  - **TSL local arrays work** (`array('int', n).toVar()`, `.element(i).assign()`) but are slow (private memory).
+- **What is left:**
+  1. Rocks at their lowest level of detail in the BVH, and a narrower corridor (1.09M triangles is more than reflections need).
+  2. The arena's seating (custom shader materials, left out by the collection's rules; the probe shows it instead).
+  3. A bounding test per pod before its three boxes, and no boxes for pods far away (the grid case).
+  4. Glossier pods (polished trims, a fresh coat on some liveries) would show the traced reflections far more.
+  5. Rivals close to the camera could trace too (`pod.rtOn`), at +0.2–0.5 ms each when near.
 - **`VXGINode`** (voxel cone-traced GI) is in three releases after r186: WebGPU only, a static scene, at most 256 voxels along the longest axis. A local volume (canyon, arena) at best.
 
 ### Things that bit
@@ -542,6 +591,7 @@ Each preset as it is now against the same preset with the D keys off (`?gfx=eye:
 ### What is left in D
 
 1. **Item 7, the tunnel** (level art), and a bake volume for it.
+1. **Item 9's follow-ups** (its "What is left").
 2. **A bake volume over the arena** (the stands' shade and the bounce off the paving), and per-zone strength (`hfGIK` is global).
 3. **The arch's renderer difference** (above).
 4. **Contact shadows on WebGL** keep a fine dither at their edges; a depth-aware blur of the contact term would remove it.

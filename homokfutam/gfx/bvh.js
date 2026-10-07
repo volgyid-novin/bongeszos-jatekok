@@ -1,5 +1,6 @@
 // ============================================================
-//  A bounding volume hierarchy over triangles, for the light bake (gfx/gibake.js, docs D4): binned
+//  A bounding volume hierarchy over triangles, for the light bake (gfx/gibake.js, docs D4) and the ray-traced
+//  reflections (gfx/tsl/rt.js, D9; built in gfx/bvh.worker.js): binned
 //  SAH build, closest-hit and any-hit traversal with an explicit stack. The layout follows
 //  lisyarus/webgpu-raytracer (MIT): a node is its box plus one word that is either the first child
 //  (inner node, children adjacent) or the first triangle (leaf), and a triangle count (0 = inner).
@@ -196,4 +197,34 @@ export function traceAny(bvh, ox, oy, oz, dx, dy, dz, tmax) {
     }
   }
   return false;
+}
+
+// --- the GPU layout (gfx/tsl/rt.js) ---------------------------------------------------------------------------
+// Depth first with a skip link per node: a hit goes on to the next node (the first child), a miss jumps to the skip
+// (the next node outside this one's subtree), so a shader can walk it without a stack; the ordered walk finds the
+// right child as the left one's skip. nodes: 2 x vec4 per node, (min.xyz, skip), (max.xyz, leaf: first triangle x 8
+// + count, inner: -1); tris: 3 x vec4, (v0.xyz, albedo r), (e1.xyz, albedo g), (e2.xyz, albedo b). Indices as
+// floats: exact below 2^24.
+export function packBVH(bvh, alb = null) {
+  const N = bvh.nodes, { box, first, count } = bvh;
+  // subtree sizes, then the depth-first index of every node and its skip link
+  const size = new Uint32Array(N);
+  const post = [];
+  { const st = [0]; while (st.length) { const n = st.pop(); post.push(n); if (!count[n]) st.push(first[n], first[n] + 1); } }
+  for (let k = post.length - 1; k >= 0; k--) { const n = post[k]; size[n] = count[n] ? 1 : 1 + size[first[n]] + size[first[n] + 1]; }
+  const idx = new Uint32Array(N), skip = new Uint32Array(N);
+  { const st = [[0, 0, N]]; while (st.length) { const [n, i, s] = st.pop(); idx[n] = i; skip[n] = s; if (!count[n]) { const l = first[n], r = l + 1; st.push([l, i + 1, i + 1 + size[l]], [r, i + 1 + size[l], s]); } } }
+  const nodes = new Float32Array(N * 8);
+  for (let n = 0; n < N; n++) {
+    const o = idx[n] * 8;
+    nodes.set([box[n * 6], box[n * 6 + 1], box[n * 6 + 2], skip[n], box[n * 6 + 3], box[n * 6 + 4], box[n * 6 + 5], count[n] ? first[n] * 8 + count[n] : -1], o);
+  }
+  const T = bvh.tris, nT = T.length / 9, tris = new Float32Array(nT * 12);
+  for (let k = 0; k < nT; k++) {
+    const a = alb ? bvh.order[k] * 3 : -1;
+    for (let r = 0; r < 3; r++) {
+      tris.set([T[k * 9 + r * 3], T[k * 9 + r * 3 + 1], T[k * 9 + r * 3 + 2], a >= 0 ? alb[a + r] : 0.5], k * 12 + r * 4);
+    }
+  }
+  return { nodes, tris, nodeCount: N, triCount: nT };
 }

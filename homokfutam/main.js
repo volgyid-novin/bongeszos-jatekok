@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GPU, FORCE_GL, W, TSL, N, loadNodes, RENDERER, WEBGPU_MISSING, saveRenderer } from './gfx/backend.js';
+import { GPU, FORCE_GL, W, TSL, N, U, loadNodes, RENDERER, WEBGPU_MISSING, saveRenderer } from './gfx/backend.js';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RaceRoom, selfId } from './net.js';
@@ -9,6 +9,7 @@ import { createEye } from './gfx/eye.js';
 import { loadGI, GI_ON } from './gfx/gi.js';
 import { installAtmosphere, ATMO, SUN_DIR, PALETTE, skyMaterial, cloudTexture, buildEnvironment, bakeWorldShadow, loadSky, PB_SKY, MID_SHADOW, createMidShadow } from './gfx/atmosphere.js';
 import { loadSurfaces, triplanarMaterial } from './gfx/surfaces.js';
+import { collectStatic } from './gfx/bvhscene.js';
 import { loadGround, terrainMaterial, trackMaterial, rockMaterial, groundDebug, ROCK as ROCKL, ARENA, WIND_DIR } from './gfx/ground.js';
 import { bakeMacro } from './world/macro.js';
 import { loadRockModels, LodInstances } from './world/rocks.js';
@@ -1392,6 +1393,72 @@ let player = racers[0];
 // gets its own copy in its own livery (the LOW preset keeps the simple pod for the rivals). The
 // copies keep buildPod()'s userData contract, so racerFx() drives them the same way and also
 // animates their moving parts.
+// Ray-traced reflections on the pods (?gfx=rtr:1, ULTRA, WebGPU only; docs/visual-next-steps.md D9): in place of
+// the live cube (refl). The BVH is built in a worker while the game boots (rtStart, awaited before the pipelines
+// compile); every detailed pod's materials take the hook, and only the player's pod traces (pod.rtOn).
+const RTR = GPU && !!Q.rtr;
+if (RTR) Q.refl = false;
+let RT = null;
+function rtAttach(pod) {
+  if (!RT || pod.rtOn) return;
+  pod.rtOn = U(0);
+  for (const m of pod.mats) {
+    if (!m.isMeshStandardNodeMaterial || m.transparent) continue;
+    if (Q.rtr >= 2) { m.roughness = 0.02; m.metalness = 1; m.roughnessMap = m.metalnessMap = null; }      // (debug: a mirror)
+    N.podTracedReflections(m, RT, pod.rtOn, Q.rtr >= 2 ? Q.rtr : 0);
+  }
+}
+// the static world near the track, without the ground, into the worker
+function rtStart() {
+  const t0 = performance.now();
+  // a corridor 180 m either side of the track (8 m cells): pods only ever see what is near it
+  const B = WORLD_BOUNDS, cell = 8, gw = Math.ceil((B.max.x - B.min.x) / cell), gh = Math.ceil((B.max.z - B.min.z) / cell);
+  const near = new Uint8Array(gw * gh), reach = Math.ceil(180 / cell);
+  for (let i = 0; i < TR.N; i += 2) {
+    const cx = Math.floor((TR.px[i] - B.min.x) / cell), cz = Math.floor((TR.pz[i] - B.min.z) / cell);
+    for (let dz = -reach; dz <= reach; dz++) for (let dx = -reach; dx <= reach; dx++) {
+      const x = cx + dx, z = cz + dz;
+      if (x >= 0 && z >= 0 && x < gw && z < gh && dx * dx + dz * dz <= reach * reach) near[z * gw + x] = 1;
+    }
+  }
+  const keep = (x, y, z) => { const cx = Math.floor((x - B.min.x) / cell), cz = Math.floor((z - B.min.z) / cell); return cx >= 0 && cz >= 0 && cx < gw && cz < gh && near[cz * gw + cx] === 1; };
+  for (const l of ROCKS.lods) l.force(1);
+  const geo = collectStatic(scene, WORLD_BOUNDS, null, { skip: (o) => o.userData.terrain || o.userData.track, keep });
+  for (const l of ROCKS.lods) l.update(camera.position);
+  const tCollect = performance.now() - t0;
+  return new Promise((resolve) => {
+    const w = new Worker(new URL('./gfx/bvh.worker.js', import.meta.url), { type: 'module' });
+    w.onmessage = (e) => {
+      w.terminate();
+      try { RT = N.createReflections(e.data); } catch (err) { console.warn('HOMOKFUTAM: ray-traced reflections failed', err); }
+      console.log(`HOMOKFUTAM: ray tracing: ${e.data.triCount} triangles (collected in ${Math.round(tCollect)} ms, BVH ${Math.round(e.data.ms)} ms in a worker)`);
+      resolve(RT);
+    };
+    w.onerror = (e) => { w.terminate(); console.warn('HOMOKFUTAM: BVH worker failed', e.message); resolve(null); };
+    w.postMessage({ tris: geo.tris, alb: geo.alb }, [geo.tris.buffer, geo.alb.buffer]);
+  });
+}
+// every frame: who traces, and the other pods as boxes in the reflections
+const RT_BOX = { hull: [1.05, 0.7, 2.1], engine: [0.9, 0.9, 4.2] };
+const _rtM = new THREE.Matrix4(), _rtT = new THREE.Matrix4(), _rtList = [], _rtCols = new Map();
+function rtUpdate() {
+  if (!RT) return;
+  _rtList.length = 0;
+  for (const r of racers) {
+    const pod = r.mesh?.userData?.pod;
+    if (!pod) continue;
+    if (!pod.rtOn) rtAttach(pod);
+    pod.rtOn.value = r === player && !r.gone ? 1 : 0;
+    if (r === player || r.gone || !r.mesh.visible) continue;
+    let col = _rtCols.get(r);
+    if (!col) { col = new THREE.Color(r.color); _rtCols.set(r, col); }
+    _rtList.push({ inv: _rtM.copy(pod.body.matrixWorld).multiply(_rtT.makeTranslation(0, 0.1, -2.2)).clone().invert(), half: RT_BOX.hull, color: col });
+    for (const e of pod.engines) _rtList.push({ inv: e.matrixWorld.clone().invert(), half: RT_BOX.engine, color: RT_ENGINE });
+  }
+  RT.setBoxes(_rtList);
+}
+const RT_ENGINE = new THREE.Color(0.22, 0.2, 0.18);
+
 let podFactory = null;
 function wrapDetailedPod(pod) {
   pod.engines.forEach((e, k) => addFlame(e, pod.flames[k]));
@@ -3077,6 +3144,7 @@ function zoneEV() {
 const _pv = new THREE.Vector3();
 function renderFrame(dt) {
   beamLights();
+  rtUpdate();
   if (EYE) {
     // menus stay at the preset's exposure; photo mode keeps the moment's
     EYE.update(dt, camera.position, { lock: state === 'menu' || state === 'room' || state === 'loading', hold: state === 'photo' });
@@ -3107,7 +3175,23 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
   window.__homok = {
     THREE, scene, renderer, camera, rocks: ROCKS, TSL, GPUTHREE: W, ATMO, GPU, trails: TRAILS, fx: () => ({ DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST }), get post() { return post; }, set post(v) { post = v; },
     start(l = 1, d = 1, intro = false) { laps = l; diff = d; newRace(); if (!intro) endIntro(); return this.info(); },
-    cine: CINE, photo: PHOTO, get mid() { return MID; }, get eye() { return EYE; }, bakeGI,
+    cine: CINE, photo: PHOTO, get mid() { return MID; }, get eye() { return EYE; }, get rt() { return RT; }, bakeGI,
+    // ray tracing spike (D9, WebGPU): rays per second against a BVH of the static world within radius m of the camera
+    async rtSpike(opts = {}) {
+      if (!GPU) return 'WebGPU only';
+      const { rtSpike } = await import('./gfx/tsl/rt.js');
+      const r = opts.radius ?? 300, c = camera.position;
+      const region = new THREE.Box3(new THREE.Vector3(c.x - r, c.y - 80, c.z - r), new THREE.Vector3(c.x + r, c.y + 220, c.z + r));
+      for (const l of ROCKS.lods) l.force(1);
+      // the game's frame loop held meanwhile: its passes would count in the GPU timestamps
+      const raf = window.requestAnimationFrame, held = [];
+      window.requestAnimationFrame = (cb) => { held.push(cb); return 0; };
+      await new Promise((r) => setTimeout(r, 100));
+      try { return await rtSpike({ renderer, scene, camera, region, ...opts }); } finally {
+        window.requestAnimationFrame = raf; for (const cb of held) raf(cb);
+        for (const l of ROCKS.lods) l.update(camera.position);
+      }
+    },
     perf(frames = 120) {
       // ?gputime on WebGPU: the GPU time of all render passes per frame (timestamp queries)
       const timed = GPU && renderer.backend.trackTimestamp;
@@ -3235,6 +3319,8 @@ async function boot(data) {
     try { ROCKS.scatter = buildScatter({ scene, TR, Q, groundQuery, rng, models: PROPS_MODELS, rockMat: boulderMatAO, metalMat: ARENA_MATS.metal }); }
     catch (e) { console.warn('HOMOKFUTAM: ground clutter failed', e); }
   }
+  // the ray tracer's BVH builds in a worker while the shadows and probes bake (?gfx=rtr:1, D9)
+  const rtReady = RTR ? rtStart() : null;
   bakeWorldShadow(renderer, scene, WORLD_BOUNDS, Q.staticShadow);
   if (MID_SHADOW) {
     // ?gfx=csm:1: the sharper cached shadow ahead of the camera (before anything samples it)
@@ -3272,6 +3358,7 @@ async function boot(data) {
   }
   // eye adaptation (D3): metered from the frame on HIGH / ULTRA (eye: 1), from the camera's place on LOW / MEDIUM
   // (eye: 2, or when the chain cannot meter)
+  if (rtReady) { await rtReady; rtUpdate(); }
   if (Q.eye) EYE = createEye(renderer.toneMappingExposure || 1, Q.eye === 1 ? post?.meter ?? null : null, zoneEV);
   if (GPU) await precompile();
   if (data && data.laps) { laps = data.laps; syncSeg('lapsSeg', laps); }
