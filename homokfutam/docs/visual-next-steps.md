@@ -1,12 +1,13 @@
 # HOMOKFUTAM – visual next steps
 
 Working notes for the next round of visual work on HOMOKFUTAM, written so a new session can pick
-them up cold. Four parts:
+them up cold. Five parts:
 
 1. **Two deferred items:** batching the exhaust plumes, and moving to WebGPU (three's `WebGPURenderer` with TSL node materials). The WebGPU move is now done behind `?renderer=webgpu`; section B has the results and what is left.
 2. **Optional upgrades:** improvements that cost performance, each measured on its own. All eleven are now done, each behind a `?gfx=` key, and the High and Ultra presets switch on the ones worth their cost; section C has the results and what is left.
 3. **Light:** a hot midday desert instead of golden hour, eye adaptation (the tunnel effect in the canyon), baked ray-traced bounce light, mirages and contact shadows: items 1–6 done, each behind a `?gfx=` key and measured; what ray tracing can and cannot do here (items 8–9). Section D.
-4. **How to measure:** the harness used so far, and the numbers to compare against.
+4. **Finishing touches (next):** a living, windy desert: sand streaming across the track, one gust for everything, sand pouring off the rock, spectators out on the course, a landmark, pods that disturb the world. Planned; the chase lights are already gone. Section E.
+5. **How to measure:** the harness used so far, and the numbers to compare against.
 
 ## Where things stand (October 2026)
 
@@ -628,6 +629,157 @@ Each preset as it is now against the same preset with the D keys off (`?gfx=eye:
 - **Adaptation trace (`trace.mjs`):** a fresh race fast-forwarded to just before the canyon, then in real time with the chase camera, logging race time, canyon, metered EV, target and exposure every 100 ms, with screenshots at given race times.
 - **The bake (`bakegi.mjs`):** runs `__homok.bakeGI()` in the page and writes `assets/world/gi.bin`; `gidecode.mjs` prints E(n) / E_open(n) at world points for the six axis normals.
 - **The SSGI / `SSSNode` cost probe:** a `git archive` copy with the nodes wired into `gfx/tsl/post.js` after the AO; only the cost is meaningful.
+
+---
+
+## E. Finishing touches: a living, windy desert (next session)
+
+**Status (October 2026).** Planned, not started, apart from removing the chase lights (below). Written to be picked up cold in a new session.
+
+The goals, from the art side:
+1. **The wind is a character.** It is the one thing that moves in an empty desert. Sand, grass, cloth, dust and the wind's sound should all move with the same gusts, and the player drives through them.
+2. **The race happens in a place.** People, camps and signs of use out on the course, not only in the arena, and a landmark the player learns to look for.
+3. **The world reacts to the pods.** A pod passing at 400 km/h should blow things about.
+4. **Nothing that nags.** Nothing should blink or pull the eye off the racing line; that is why the chase lights went.
+
+| # | Key (proposed) | What | Where it would land |
+|---|---|---|---|
+| 1 | `drift` | sheets of sand streaming across the track on a few wind-exposed stretches | all four if cheap (Low with one layer) |
+| 2 | `gust` | one gust field for sand, crest veils, grass, scrub, cloth, tumbleweeds and the wind's sound | all four (a few ALU, uniforms) |
+| 3 | `trickle` | sand pouring off the canyon rim, the tunnel's lips and gaps and the arch; a passing pod shakes more loose | all four |
+| 4 | `camps` | spectators out on the course (the bridge, the canyon rim, the arch, dune crests) with camps behind them | Medium up |
+| 5 | `markers` | weathered poles with cloth strips, and cairns: a speed cue in place of the chase lights | all four |
+| 6 | `landmark` | one great silhouette at mid distance: a half-buried colossus or a giant wreck | all four (LODs) |
+| 7 | `wake` | pods disturb the world: grass and scrub bend, the dust swirls, the sand lifts, birds startle | High (Medium if free) |
+| 8 | `lens` | lens dirt lit by bright areas, grit on the lens in the sand streams | on trial |
+
+- **Order:** 2 first (everything after it moves with it), then 1 and 3 (the wind, seen), 5 (gives back the speed cue the lights gave), 4 and 6 (the Blender work, the biggest change to the place), 7, 8.
+- **Keys and measuring:** as C and D. Each item goes behind its own `?gfx=` key and is measured against the build without it (`tools/batch.mjs`, the protocol in "Measuring D"), with a bench spot at the new thing (`bench.mjs --spots`). Before/after montages come from `tools/shots.mjs`, with a fixed view per item added to `tools/views.json`. Moving things (gusts, falls, wakes) also need a short clip from the chase camera (a puppeteer screencast), because a still frame does not show them.
+- **Blender:** new props go in `models/world/build_props.py` (rocks via `rocklib.py`) and are exported into `assets/world/` the way the props and rocks are: vertex colour tint, baked occlusion in the alpha, LODs where they are big. They share the rock and arena texture sets where they can.
+
+### Done: the chase lights are gone
+
+- **What they were:** orange lamps on 1.4 m posts every ~20 m on both sides of the open stretches (~500 of them), pulsing in a wave that ran along the track (`world/dressing.js`, `chaseLampMaterial` in `gfx/tsl/dressing.js`). They drew the eye off the racing line. Removed with their posts.
+- **Measured** (with lights → without; grid / dunes / canyon / arena; two rounds):
+  - High, WebGPU, 2560×1440: GPU −0.13 / −0.15 / −0.27 / −0.12 ms.
+  - High, WebGL, 2560×1440: frame −0.17 / −1.13 / −0.52 / +0.12 ms (noisy).
+  - Low, WebGL, 1920×1080: frame −0.54 / +0.01 / +0.01 / +0.12 ms (noise).
+  - −3 draws (the lamps, the posts, the posts' shadow).
+- **What went with them:** a rhythm of things passing close by on the open stretches, which helped the sense of speed. Item 5 gives that back without the blinking.
+
+### 1. Sand streaming across the track (`drift`)
+
+- **Why:** sand moving over the ground is the most desert thing there is, and the clearest sign of wind. What exists is small:
+  - the `parts` streamers (C10) are sparse grain sparks near the player, on High only, and the same everywhere;
+  - the spindrift off the dune crests is far away;
+  - the track's edges have sand blown onto them, but it never moves.
+- **What:** on two to four stretches of 100–300 m, so it is an event and not wallpaper, low sheets of sand (0–0.5 m) flow across the road downwind in braided, snaking ribbons.
+  - Most of the time they are thin and fast. When a gust (item 2) comes through, a thick sheet hazes the road for a second or two.
+  - Where a stream hits the berm it puffs up.
+  - The road in those stretches carries fresh tongues of sand.
+- **How:**
+  - **The stretches:** picked at load as arc-length ranges (like `TUNNEL`): the wind crosses the track (|tangent · `WIND_DIR`| < ~0.5), open desert (not canyon or arena), dune crests upwind (`duneCrest()`).
+  - **The sheet:** a strip mesh per stretch, draped a few cm over the ground (the track, the berms and ~20 m either side, following `groundQuery`), drawn transparent after the opaque pass.
+    - The shader moves two or three layers of noise streaked along `WIND_DIR` at 8–15 m/s (the grains), under a slower low-frequency mask (the ribbons) and the gust field (the sheets).
+    - It fades softly into the ground by depth, is lit like the dust (sun phase, shade, the world shadow) and is fogged.
+  - **Height for the gust sheets:** the existing streamer pool (`STREAM` in `main.js`), its emission moved onto these stretches and scaled by the gust. Seen from the chase camera (2–4 m up, ~6° down) a flat layer reads, but a gusting sheet needs height.
+  - **The road:** a sand-cover term in `trackMaterial` from the same ranges (as the tunnel's `kRoof`), lighter and softer.
+- **Cost:** one or two transparent draws, with overdraw limited to the strip near the camera. Expected ≤ 0.3 ms.
+- **Judge:** a fixed view across a stretch, and the chase camera through it, `drift:0` against `drift:1`. It must not hide the racing line or read as fog.
+
+### 2. One wind (`gust`)
+
+- **Why:** each thing has its own wind today, so nothing moves together and the wind does not read as one force:
+  - grass and scrub sway with a travelling sine (`world/grass.js`, `gfx/tsl/dressing.js`);
+  - the wind's sound gusts at random (`audio.js`);
+  - flags and banners have their own wave;
+  - the crest veils and the streamers are steady.
+- **What:** gust fronts a few hundred metres wide roll across the map downwind every 6–15 s, with lulls between. You see each one coming across the dunes as a wave in the grass. Then the scrub bows, the sand on the road lifts (item 1), the crest veils thicken, the flags snap and the tumbleweeds speed up. The wind's sound swells as the front reaches the camera.
+- **How:**
+  - One function `hfGust(xz)` in the atmosphere functions (GLSL and TSL), on `hfTime`: a few seeded fronts, each a smooth pulse of (xz · `WIND_DIR` − speed · t), broken up along the front by noise.
+  - The same function in JS, sampled at the camera and at emitters, for the particles, the tumbleweeds and the sound.
+  - The sines in grass, scrub and cloth are replaced by it.
+- **Cost:** a few instructions per vertex in grass and scrub. Expected ≈ 0.
+- **Judge:** a clip from a high, wide view over the dunes, with one wave visibly crossing it.
+
+### 3. Sand pouring from the rock (`trickle`)
+
+- **Why:** the canyon, the tunnel and the arch are perfectly still. A few fine falls of sand from the rim and the roof catch the sun against dark rock and make the places feel old and fragile. They would be strongest in the tunnel's gaps and at its lips, lit from behind by the openings.
+- **What:** 20–40 thin falls from the canyon rim (in sun, against the shaded wall opposite), from the tunnel's lips and gaps, and from under the arch. Each widens and fades as it falls, with a small puff where it lands. A pod passing under one shakes loose a heavier pour for a couple of seconds, with a few pebbles.
+- **How:**
+  - The falls are one instanced mesh of ribbons with streaks scrolling down; the landing puffs come from the dust flipbooks (`gfx/particles.js`).
+  - They are placed at load along the rim and the roof edges, and the landing point comes from a ray down through the CPU BVH (`gfx/bvh.js`).
+  - They are lit by the sun's phase like the volumetric dust, so falls lit from behind glow.
+- **Cost:** one draw and little overdraw. Expected ≈ 0.
+- **Judge:** views of the tunnel's gaps and exit. The falls must read at race speed without crawling: thin moving lines can ghost under TRAA, so check WebGL with MSAA too.
+
+### 4. Spectators out on the course (`camps`, Blender)
+
+- **Why:** outside the arena the course is empty, but a real desert rally has people on every vantage point. They would make the race an event in the place and give scale to the canyon and the arch.
+- **What:**
+  - **Groups of 5–30:** on the stone bridge, on the canyon rim above the tunnel's gaps, on top of the arch and on a dune crest by a fast corner. They wave and cheer as the pack passes.
+  - **Camps behind them:** tents and awnings (cloth moving with item 2), parked hover-bikes, a cargo crawler, a smoking fire, a banner strung between two poles.
+- **How:**
+  - **People:** the crowd sprites (`models/world/build_crowd.py`, with a standing row added to the atlas), instanced per group. The cheer is the crowd shader's `uCheer`, triggered per group when a pod comes near.
+  - **Props:** in `build_props.py` (tent, awning, bike, crawler, fire pit), low poly with baked occlusion.
+  - **Smoke:** the existing flipbook pool.
+  - **Placement:** a hand-made table of arc lengths and offsets.
+- **Cost:** about two draws per visible group (people, props), with far groups culled. Measure at a spot that sees the bridge.
+- **Judge:** at race speed they must read as people (silhouettes against the sky on the rim), not as noise.
+
+### 5. Trackside markers that move (`markers`, Blender)
+
+- **Why:** without the chase lights the open stretches have lost their rhythm of close things passing by. The replacement should give it back without blinking.
+- **What:**
+  - weathered wooden poles every 25–40 m on both sides, each with a strip of faded cloth flapping in the wind (item 2), the odd one leaning or snapped;
+  - stone cairns on the outsides of the corners, next to the chevron boards;
+  - old drums half sunk in the sand at the braking points.
+- **How:**
+  - The poles, cairns and drums go in `build_props.py`, the cairns from `rocklib.py`, all instanced.
+  - The strips use the cloth material with the gust.
+  - They are placed the way the lights were: along the track samples, on the open stretches only.
+- **Cost:** two or three instanced draws plus the shadow pass. Expected ≈ 0.
+- **Judge:** the same chase-camera clip at race speed with markers, with nothing, and with the old lights (the commit before their removal). The test is whether the speed reads.
+
+### 6. A landmark (`landmark`, Blender)
+
+- **Why:** the horizon is mountains and mesas. There is nothing made by people that tells a story at scale, and nothing to steer by. One great silhouette, seen from several stretches of the lap, becomes the image of the place (the menu, the loading screen).
+- **What:** one of these, 60–120 m tall, 400–900 m from the track:
+  - a colossal statue half buried in a dune (a head and a shoulder, a raised arm), weathered sandstone like the rocks, with sand piled on its windward side;
+  - or the wreck of a giant machine (a crawler, a carrier) with broken ribs and a long shadow over the dunes.
+  - It should frame two or three straights, and be passed close by once.
+- **How:**
+  - Modelled in Blender in `models/world/`, procedurally from code like the rocks, or from a generated base mesh that is then cleaned up. Baked occlusion, the rock texture set, three LODs.
+  - It is static, so the world shadow and the light bake (`gi`, if it stands in a volume) include it.
+  - The panorama (`build_panorama.py`) must not draw it a second time.
+- **Cost:** one or two draws. At its far LOD it has to fit Low's triangle budget.
+- **Judge:** silhouettes from the chase camera on the straights. At noon the haze and fog flatten everything far away, so it may need a darker material or a closer place to read.
+
+### 7. Pods disturb the world (`wake`)
+
+- **Why:** at 400 km/h a pod should push the air aside. Today only the jet's V of sand and the glow under the pod react to it; the grass and scrub, the hanging dust and the sand streams ignore it.
+- **What:**
+  - grass and scrub bend away from a passing pod and spring back;
+  - the canyon's hanging dust swirls in its wake;
+  - the sand streams (item 1) part and lift behind it;
+  - tumbleweeds get kicked;
+  - birds on the canyon ledges startle and fly up when the pack comes in.
+- **How:**
+  - The nearest pods' positions and velocities (up to eight) go in a uniform array.
+  - Grass and scrub push their vertices away from the nearest pod, and the volumetric dust gets a few moving holes and eddies.
+  - The birds are a small instanced flock, like the vultures, that starts on a trigger.
+- **Cost:** a loop over up to eight pods per grass vertex. Measure it; ≤ 0.3 ms is High.
+- **Judge:** a close view of a pod passing through grass, side by side.
+
+### 8. Lens touches (`lens`, on trial)
+
+- **Why:** a camera in the desert gets dirty. Lens dirt that lights up only when something bright is in the frame (the noon sun, the tunnel's exit, the gaps) adds that feel, and grit on the lens in the sand streams sells item 1. It is a matter of taste: overdone, it reads as a filter.
+- **What:**
+  - a smudge texture, showing only where the bloom's blurred bright areas are;
+  - inside the sand streams, a few short-lived specks and streaks.
+- **How:** one texture fetch in the bloom composite (the speed pass in `gfx/post.js` and `gfx/tsl/post.js`); the grit as screen-space sprites.
+- **Cost:** expected ≈ 0.
+- **Judge:** A/B at the tunnel's exit and facing the sun. Off by default unless it clearly helps.
 
 ---
 
