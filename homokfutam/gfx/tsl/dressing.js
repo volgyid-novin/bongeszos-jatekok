@@ -120,7 +120,8 @@ export function hazeMaterial(U) {
   const V = () => normalize(positionWorld.sub(cameraPosition));
   m.colorNode = Fn(() => {
     const phase = pow(max(dot(V(), A.hfSunDir), 0), 5).mul(2.2).add(0.35);
-    return mix(A.hfFogCol.mul(0.55), A.hfSunCol.mul(1.5), lit).mul(phase);
+    // (the shaded part darker with the darker shade of D2, hfShade)
+    return mix(A.hfFogCol.mul(0.55).mul(A.hfShade.mul(-0.55).add(1)), A.hfSunCol.mul(1.5), lit).mul(phase);
   })();
   m.opacityNode = Fn(() => {
     const p = uv();

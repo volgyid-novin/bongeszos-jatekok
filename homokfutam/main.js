@@ -5,6 +5,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RaceRoom, selfId } from './net.js';
 import { loadPodModel, setPodLivery, setPodEnv, animatePlayerPod, podLift } from './playerPod.js';
 import { pickQuality, saveQuality, createDynRes, ORDER as GFX_ORDER } from './gfx/quality.js';
+import { createEye } from './gfx/eye.js';
+import { loadGI, GI_ON } from './gfx/gi.js';
 import { installAtmosphere, ATMO, SUN_DIR, PALETTE, skyMaterial, cloudTexture, buildEnvironment, bakeWorldShadow, loadSky, PB_SKY, MID_SHADOW, createMidShadow } from './gfx/atmosphere.js';
 import { loadSurfaces, triplanarMaterial } from './gfx/surfaces.js';
 import { loadGround, terrainMaterial, trackMaterial, rockMaterial, groundDebug, ROCK as ROCKL, ARENA, WIND_DIR } from './gfx/ground.js';
@@ -358,10 +360,10 @@ ATMO.hfCloudShadow.value = Q.cloudShadows ? 0.5 : 0;
 }
 // (with the physically based sky the environment waits for its tables: boot)
 scene.environment = PB_SKY ? null : buildEnvironment(renderer);
-scene.environmentIntensity = 0.6;
+scene.environmentIntensity = PALETTE.envI;
 // warm bounce from the sand and rock that the sky-only environment does not have
-scene.add(new THREE.HemisphereLight('#9db4d2', '#c98b52', 0.55));
-const sun = new (GPU ? N.SunLight : THREE.DirectionalLight)(PALETTE.sun, 3.1);
+scene.add(new THREE.HemisphereLight(PALETTE.hemiSky, PALETTE.hemiGround, PALETTE.hemiI));
+const sun = new (GPU ? N.SunLight : THREE.DirectionalLight)(PALETTE.sun, PALETTE.sunI);
 sun.castShadow = true;
 sun.shadow.mapSize.set(Q.shadow, Q.shadow);
 Object.assign(sun.shadow.camera, { left: -Q.shadowBox / 2, right: Q.shadowBox / 2, top: Q.shadowBox / 2, bottom: -Q.shadowBox / 2, near: 10, far: 1600 });
@@ -370,6 +372,10 @@ if (GPU) sun.shadow.filterNode = N.smoothPCF;
 scene.add(sun, sun.target);
 
 let post = null;    // gfx/post.js, created at boot when the preset asks for it
+let EYE = null;     // eye adaptation (?gfx=eye:1, gfx/eye.js), created with the post chain
+// D2: with the eye the shade under the canyon walls and the arch goes darker, so that the eye has something to
+// open up to (materials with the baked light, ?gfx=gi:1, get theirs from it; the dust in the slot follows either way)
+ATMO.hfShade.value = Q.eye ? 1 : 0;
 let heatLayer = null;   // exhaust heat distortion (gfx/podfx.js), sampled by the post chain
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
@@ -426,7 +432,7 @@ const rockMat = rockMaterial(Q, ROCKL.cliff, CLIFF);
 const rockMatI = rockMaterial(Q, ROCKL.cliff, CLIFF);      // instanced copies (fallback spires), see rockMatAOSolo
 // the canyon walls: their own sky occlusion (aAO), and the canyon's light probe once it is baked
 // (the texture only adds grain here: its cracks and spots read as drawn on at this scale)
-const canyonMat = rockMaterial(Q, ROCKL.cliff, { ...CLIFF, contrast: 0.7, chroma: 0.25, ao: true, aoAlbedo: 0.2 });
+const canyonMat = rockMaterial(Q, ROCKL.cliff, { ...CLIFF, contrast: 0.7, chroma: 0.25, ao: true, aoAlbedo: 0.2, aoGI: 0.4 });
 const boulderMat = rockMaterial(Q, ROCKL.boulder, { scale: 1 / 6, chroma: 0.45, contrast: 1.05, rough: [0.6, 0.35], foot: 1.2 });
 function rangeWhere(arr, thr) {         // contiguous index range where arr > thr (handles wrap)
   let start = -1;
@@ -550,6 +556,7 @@ let TRACK_MESH = null;
   g.setAttribute('aZone', new THREE.Float32BufferAttribute(zone, 2));
   g.setIndex(index); g.computeVertexNormals();
   const m = new THREE.Mesh(g, trackMaterial(Q, TR.L));
+  m.userData.track = true;
   m.receiveShadow = true;
   scene.add(m);
   TRACK_MESH = m;
@@ -643,6 +650,7 @@ let CANYON_BRIDGE = null;
       const m = new THREE.Mesh(g, canyonMat);
       m.castShadow = m.receiveShadow = true;
       m.userData.rock = true;
+      m.userData.canyonWall = true;          // (the light bake turns its faces towards the track: gfx/gibake.js)
       scene.add(m);
     }
     // a natural rock bridge across the canyon
@@ -3056,9 +3064,25 @@ function volZone() {
   else { FX.vol.center.copy(camera.position); FX.vol.radius = 260; FX.vol.density = 0.009; }
   if (HAZE) HAZE.userData.uK.value = HAZE.userData.k0 * (1 - FX.vol.k);
 }
+// eye adaptation without a meter (?gfx=eye:2, LOW / MEDIUM): the EV to open up by where the camera is, about what
+// the meter asks for there (the canyon's slot, the shade under the arch, the stands round the arena)
+const _znc = { i: 0, d: 0 };
+function zoneEV() {
+  nearestCoarse(camera.position.x, camera.position.z, _znc);
+  const i = _znc.i;
+  if (i < 0) return 0;
+  const inside = 1 - smooth(TR.hw[i] + 25, TR.hw[i] + 70, _znc.d);
+  return Math.max(TR.canyon[i] * 1.5, (1 - smooth(12, 50, archGap(i))) * 0.9, TR.arena[i] * 0.5) * inside;
+}
 const _pv = new THREE.Vector3();
 function renderFrame(dt) {
   beamLights();
+  if (EYE) {
+    // menus stay at the preset's exposure; photo mode keeps the moment's
+    EYE.update(dt, camera.position, { lock: state === 'menu' || state === 'room' || state === 'loading', hold: state === 'photo' });
+    FX.exposure = EYE.exposure;
+    if (!post) renderer.toneMappingExposure = EYE.exposure;          // LOW: the materials tone map
+  }
   if (!post) { renderer.render(scene, camera); return; }
   const racing = (state === 'race' || state === 'finished' || state === 'countdown') && CINE.finishT <= 0 && CINE.introT <= 0;
   const sp = racing ? Math.abs(player.fwd) : 0;
@@ -3083,7 +3107,7 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
   window.__homok = {
     THREE, scene, renderer, camera, rocks: ROCKS, TSL, GPUTHREE: W, ATMO, GPU, trails: TRAILS, fx: () => ({ DUST, SMOKE, SPARK, FIRE, CONFETTI, WIND, SAND, BLAST }), get post() { return post; }, set post(v) { post = v; },
     start(l = 1, d = 1, intro = false) { laps = l; diff = d; newRace(); if (!intro) endIntro(); return this.info(); },
-    cine: CINE, photo: PHOTO, get mid() { return MID; },
+    cine: CINE, photo: PHOTO, get mid() { return MID; }, get eye() { return EYE; }, bakeGI,
     perf(frames = 120) {
       // ?gputime on WebGPU: the GPU time of all render passes per frame (timestamp queries)
       const timed = GPU && renderer.backend.trackTimestamp;
@@ -3220,6 +3244,8 @@ async function boot(data) {
     MID.pods(racers.map((r) => r.mesh), camera, true);
     console.log(`HOMOKFUTAM: mid shadow: ${n} static casters, ${MID.draws} draws`);
   }
+  // the baked light (?gfx=gi:1, D4) before the probes: they see the world lit by it
+  if (GI_ON) await loadGI(SUN_DIR);
   try { PROBES = bakePodProbes(); } catch (e) { console.warn('HOMOKFUTAM: light probes failed', e); }
   if (PROBES?.canyon) { canyonMat.envMap = PROBES.canyon; canyonMat.needsUpdate = true; }        // sky through the slot, red rock all round
   if (Q.refl && PROBES && player) {
@@ -3244,6 +3270,9 @@ async function boot(data) {
     }
     catch (e) { console.warn('HOMOKFUTAM: post-processing failed, rendering without it', e); post = null; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0; }
   }
+  // eye adaptation (D3): metered from the frame on HIGH / ULTRA (eye: 1), from the camera's place on LOW / MEDIUM
+  // (eye: 2, or when the chain cannot meter)
+  if (Q.eye) EYE = createEye(renderer.toneMappingExposure || 1, Q.eye === 1 ? post?.meter ?? null : null, zoneEV);
   if (GPU) await precompile();
   if (data && data.laps) { laps = data.laps; syncSeg('lapsSeg', laps); }
   if (data && data.diff != null) { diff = data.diff; syncSeg('diffSeg', diff); }
@@ -3252,6 +3281,20 @@ async function boot(data) {
   readInvite();
   window.addEventListener('hashchange', readInvite);
   requestAnimationFrame((t) => { lastT = t; frame(t); $('loading').hidden = true; });
+  // ?bakegi (dev): bake the light volumes for ?gfx=gi:1 and download them as gi.bin (for assets/world/)
+  if (new URLSearchParams(location.search).has('bakegi')) {
+    const r = await bakeGI();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([r.buffer])); a.download = 'gi.bin'; a.click();
+  }
+}
+// the light bake (gfx/gibake.js, D4): with every rock at the same level of detail as for the shadow bakes
+async function bakeGI(opts = {}) {
+  const { bakeGI: bake } = await import('./gfx/gibake.js');
+  for (const l of ROCKS.lods) l.force(1);
+  try {
+    return await bake({ scene, TR, rangeWhere, arch: ROCKS.arch, palette: PALETTE, sunDir: SUN_DIR, envI: scene.environmentIntensity, ...opts });
+  } finally { for (const l of ROCKS.lods) l.update(camera.position); }
 }
 // show the game once the surface textures are in (or after 10 s, whatever happens first)
 const texturesReady = Promise.race([Promise.all([SURF.ready, GROUND_READY, ROCKS_READY, ARENA_READY, PROPS_READY, DRESS.ready, SKY_READY]), new Promise((r) => setTimeout(r, 15000))]);

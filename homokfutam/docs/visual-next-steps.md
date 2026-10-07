@@ -1,11 +1,12 @@
 # HOMOKFUTAM – visual next steps
 
 Working notes for the next round of visual work on HOMOKFUTAM, written so a new session can pick
-them up cold. Three parts:
+them up cold. Four parts:
 
 1. **Two deferred items:** batching the exhaust plumes, and moving to WebGPU (three's `WebGPURenderer` with TSL node materials). The WebGPU move is now done behind `?renderer=webgpu`; section B has the results and what is left.
 2. **Optional upgrades:** improvements that cost performance, each measured on its own. All eleven are now done, each behind a `?gfx=` key, and the High and Ultra presets switch on the ones worth their cost; section C has the results and what is left.
-3. **How to measure:** the harness used so far, and the numbers to compare against.
+3. **Light:** a hot midday desert instead of golden hour, eye adaptation (the tunnel effect in the canyon), baked ray-traced bounce light, mirages and contact shadows: items 1–6 done, each behind a `?gfx=` key and measured; what ray tracing can and cannot do here (items 8–9). Section D.
+4. **How to measure:** the harness used so far, and the numbers to compare against.
 
 ## Where things stand (October 2026)
 
@@ -365,9 +366,201 @@ Each preset as it is now against the same preset with every key off (`?gfx=sky:0
 
 ---
 
+## D. Light: eye adaptation, a hot bright desert, ray tracing: items 1–6 done
+
+**Status (October 2026).** Items 1–6 are built on both renderers, each behind a `?gfx=` key, and on by the presets below. Items 7–9 are open. Item 8 (SSGI) was measured and turned down; see its section.
+
+The goals, from the art side:
+1. **The tunnel moment.** Driving into the canyon, the eye opens up over a couple of seconds and the exit ahead is a blown-out white hole. Coming out, the desert is blinding for a second, then settles.
+2. **Hot, not golden.** The open desert reads as midday heat: high key, bleached, short hard shadows, a milky pale horizon, shimmering air and mirages on the flats.
+3. **Bounce light.** The canyon's shaded walls and floor glow warm from the sunlit rock around them. This is where ray tracing pays off in this game, and it is baked (item 4).
+
+| # | Key | What | Presets |
+|---|---|---|---|
+| 1 | `noon` (0/1), `sunEl` (degrees) | midday light: sun 30° up, harder light, bleached sky, pale dust, yellow-warm grade, glare veil | `noon` on all four; `sunEl` for tests |
+| 2 | – (comes with `eye`) | darker shade where the sky is hidden: canyon floor and walls, the rocks' baked occlusion, the shaded dust | all four |
+| 3 | `eye` (0, 1 = metered, 2 = by place) | eye adaptation; the exposure moves in front of bloom, god rays, flare and AgX | Low, Medium: 2; High, Ultra: 1 |
+| 4 | `gi` (0/1) | baked ray-traced light: sky visibility and two bounces, in volumes over the canyon and the arch | High, Ultra |
+| 5 | `mirage` (0/1) | mirage on the far flats, stronger heat shimmer there | High, Ultra |
+| 6 | `sss` (0, 1, 2 = debug view) | contact shadows: screen-space rays towards the sun, only on the sun's share of the light | High, Ultra |
+
+- **Load-time choices, like C's:** every key changes what is built (shader variants, passes, the sun all the bakes use), so switching one reloads the page. `?gfx=noon:0` brings golden hour back (with its own exposure and grade).
+- **Decision rule:** C's (≤ 0.3 ms: High if the gain is visible; 0.3–1.5 ms: Ultra unless the gain is large). Low and Medium get only what costs nothing measurable: `noon`, and the eye driven by where the camera is.
+
+### Results
+
+RTX 3080 Ti, headless Chrome, the C protocol: each key on its own against the same build with it off, two interleaved rounds, at grid / dunes / canyon / arena. Changes per spot (round 1 / round 2 where it matters); noise is about ±0.3 ms on WebGPU's GPU time and ±0.5 ms on WebGL's frame time, so small numbers of either sign are "no change".
+
+| # | Key | WebGPU GPU, High 2560×1440 | CPU (WebGPU frame, High 1920×1080) | WebGL frame, High 2560×1440 | Preset | Why |
+|---|---|---|---|---|---|---|
+| 1 | `noon` | −0.27 / +0.08 / +0.03 / −0.09 ms | – | ≈ 0 | all | free; the art direction |
+| 3 | `eye:1` | −0.29 / −0.02 / +0.12 / +0.05 | +0.06 / −0.14 / +0.13 / +0.17 | +0.26 / +0.11 / −0.29 / −0.33 | High, Ultra | the tunnel moment; ≈ 0 |
+| 3 | `eye:1` on Medium | – | +0.16 / +0.18 / +0.21 / +0.18 (1080p) | +0.20 to +0.37 (1080p, 500+ fps) | no | Medium is the phone preset: a readback can stall a tiled mobile GPU |
+| 3 | `eye:2` on Low / Medium | see Totals | | | Low, Medium | no GPU work |
+| 4 | `gi` | −0.21 / +0.03 / +0.13 / +0.12 | noise | +0.3 to +0.5 at grid and dunes, ≈ 0 elsewhere | High, Ultra | large gain in the canyon; 3.55 MB download, only with the key |
+| 5 | `mirage` | −0.16 / 0 / +0.07 / −0.01 | noise | ≈ 0 | High, Ultra | free |
+| 6 | `sss` | −0.08 / +0.21 / +0.16 / +0.13 | noise | +0.35 / +0.59 / −0.21 / −0.02 | High, Ultra | ~0.2 ms; WebGL ~0.4 ms in the open |
+| | all four | −0.04 / +0.24 / +0.19 / +0.21 | −0.05 / −0.01 / +0.07 / +0.46 | +0.14 / +0.39 / +0.25 / −0.49 | | |
+
+Totals with the new presets against the same presets with the D keys off: see "Totals" at the end of this section.
+
+### Before: what the image did, measured
+
+- **Light:** sun 20.6° up (`SUN_EL` 0.36), `#ffd6a6` at 3.1; hemisphere `#9db4d2` / `#c98b52` at 0.55, environment 0.6; fog `#dcae7a`, horizon `#ebbf8c`; grade saturation ×1.3. Orange four times over (sun, fog, horizon, grade), and a 20° sun is golden hour whatever the grade does.
+- **Flat light:** on flat sand the sky's fill (hemisphere + environment, ~1.4) was about as strong as the sun (1.55 at 30°), so a shadow was only ~1 stop under the sunlit sand. In a real desert it is 2–3 stops.
+- **Exposure was a constant** (1.1 into AgX), with bloom, god rays and the flare on the HDR in front of it.
+- **Brightness by place** (scene pass, HDR before AO and tone mapping, High, WebGPU, 1600×900, `lum.mjs`; EV = log2 of the geometric mean luminance):
+
+  | View | EV | Median | 95th percentile |
+  |---|---|---|---|
+  | Dunes / far dunes | −1.9 / −1.7 | 0.26 / 0.27 | 0.68 / 0.71 |
+  | Towards / away from the sun | −2.0 / −2.2 | 0.24 / 0.21 | 0.61 / 0.49 |
+  | Arena straight / start grid | −2.3 / −3.5 | 0.19 / 0.09 | 0.51 / 0.38 |
+  | Under the arch | −2.8 | 0.12 | 0.44 |
+  | Canyon (three views) | −4.4 to −4.9 | 0.035–0.04 | 0.05–0.22 |
+  | Canyon, looking at the exit | −4.5 | 0.04 | 0.23 |
+  | Just outside the exit / before the entrance | −2.4 / −2.5 | 0.19 / 0.16 | 0.48 / 0.36 |
+
+  The canyon was 2.5–3 EV under the open desert: room for adaptation. But a +2 EV mock (WebGL, `renderer.toneMappingExposure`) turned the canyon a flat, milky orange and the exit did not blow out: the shaded walls had the same fill all over, and the exit sat on AgX's shoulder. Hence items 2 and 4 next to the eye, and the exposure in front of bloom.
+- **Timing:** at race speed the canyon (`loc.canyon > 0.5`) takes 11.4 s over 1,183 m (autopilot, ~373 km/h); the arch's shade lasts 1.2 s.
+- **The chase camera** pitches ~6° down, with a vertical FOV of 64° standing, ~77° at race speed and up to ~90° on boost: a sun higher than ~32° is above the frame at race speed (~39° on full boost).
+
+### 1. Midday light (`noon`, `sunEl`)
+
+- **Built (`gfx/atmosphere.js`: `NOON`, `PALETTE`, `GRADE`):**
+  - Sun 30° up (`NOON_EL`), `#ffecd2` at 4.0; hemisphere `#a7bedb` / `#cf9f6c` at 0.35; environment 0.4. On flat sand the sun now gives ~3× the sky's fill (it was ~1.1×), so shade is 1.5–2 stops under the sunlit sand.
+  - Sky: horizon `#efe1c6` (bleached cream), mid (0.46, 0.56, 0.69), zenith `#3369b0`; dust `#dcc39a`, towards the sun `#ffe9c8`.
+  - Grade: saturation 1.18, contrast 1.12, highlights (1.05, 1.0, 0.9) (yellow-warm: film's "hot" is yellow-ochre, not white), shadows (0.95, 0.98, 1.05).
+  - Glare veil: a broad faint glow round the sun in the flare (`PALETTE.veil`), the squint.
+  - The god rays and the flare take their colours from the palette; the far horizon is `panorama_noon*.ktx2` (`build_panorama.py -- --noon 1`, 19 s in Cycles).
+- **Sun height:** 30°, 38° and 45° compared by eye. Above ~32° the sun leaves the chase camera's frame at race speed (no god rays or flare in normal play), and 38–45° flatten the dunes' relief; 30° keeps both and still reads as midday. `?gfx=sunEl:45` tries any height (the panorama stays the noon one).
+- **What it looks like:** high key, pale warm haze, short shadows; the arena and the open desert read hot. With a white sun the sand first went grey-beige (AgX desaturates bright sand, and a neutral light on pale sand reads cool): the warmth went into the grade's highlights and a slightly warm sun.
+- **Cost:** none (see Results).
+
+### 2. Darker shade where the sky is hidden (with `eye`)
+
+- **Built:** `ATMO.hfShade` (1 whenever the eye is on):
+  - the canyon floor (`trackMaterial`) keeps 38 % of its sky and bounce fill mid-slot and 18 % at the walls (it was 65 % / 40 %);
+  - the rocks' occlusion attribute (`aAO`: the canyon walls' analytic sky visibility, the Blender AO of the arch and the rocks) goes in as `aAO^1.7`;
+  - the shaded dust of the volumetric light (C5) and the haze sheets (`world/haze.js`) at 45 % (bright dust in an opened-up slot turns it milky).
+- **With `gi`** the surfaces take the baked light instead (`#ifdef HF_GI` / `GI_ON`); the dust follows `hfShade` either way.
+- **Cost:** none.
+
+### 3. Eye adaptation (`eye`)
+
+- **Built (`gfx/eye.js`, the meter in `gfx/post.js` `MeterPass` and `gfx/tsl/post.js`):**
+  - **Meter (`eye:1`):** every fourth frame the scene colour goes into a 64×36 target (mean log2 luminance of 4×4 taps per texel; centre-weighted, σ = 0.3 of the frame; the sky at 0.4), read back asynchronously (`readRenderTargetPixelsAsync`). The CPU takes the weighted mean of the middle of the distribution (drops the darkest 10 % and brightest 2 %: sun disc, flames, the pods' undersides).
+  - **By place (`eye:2`):** no meter; the target is the camera's place on the track (`zoneEV()` in `main.js`): canyon +1.5 EV, under the arch +0.9, the arena +0.5, faded with the distance from the track. About what the meter asks for there; no GPU work.
+  - **Curve:** open desert = metered EV −1.7 (`EYE.refEV`), where the exposure stays the preset's; a ±0.25 EV dead band (towards / away from the sun are ~0.3 EV apart); 85 % of the rest is made up; clamp −0.5 … +1.7 EV.
+  - **Speed:** exponential in EV, τ 0.4 s towards bright, 0.9 s towards dark. A camera jump of over 30 m (cuts, the race start, `sim()`) snaps to the next reading. Menus are locked to the preset's exposure; photo mode holds the moment's.
+  - **Exposure in front of the light:** the speed pass multiplies the frame by it, so bloom, god rays, flare and AgX see the exposed frame (AgX then gets 1; god rays and flare scale with it; the bloom threshold moves with the preset's exposure, so the open desert blooms as before). On Low (no post chain) it is `renderer.toneMappingExposure`.
+- **Trace through the canyon** (High, WebGPU, chase camera, real time; `trace.mjs`): metered −4.1 to −4.7 EV inside. Entering: +0.95 EV after 0.5 s, +1.27 after 1 s, +1.45 after 1.5 s, +1.62 after 2.5 s (cap 1.7). At the exit: +1.58 → +1.0 after 0.25 s → +0.74 after 0.5 s → +0.43 after 1 s, settled (+0.34: the stretch after the canyon meters a little darker) after 1.5 s. From inside, the exit is a white-hot hole; outside, the desert is bleached for about a second.
+- **First version:** metered every other frame, it cost ~0.25 ms of CPU a frame on WebGPU (the extra pass and the readback); every fourth frame it is within noise.
+
+### 4. Baked ray-traced light (`gi`)
+
+- **Why bake:** the sun never moves and neither does the world, so the rays only have to be traced once.
+- **Built:**
+  - `gfx/bvh.js`: a BVH over triangles (binned SAH, 16 bins, ≤ 4 triangles per leaf), closest-hit and any-hit traversal with an explicit stack. The node layout follows lisyarus/webgpu-raytracer (MIT): a box plus one word that is either the first child or the first triangle, and a count.
+  - `gfx/gibake.js` (dev only, loaded by `__homok.bakeGI()` or `?bakegi`, which downloads `gi.bin`): collects the static triangles round the volumes (the world shadow's rules, plus no scatter; the canyon walls are double sided, so their faces are turned towards the track and back-face hits mean "inside rock"), builds the BVH, and traces 128 rays from every cell (Fibonacci directions, turned per cell). A ray that escapes upwards sees the sky (the hemisphere light plus a model of the dome), downwards open sunlit sand; a hit sees the surface's albedo × (the sun, if a second ray towards it gets out, × cos + the indirect light on it). Two passes: the first takes a rough sky term for that indirect light, the second the first pass's own result at the hit (a second bounce, which is what makes red rock glow in its own shade). The radiance goes into L1 spherical harmonics per cell, as E(n) = a + b·n per channel; cells inside rock (more than a quarter of the rays hit back faces) take their neighbours' values.
+  - **Volumes:** three boxes along the canyon (~445 m each; cells 6 m along, 4 m up, 3.5 m across) and one over the arch (150 × 70 × 160 m, 3.5 m cells): 224,132 cells. `assets/world/gi.bin` (3.55 MB): per cell and channel `log2(a / a_open)` and `b / 2a` in 8 bits each, as one RGBA8 3D atlas.
+  - **Bake:** 387,183 triangles, BVH (241k nodes) in 0.97 s; 57.4M rays in 128 s, on the CPU in the page, one thread.
+  - **Run time (`gfx/gi.js` `hfGI`, `gfx/tsl/gi.js`):** every ground and rock material multiplies its indirect light by E(n) / E_open(n), RGB: the light from its surroundings over what flat open desert gets (1 in the open, outside the volumes, and in their outer cell, which fades). The lookup is 1.5 m out along the normal (off the surface, into the air the bake saw); 3 texel fetches inside a volume, a few box tests elsewhere. The specular occlusion takes its luminance (≤ 1). The canyon walls keep `aAO^0.4` for the detail the 3.5 m cells cannot have; the rocks' Blender AO stays as it is.
+- **Values (`gidecode.mjs`):** on the canyon floor an upward-facing surface gets (1.02, 0.63, 0.46) of the open desert's light: much less sky, much more warm bounce. The walls get 0.27–0.6, warmer towards the side facing the sunlit wall. Under the arch: 0.5–0.86.
+- **What it looks like:** the canyon glows warm in its own shade (walls and floor red-gold rather than grey-brown), the shade under the arch warms; with the eye opened up the slot reads like Antelope Canyon rather than smoke. The pods take the canyon and arch probes, which are baked with this light on.
+- **Changed from the plan:** a CPU tracer instead of a WebGPU compute shader. The result is an asset both renderers read, and a two-minute bake once is fine; the BVH layout is the one a compute shader would take (item 9).
+- **The second bounce** turned the first version's grey, slightly blue shade (one bounce: mostly sky through the slot) into the warm glow.
+
+### 5. Mirage (`mirage`)
+
+- **Built (the speed pass: `SpeedEffect` in `gfx/post.js`, `speed` in `gfx/tsl/post.js`; `horizonUv()` in `gfx/screen.js`):**
+  - The horizon on screen from the camera every frame (two points at infinity level with it): it rolls and pitches at speed.
+  - A band from just under the horizon to ~2° below it, beyond 120–300 m: the frame mirrored about the horizon in the same column, squashed to 0.8, wobbling, patchy along the horizon, at 45–85 %; not where the mirrored point is something nearer than the ground (a pod, a rock). The heat shimmer is 2.5× in the band.
+- **Exaggerated on purpose:** a real inferior mirage lies within ~0.5° of the horizon, a few pixels from a chase camera (tried first: invisible even at 20× strength).
+- **What it looks like:** a pale, sky-coloured sheen on the far straights, with the feet of the bollards and spires mirrored in it. Subtle by design.
+
+### 6. Contact shadows (`sss`)
+
+- **Built (`ContactEffect` in `gfx/post.js`, after the AO; in `gfx/tsl/post.js` on the scene colour before TRAA; constants in `gfx/screen.js` `CONTACT`):**
+  - From each pixel within 70 m, a ray towards the sun is marched over 1 m through the depth buffer; where it passes behind a surface (less than 0.3 m in front of it) the pixel is in contact shadow, the more the nearer the occluder (dark at the foot of a thing, gone a metre out).
+  - Only the sun's share of the pixel's light goes: k = s / (s + 1), s = N·L (normal rebuilt from depth) × the baked world shadow × the sun-to-sky ratio on flat sand (`sunShare()`, 4.3 at noon). Shade stays as it is.
+  - WebGPU: 10 steps, jittered per pixel and frame (TRAA averages it). WebGL: 16 steps with a 4×4 ordered dither (no TRAA: a random jitter reads as a screen door, one fixed offset as terraces).
+  - `?gfx=sss:2`: debug view (red = in contact shadow, green = the estimated sun share).
+- **What it looks like:** the feet of bollards, rocks, grass tufts and the pods' skids get crisp contact darkening under the soft shadow map. three's `SSSNode` (screen-space shadows, Bend's method) was the cost probe; the shipped version is our own, the same on both renderers.
+
+### 7. A real tunnel (level art, open)
+
+- The canyon is a slot open to the sky (floor 32 m wide, walls 46–76 m, flaring outwards), so it is shade, not darkness. The full tunnel moment wants 120–200 m where the walls lean in and meet, with two or three holes in the roof: shafts of sun through the dust with `vol` (C5).
+- Inside it would be EV −7 or below: the eye stops at +1.7 EV, so it stays dark and the shafts and the exit blaze.
+- Needs the bake (item 4) to cover it (one more volume), or the sky lights the tunnel through the rock. A swept roof mesh per side: +2–4 draws.
+
+### 8. Screen-space GI (`ssgi`): measured, not worth it now
+
+- three r186's `SSGINode` (visibility-bitmask screen-space GI, also gives AO, so it would replace GTAO), in a scratch copy at full resolution (the node has no resolution scale), composited roughly. GPU ms at grid / dunes / canyon / arena, two rounds:
+
+  | Setting | grid | dunes | canyon | arena |
+  |---|---|---|---|---|
+  | 1 slice × 12 steps | +2.0 / +3.2 | +1.7 / +1.8 | +2.6 / +2.6 | +1.8 / +1.7 |
+  | 2 slices × 8 steps | +4.7 / +4.6 | +3.1 / +2.9 | +4.8 / +3.8 | +3.7 / +3.1 |
+
+- Over the 1.5 ms line even at its cheapest, and ~2.25× that at 4K. Most of the bounce here is static and item 4 has it for ~0.1 ms. What SSGI would add is the moving part (engine glow on the ground and walls, the liveries' colour on the track): revisit at half resolution (a patched node), Ultra only.
+
+### 9. Ray tracing at run time: not yet
+
+- **Hardware ray tracing is not in the browsers' WebGPU** (October 2026): ray-tracing extensions are proposals; only experimental forks exist (a Dawn ray-tracing branch, WebRTX). When Chrome ships ray queries, the two things a bake cannot do are worth it: soft, ray-traced pod shadows, and reflections in place of the cube camera (`refl`, C4).
+- **Software ray tracing in a compute shader:** a full-frame path trace is out of budget (3.5M triangles, many samples per pixel, a denoiser). What could fit on Ultra: one ray per pixel at quarter resolution against a low-poly BVH (`gfx/bvh.js`'s layout, as in lisyarus/webgpu-raytracer's WGSL traversal), accumulated over frames, for moving one-bounce light or ray-traced AO: ~230k rays a frame at 1440p. The CPU bake does ~0.45M rays/s on one thread; measure a WGSL port's rays per second before deciding.
+- **`VXGINode`** (voxel cone-traced GI) is in three releases after r186: WebGPU only, a static scene, at most 256 voxels along the longest axis. A local volume (canyon, arena) at best.
+
+### Things that bit
+
+- **`pow()` of a negative under MSAA is NaN.** With MSAA an edge pixel's attributes are extrapolated outside the triangle, so the rocks' occlusion went slightly negative and `pow(aAO, 1.7)` turned NaN. One NaN pixel, spread by the bloom, made the whole WebGL frame black wherever rock was in view, and the speed pass's `isnan()` scrub had been compiled away (ANGLE / D3D). Fix: `pow(max(aAO, 0.0), …)`, and a `max()` / `min()` clamp after the scrub (D3D's `max()` drops a NaN).
+- **TSL's `cameraNear` / `cameraFar` in a post-processing pass are the quad's camera**, not the scene's: every depth-to-distance conversion in the post chain was wrong until the scene camera's planes went in as uniforms (`camNear`, `camFar`). It broke the contact shadows and the mirage's depth test on WebGPU only.
+- **Importing `gfx/post.js` from `gfx/tsl/post.js` pulls postprocessing and N8AO into the WebGPU bundle:** the shared helpers (`horizonUv`, `CONTACT`, `sunShare`) live in `gfx/screen.js`.
+- **Boolean `?gfx=` keys take only 1 / true:** `sss` and `eye` are numbers (0 / 1 / 2) so that `sss:2` and `eye:2` work.
+- **The baked light and the hand-made shade would count the occlusion twice:** with `gi` the canyon floor factor is compiled out and the walls keep `aAO^0.4`.
+- **A bake volume per piece of track:** the canyon split into a short last piece made five volumes for four uniform slots, and the arch silently went missing. Pieces are now equal (three for the canyon).
+- **WebGL draws the arch more orange than WebGPU, at HEAD too:** the rock material differs between the two renderers on the arch's model (vertex colour or AO); not from this work, still open.
+
+### Totals
+
+Each preset as it is now against the same preset with the D keys off (`?gfx=eye:0,gi:0,mirage:0,sss:0`; `noon` stays on, it is free), grid / dunes / canyon / arena, two interleaved rounds:
+
+| Preset, size, renderer | Frame time, D keys off → as shipped | GPU time (WebGPU) |
+|---|---|---|
+| High, 2560×1440, WebGPU | 7.28 / 7.10 / 7.87 / 7.72 → 7.91 / 7.29 / 8.30 / 7.95 ms | 5.33 / 4.13 / 5.87 / 3.69 → 5.52 / 4.50 / 6.00 / 3.94 ms |
+| High, 1920×1080, WebGPU | 7.10 / 6.98 / 7.72 / 7.83 → 7.73 / 7.38 / 8.23 / 7.99 ms (CPU-bound; JS +0.1–0.4 ms) | – |
+| High, 2560×1440, WebGL | 5.40 / 4.09 / 5.09 / 5.62 → 5.66 / 4.49 / 5.84 / 5.66 ms | – |
+| Ultra, 2× screen (3840×2160), WebGPU | 13.64 / 11.91 / 15.21 / 9.99 → 14.12 / 12.90 / 15.70 / 10.34 ms | 11.64 / 11.09 / 14.12 / 9.40 → 11.34 / 11.60 / 14.64 / 9.66 ms |
+| Medium, 1920×1080, WebGL (`eye` 0 → 2) | 2.29 / 1.86 / 1.97 / 2.28 → 2.14 / 1.85 / 2.57 / 2.13 ms (the canyon's +0.6 is one round's hitch: +1.2 / 0.0) | – |
+| Low, 1920×1080, WebGL (`eye` 0 → 2) | within ±0.15 ms, except one round's hitch at the grid | – |
+
+- **High** pays +0.15–0.35 ms of GPU on WebGPU at 1440p, and +0.2–0.6 ms a frame where it is CPU-bound (1080p: the meter's readback every fourth frame, the extra contact pass). WebGL: 0 to +0.7 ms. Still 120–140 fps at 1440p here.
+- **Ultra** at 4K: about +0.5 ms of GPU (the contact march and the bake lookups scale with the pixels).
+- **Low and Medium:** unchanged within noise. `noon` is free and `eye:2` is a few lines of JS a frame.
+- **Load:** `gi` fetches `gi.bin` (3.55 MB) on High and Ultra; there is no bake at load.
+
+### What is left in D
+
+1. **Item 7, the tunnel** (level art), and a bake volume for it.
+2. **A bake volume over the arena** (the stands' shade and the bounce off the paving), and per-zone strength (`hfGIK` is global).
+3. **The arch's renderer difference** (above).
+4. **Contact shadows on WebGL** keep a fine dither at their edges; a depth-aware blur of the contact term would remove it.
+5. **Item 9:** port `gfx/bvh.js`'s traversal to WGSL, measure rays per second, then decide on a run-time trace for Ultra.
+6. **Item 8:** SSGI at half resolution for the moving light, once item 4's static light is settled.
+
+### Measuring D
+
+- **Cost:** C's protocol (GPU via `?gputime` at 2560×1440 on High, CPU at 1080p, WebGL frame time at 1440p). Benchmarks run against a frozen copy of the tree (`tools/batch.mjs`: a snapshot served on its own port), so that edits do not reload the pages mid-run; `tools/deltas.mjs` turns the logs into per-round changes.
+- **Brightness (`lum.mjs`):** for each fixed view, reads the scene pass's colour target (`post.scenePass.renderTarget`, half float) with `readRenderTargetPixelsAsync`; reports EV (log2 of the geometric mean luminance), a centre-weighted EV, the median and the 5th / 95th / 99th percentiles.
+- **Adaptation trace (`trace.mjs`):** a fresh race fast-forwarded to just before the canyon, then in real time with the chase camera, logging race time, canyon, metered EV, target and exposure every 100 ms, with screenshots at given race times.
+- **The bake (`bakegi.mjs`):** runs `__homok.bakeGI()` in the page and writes `assets/world/gi.bin`; `gidecode.mjs` prints E(n) / E_open(n) at world points for the six axis normals.
+- **The SSGI / `SSSNode` cost probe:** a `git archive` copy with the nodes wired into `gfx/tsl/post.js` after the AO; only the cost is meaningful.
+
+---
+
 ## Measuring: harness and method
 
-The scripts used so far lived in the session scratchpad and are not in the repo. Recreate them as below, or ask to have them added under `homokfutam/tools/` first.
+The scripts are in `homokfutam/tools/` (setup and usage: its README). The notes below are what they do and why.
 
 ### Browser
 
@@ -395,6 +588,8 @@ The scripts used so far lived in the session scratchpad and are not in the repo.
 | `rebakeProbes()` | bakes the light probes again |
 | `rocks` | the rock lists, for framing spires (`rocks.arch`: the arch's position) |
 | `mid` | the cached mid-distance shadow (`?gfx=csm:1`): `renders`, `draws`, `update(camera, true)` |
+| `eye` | the eye adaptation (`?gfx=eye:1|2`): `metered` (EV), `target`, `ev`, `exposure` |
+| `bakeGI()` | the light bake (D4): resolves to `{ buffer, header, ms, triangles }`; `?bakegi` downloads `gi.bin` instead |
 | `groundDebug(n)` | ground shader debug views |
 | `post`, `scene`, `renderer`, `camera` | for direct probing |
 | `ATMO`, `TSL`, `GPUTHREE`, `GPU`, `trails` | the shared atmosphere uniforms (freeze `ATMO.hfTime` to stop shader time on either renderer), three's TSL and WebGPU modules on the WebGPU path, the trail map |

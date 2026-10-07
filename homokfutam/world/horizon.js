@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ktx2Loader } from '../gfx/ground.js';
 import { maxTextureSize } from '../gfx/backend.js';
+import { NOON } from '../gfx/atmosphere.js';
 
 // ============================================================
 //  The far horizon: desert ranges rendered in Blender (models/world/build_panorama.py) as a
@@ -12,7 +13,9 @@ const RADIUS = 7600, EYE = 40;                 // ring radius, camera height of 
 
 export function buildHorizon(scene, renderer) {
   const big = maxTextureSize(renderer) >= 8192;
-  const url = new URL(`../assets/world/${big ? 'panorama' : 'panorama_4k'}.ktx2`, import.meta.url).href;
+  // (?gfx=noon:1: the ranges lit by the midday sun, NOON in gfx/atmosphere.js)
+  const name = NOON ? 'panorama_noon' : 'panorama';
+  const url = new URL(`../assets/world/${name}${big ? '' : '_4k'}.ktx2`, import.meta.url).href;
   const loader = ktx2Loader(renderer);
   return loader.loadAsync(url).then((tex) => {
     loader.dispose();

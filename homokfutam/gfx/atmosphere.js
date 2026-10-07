@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GPU, U, T, maxTextureSize, N, W } from './backend.js';
 import { pickQuality } from './quality.js';
 import { AIR } from './skylut.js';
+import { GI_ON, GI_FUNCS, GI_UNIFORMS } from './gi.js';
 
 // ============================================================
 //  Atmosphere: height fog with sun in-scatter, cloud layer + cloud shadows,
@@ -14,9 +15,29 @@ import { AIR } from './skylut.js';
 //  Materials with their own onBeforeCompile must call atmoUniforms(shader) themselves.
 // ============================================================
 
-export const SUN_EL = 0.36, SUN_AZ = -0.62;     // radians: elevation above the horizon, azimuth from +x
+// ?gfx=noon:1 (docs/visual-next-steps.md D1): midday heat instead of golden hour: a higher, whiter sun, a
+// bleached horizon, pale dust, a softer grade. ?gfx=sunEl:<degrees> overrides the sun's height either way.
+// Load-time choices: the world shadow, the probes, the sky tables and the panorama are made for one sun.
+const QA = pickQuality();
+export const NOON = !!QA.noon;
+export const NOON_EL = 30;                        // degrees: the noon sun's height (chase-camera frame: D1)
+export const SUN_EL = QA.sunEl ? THREE.MathUtils.degToRad(QA.sunEl) : NOON ? THREE.MathUtils.degToRad(NOON_EL) : 0.36;
+export const SUN_AZ = -0.62;                      // radians: elevation above the horizon, azimuth from +x
 export const SUN_DIR = new THREE.Vector3(Math.cos(SUN_EL) * Math.cos(SUN_AZ), Math.sin(SUN_EL), Math.cos(SUN_EL) * Math.sin(SUN_AZ)).normalize();
-export const PALETTE = {
+// the sky, the dust, the sun and the fill lights (main.js); noon: white sun, cream horizon, pale ochre dust
+export const PALETTE = NOON ? {
+  zenith: new THREE.Color('#3369b0'),
+  skyHorizon: new THREE.Color('#efe1c6'),
+  skyMid: new THREE.Color().setRGB(0.46, 0.56, 0.69),
+  fog: new THREE.Color('#dcc39a'),
+  fogSun: new THREE.Color('#ffe9c8'),
+  sun: new THREE.Color('#ffecd2'),
+  ground: new THREE.Color('#c29a6c'),
+  // a harder light than golden hour: on flat sand the sun gives ~3x the sky's fill (it was ~1.1x), as in a real
+  // desert, where the shade is 1.5-2 stops under the sunlit sand
+  sunI: 4.0, hemiSky: new THREE.Color('#a7bedb'), hemiGround: new THREE.Color('#cf9f6c'), hemiI: 0.35, envI: 0.4,
+  flare: new THREE.Color('#fff0dc'), rays: new THREE.Color().setRGB(1, 0.88, 0.7), veil: 0.06,
+} : {
   zenith: new THREE.Color('#2a5fa6'),
   skyHorizon: new THREE.Color('#ebbf8c'),
   skyMid: new THREE.Color().setRGB(0.40, 0.50, 0.61),        // linear: the pale blue between horizon and zenith
@@ -24,7 +45,13 @@ export const PALETTE = {
   fogSun: new THREE.Color('#ffc47e'),
   sun: new THREE.Color('#ffd6a6'),
   ground: new THREE.Color('#b58556'),
+  sunI: 3.1, hemiSky: new THREE.Color('#9db4d2'), hemiGround: new THREE.Color('#c98b52'), hemiI: 0.55, envI: 0.6,
+  flare: new THREE.Color('#ffd9a8'), rays: new THREE.Color().setRGB(1, 0.69, 0.35), veil: 0,
 };
+// the colour grade after tone mapping (gfx/post.js, gfx/tsl/post.js): saturation, contrast, split toning
+export const GRADE = NOON
+  ? { sat: 1.18, contrast: 1.12, shadow: [0.95, 0.98, 1.05], high: [1.05, 1.0, 0.9] }
+  : { sat: 1.3, contrast: 1.15, shadow: [0.94, 0.98, 1.06], high: [1.04, 1.0, 0.94] };
 
 // the node materials build against a depth texture before the world shadow is baked (bakeWorldShadow)
 const SHADOW_PLACEHOLDER = new THREE.DepthTexture(1, 1, THREE.FloatType);
@@ -68,7 +95,11 @@ export const ATMO = {
   hfMidBias: U(0.0006),
   hfMidPods: GPU ? T(SHADOW_PLACEHOLDER) : { value: null },      // the pods in the same box, every frame
   hfMidPodsOn: U(0),
+  // D2: darker shade where the sky is hidden (canyon floor and walls, the rocks' baked occlusion), 0..1
+  hfShade: U(0),
 };
+// ?gfx=gi:1 (D4): the baked light's uniforms ride along with ATMO into every GLSL material
+Object.assign(ATMO, GI_UNIFORMS);
 export function atmoUniforms(shader) { Object.assign(shader.uniforms, ATMO); }
 
 // ?gfx=sky:1 (docs/visual-next-steps.md, C1): the sky and the fog from one physically based model.
@@ -164,7 +195,7 @@ float hfMidShadow( vec3 wp, vec3 wn, out float w ) {
 export const ATMO_FUNCS = /* glsl */`
 varying vec3 vHfWorld;
 uniform vec3 hfSunDir, hfSunCol, hfFogCol, hfFogSunCol;
-uniform float hfFogDensity, hfFogFalloff, hfTime, hfCloudCover, hfCloudH, hfCloudShadow, hfShadowOn, hfShadowBias;
+uniform float hfFogDensity, hfFogFalloff, hfTime, hfCloudCover, hfCloudH, hfCloudShadow, hfShadowOn, hfShadowBias, hfShade;
 uniform vec2 hfWind, hfShadowTexel;
 uniform sampler2D hfCloudTex;
 uniform sampler2DShadow hfShadowMap;
@@ -211,7 +242,8 @@ float hfSunVis( vec3 wp, vec3 viewNormal ) {
   vec2 cp = wp.xz + hfSunDir.xz * ( ( hfCloudH - wp.y ) / max( hfSunDir.y, 0.05 ) );
   return v * ( 1.0 - hfCloudShadow * hfCloud( cp ) );
 }
-${PB_SKY ? PB_FUNCS : ''}`;
+${PB_SKY ? PB_FUNCS : ''}
+${GI_ON ? GI_FUNCS : ''}`;
 const PARS_F = ATMO_FUNCS + /* glsl */`
 #ifdef USE_FOG
   uniform vec3 fogColor;

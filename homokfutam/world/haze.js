@@ -33,7 +33,8 @@ const FRAG = /* glsl */`
     float fade = smoothstep( 0.12, 0.45, abs( dot( V, vN ) ) ) * smoothstep( 6.0, 30.0, dist );
     float lit = hfStaticShadow( vHfWorld, vec3( 0.0, 1.0, 0.0 ) );
     float phase = 0.35 + 2.2 * pow( max( dot( V, hfSunDir ), 0.0 ), 5.0 );
-    vec3 col = mix( hfFogCol * 0.55, hfSunCol * 1.5, lit ) * phase;
+    // (the shaded part darker with the darker shade of D2, hfShade)
+    vec3 col = mix( hfFogCol * 0.55 * ( 1.0 - 0.55 * hfShade ), hfSunCol * 1.5, lit ) * phase;
     float a = n * shape * fade * uK * ( 0.25 + 0.75 * lit );
     gl_FragColor = vec4( col, clamp( a, 0.0, 0.5 ) );
     #include <tonemapping_fragment>

@@ -359,6 +359,12 @@ const AO = /* glsl */`
 {
   float ambientOcclusion = gAO;
   reflectedLight.indirectDiffuse *= ambientOcclusion;
+  #ifdef HF_GI
+    // the baked light (?gfx=gi:1, gfx/gi.js): sky visibility and bounce, over the open desert's
+    vec3 gGI = hfGI( vHfWorld, gNW );
+    reflectedLight.indirectDiffuse *= gGI;
+    ambientOcclusion *= min( dot( gGI, vec3( 0.2126, 0.7152, 0.0722 ) ), 1.0 );
+  #endif
   #if defined( USE_ENVMAP ) && defined( STANDARD )
     float dotNV = saturate( dot( geometryNormal, geometryViewDir ) );
     reflectedLight.indirectSpecular *= computeSpecularOcclusion( dotNV, ambientOcclusion, material.roughness );
@@ -569,7 +575,11 @@ export function trackMaterial(Q, trackLength) {
         diffuseColor.rgb = col * mix( vec3( 1.0 ), gDesertTint( xz, mac ), mix( 0.45, 1.0, out_ ) );
         float gAO = mix( 1.0, gS.ao, 0.85 ) * mix( 1.0, mac.r, out_ );
         // down in the canyon the floor sees only a strip of sky, less still by the walls
-        gAO *= 1.0 - canyon * ( 0.35 + 0.25 * smoothstep( 0.55, 1.0, edge ) );
+        // (hfShade, D2: deeper, as the floor of a real slot sees ~10-25 % of the sky)
+        // (the baked light, gi, has the real thing)
+        #ifndef HF_GI
+          gAO *= 1.0 - canyon * ( mix( 0.35, 0.62, hfShade ) + mix( 0.25, 0.2, hfShade ) * smoothstep( 0.55, 1.0, edge ) );
+        #endif
         diffuseColor.rgb *= mix( 1.0, gS.ao, 0.35 );
         float polish = groove * 0.2 + trail.r * 0.1 + oil * 0.42;
         float gNK = ( 1.0 - smoothstep( 80.0, 600.0, camD ) * 0.7 ) * ( 1.0 - groove * 0.4 );
@@ -591,13 +601,16 @@ export function trackMaterial(Q, trackLength) {
 //  rock (needs the macro height map); cliffs get desert varnish streaks.
 // ---------------------------------------------------------------------------
 export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast = 1, normal = 1, rough = [0.55, 0.6], vertexColors = true, color = '#ffffff',
-  macro = 0.3, side = THREE.FrontSide, flat = false, sand = 1, foot = 2.5, varnish = 0, ao = false, aoAlbedo = 0.45, arena = false, metalness = 0 } = {}) {
+  macro = 0.3, side = THREE.FrontSide, flat = false, sand = 1, foot = 2.5, varnish = 0, ao = false, aoAlbedo = 0.45, aoGI = 1, arena = false, metalness = 0 } = {}) {
   const u = {
     // arena: the building texture set, used for its own colour (not relative to its mean)
     gRC: arena ? GU.gAC : GU.gRC, gRN: arena ? GU.gAN : GU.gRN,
     rLayer: U(layer), rScale: U(scale), rChroma: U(chroma), rContrast: U(contrast),
     rNormal: U(normal), rRough: U(new THREE.Vector2(...rough)), rMacro: U(macro),
     rSand: U(sand), rFoot: U(foot), rVarnish: U(varnish), rAOAlb: U(aoAlbedo),
+    // with the baked light (gi): how much of the geometry's own occlusion (aAO) to keep (the canyon's is
+    // analytic sky visibility, which the bake replaces; the rocks' Blender AO is finer than the bake)
+    rAOgi: U(aoGI),
   };
   if (GPU) return N.rockNodeMaterial(Q, { color, roughness: 1, metalness, side, flatShading: flat }, u, { vertexColors, ao, arena });
   const m = new THREE.MeshStandardMaterial({ vertexColors, color, roughness: 1, metalness, side, flatShading: flat });
@@ -605,7 +618,7 @@ export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast 
   if (ao) defs.ROCK_AO = 1;          // the geometry carries the occlusion baked in Blender (aAO)
   if (arena) defs.ABSOLUTE = 1;
   return patch(m, 'hf-rock2', defs, u, {
-    pars: /* glsl */`uniform highp sampler2DArray gRC, gRN; uniform float rLayer, rScale, rChroma, rContrast, rNormal, rMacro, rSand, rFoot, rVarnish, rAOAlb; uniform vec2 rRough;
+    pars: /* glsl */`uniform highp sampler2DArray gRC, gRN; uniform float rLayer, rScale, rChroma, rContrast, rNormal, rMacro, rSand, rFoot, rVarnish, rAOAlb, rAOgi; uniform vec2 rRough;
       #ifdef ROCK_AO
         varying float vRockAO;
       #endif
@@ -653,7 +666,12 @@ export function rockMaterial(Q, layer, { scale = 1 / 10, chroma = 0.5, contrast 
         float gAO = mix( mix( 1.0, tpAO, 0.9 ), sN.a, sandK );
         diffuseColor.rgb *= mix( 1.0, tpAO, 0.3 * ( 1.0 - sandK ) );
         #ifdef ROCK_AO
-          gAO *= vRockAO;
+          #ifdef HF_GI
+            gAO *= pow( max( vRockAO, 0.0 ), rAOgi );          // (the baked light has the large-scale part)
+          #else
+            // (max: with MSAA an edge pixel extrapolates the attribute, and pow of a negative is NaN)
+            gAO *= pow( max( vRockAO, 0.0 ), 1.0 + 0.7 * hfShade );
+          #endif
           diffuseColor.rgb *= mix( 1.0, vRockAO, rAOAlb );        // deep cavities stay dark in sunlight too (aoAlbedo)
         #endif
         vec3 gNW = hfGN;`,

@@ -84,22 +84,22 @@ A menüben a **GRAFIKA** sorban négy fokozat van. Az első indításkor a ját�
 
 | Fokozat | Mi van benne |
 |---|---|
-| ALACSONY | utófeldolgozás nélkül, kisebb árnyéktérkép, ritkább részletek és kevesebb néző, a riválisok az egyszerű podot kapják, a sziklák és a tereptárgyak hamarabb váltanak egyszerűbb modellre, és csak a mozgó dolgok (podok, törmelék) vetnek éles árnyékot, a többi árnyéka a betöltéskor sült |
-| KÖZEPES | bloom, lencsefény, sebességelmosás, színkorrekció, SMAA |
-| MAGAS | plusz MSAA, árnyékolás a sarkokban (N8AO), fénysugarak, hőremegés, mélységélesség a menüben; élesebb árnyékok több száz méterre előre (a távoli podoké is), napfénnyel átvilágított por a kanyonban és a sziklaív alatt, térbeli felhők, lakkréteg a podok festésén, száraz fűcsomók és több kavics a pálya mellett, sűrűbb por és füst |
+| ALACSONY | utófeldolgozás nélkül, kisebb árnyéktérkép, ritkább részletek és kevesebb néző, a riválisok az egyszerű podot kapják, a sziklák és a tereptárgyak hamarabb váltanak egyszerűbb modellre, és csak a mozgó dolgok (podok, törmelék) vetnek éles árnyékot, a többi árnyéka a betöltéskor sült; a szem a kanyonban és az ív alatt a hely szerint alkalmazkodik |
+| KÖZEPES | bloom, lencsefény, sebességelmosás, színkorrekció, SMAA; a szem a hely szerint alkalmazkodik |
+| MAGAS | plusz MSAA, árnyékolás a sarkokban (N8AO), fénysugarak, hőremegés, mélységélesség a menüben; élesebb árnyékok több száz méterre előre (a távoli podoké is), napfénnyel átvilágított por a kanyonban és a sziklaív alatt, térbeli felhők, lakkréteg a podok festésén, száraz fűcsomók és több kavics a pálya mellett, sűrűbb por és füst; a képből mért szemadaptáció (a kanyonba érve a szem kitágul, a kijárat kifehéredik), sütött, sugárkövetéssel számolt szórt fény a kanyonban és a sziklaív alatt, délibáb a távoli síkon, érintkezési árnyékok |
 | ULTRA | nagyobb árnyéktérképek, sűrűbb terep, több részecske; fizikai alapú égbolt és légköri perspektíva (a távoli sziklák kékes párába vesznek), domborzat a talaj mintázatán közelről, valós idejű tükröződés a saját pododon, részletesebb kanyonfalak és sziklatűk |
 
 Ha a gép nem bírja a tempót, a felbontás magától lejjebb megy, és amikor van tartalék, visszaáll.
 
-Teszteléshez az URL-ben is meg lehet adni: `?q=low|medium|high|ultra`, egyes beállítások pedig felülírhatók, például `?gfx=ao:0,heat:0,shadow:1024`. A MAGAS és az ULTRA fokozat grafikai bővítései egyenként is ki-be kapcsolhatók: `sky`, `csm`, `pom`, `refl`, `vol`, `aoq`, `coat`, `grass`, `geo`, `clouds`, `parts` (például `?gfx=sky:1,grass:0`; mit csinálnak és mennyibe kerülnek: `docs/visual-next-steps.md`, C).
+Teszteléshez az URL-ben is meg lehet adni: `?q=low|medium|high|ultra`, egyes beállítások pedig felülírhatók, például `?gfx=ao:0,heat:0,shadow:1024`. A MAGAS és az ULTRA fokozat grafikai bővítései egyenként is ki-be kapcsolhatók: `sky`, `csm`, `pom`, `refl`, `vol`, `aoq`, `coat`, `grass`, `geo`, `clouds`, `parts` (például `?gfx=sky:1,grass:0`; mit csinálnak és mennyibe kerülnek: `docs/visual-next-steps.md`, C), valamint a fény bővítései: `noon` (déli fény; `noon:0` a régi, aranyórás), `sunEl` (a nap magassága fokban, kipróbáláshoz), `eye` (szemadaptáció: 0 ki, 1 a képből mérve, 2 a hely szerint), `gi` (sütött szórt fény), `mirage` (délibáb), `sss` (érintkezési árnyékok; `sss:2` hibakereső nézet). Ezekről: `docs/visual-next-steps.md`, D.
 
 A **RENDERELŐ** sorban WEBGPU és WEBGL közül lehet választani; a váltás újratölti az oldalt, a választást a böngésző megjegyzi. Asztali gépen alapból WebGPU, ha a böngésző támogatja, különben WebGL; telefonon és tableten alapból WebGL. WebGPU-n a three.js WebGPURenderer rajzol, TSL-ben írt anyagokkal és utófeldolgozással. Az élsimítás itt időbeli (TRAA): a homok csillogása, a távoli vezetékek és a kőlapok mozgás közben jóval kevésbé vibrálnak, és nincs szükség MSAA-ra; az árnyékolás a sarkokban GTAO. A WebGPU-s rész csak ilyenkor töltődik le. Cserébe képkockánként kb. háromszor annyi processzoridőt visz el, és lassabban tölt be (a részletek: `docs/visual-next-steps.md`, B), ezért gyengébb gépen a WEBGL lehet a gyorsabb (telefonon ezért az az alapértelmezés). Az URL-ben is megadható: `?renderer=webgpu|webgl`; `?renderer=webgpu-gl` a WebGPURenderer saját WebGL2-es ágát kényszeríti (csak összehasonlításhoz, lassú).
 
 Mi van a képen:
 
-- **Fény:** alacsonyan álló, aranyórás nap. A visszaverődések az égboltból számolódnak, a podok viszont a betöltéskor a pályán sütött fénypróbákból kapják a fényt és a tükröződést (nyílt sivatag, aréna, kanyon, a sziklaív alatt), mindig annak a helynek a próbájából, ahol épp járnak: a kanyonban vörösen verődik vissza rájuk a szikla, az arénában a lelátók tükröződnek rajtuk. Az egész pálya árnyéka betöltéskor egyszer elkészül, a kamera közelében pedig a podoknak és a részleteknek külön, éles árnyéka van. A felhők árnyéka végigvonul a homokon.
+- **Fény:** déli hőség: 30 fokon álló, majdnem fehér nap, rövid, kemény árnyékok, kifakult, krémszínű láthatár. A napos homok és az árnyék között másfél-két fényérték a különbség, mint egy igazi sivatagban, ezért az árnyék tényleg árnyék. A szem alkalmazkodik: a kanyonba érve néhány másodperc alatt kitágul, a kijárat vakítóan fehér, kiérve a sivatag egy pillanatig kiégett, aztán helyreáll. A kanyonban és a sziklaív alatt a szórt fény betöltéskor sütött, sugárkövetéssel számolt fény: mennyi eget lát egy pont, és mennyi fény verődik rá a napsütötte szikláról és homokról (két visszaverődéssel), így a kanyon a saját árnyékában is melegen izzik. A távoli síkon délibáb remeg, a dolgok tövében érintkezési árnyék van. A visszaverődések az égboltból számolódnak, a podok viszont a betöltéskor a pályán sütött fénypróbákból kapják a fényt és a tükröződést (nyílt sivatag, aréna, kanyon, a sziklaív alatt), mindig annak a helynek a próbájából, ahol épp járnak: a kanyonban vörösen verődik vissza rájuk a szikla, az arénában a lelátók tükröződnek rajtuk. Az egész pálya árnyéka betöltéskor egyszer elkészül, a kamera közelében pedig a podoknak és a részleteknek külön, éles árnyéka van. A felhők árnyéka végigvonul a homokon.
 - **Ég és szín:** az égbolt színátmenete észlelés szerint egyenletes színtérben (Oklab) keveredik, így a meleg láthatár és a kék zenit között nincs lilás sáv; a nappal ellentétes oldalon a láthatár hűvösebb. A tónusleképezés AgX, mint a Blenderben, így a nap, a lángok és a nyaláb fénye fehérbe fut ki, nem sárgul el.
-- **Levegő:** magasságfüggő köd, ami a nap felé melegebb. A távoli hegyek és mezák ettől lesznek kékesek és párásak.
+- **Levegő:** magasságfüggő köd, ami a nap felé melegebb. A távoli hegyek és mezák ettől párásak és kifakultak, a déli hőségben halvány, krémes okker párába vesznek.
 - **Talaj:** hét saját, Blenderben sütött felület (fodros homok, puha homok, sivatagi kavicsburkolat, repedezett agyag, letaposott pályahomok, csupasz homokkő, kőlapok), GPU-n tömörített KTX2-textúrákban (`assets/tex/`). A felületek a magasságuk szerint keverednek, így a kavicsok kibújnak a homokból. A mintázat nem ismétlődik láthatóan. Hogy hol mi van, azt a betöltéskor kiszámolt nagy léptékű térkép dönti el: a dűnék szél felőli oldalán fodrok, a csúszólejtőkön puha homok, a lapos mélyedésekben kavics és repedezett agyag, a sziklák körül kavicstörmelék és csupasz kő, mögöttük a szél árnyékában homoknyelv. Ugyanez a térkép adja a nagy léptékű árnyékolást is. Közepes távolságban nagyobb szélfodrok látszanak a dűnéken, ahol a textúra finom fodrai már elmosódnának. A homok csillog a napfényben, a dűnék gerince súroló fényben felragyog.
 - **Dűnék:** a pályától távolabb a szél formálta, éles gerincű harántdűnék vannak (hosszú, lankás szél felőli oldal, rövid, meredek csúszólejtő), a gerincekről a szél homokfátylat fúj le. A pálya közelében a terep a régi, a fizika és a köridők nem változnak.
 - **Pálya:** letaposott, kavicsos homok, a széleire befúj a homok, a két oldalán a podok által feltolt homokpadka vezet át a dűnékbe. Az ideális íven a pálya sötétebb és kormos, néhol olajfolt és égésnyom maradt az előző futamokból, a kanyonban kibukkan a sziklaalap, az arénában kőlapok vannak. A podok nyoma fél perc alatt kopik el.
@@ -127,7 +127,12 @@ homokfutam/
   gfx/quality.js    grafikai fokozatok, dinamikus felbontás
   gfx/backend.js    melyik renderelő rajzol (?renderer=webgpu), a közös uniformok, a WebGPU-s rész késleltetett betöltése
   gfx/tsl/          a WebGPU-s ág anyagai és utófeldolgozása TSL-ben (ugyanaz, mint a GLSL-es, a fájlnevek megegyeznek)
-  gfx/atmosphere.js köd, ég, felhők, környezeti fény, az egész pálya árnyéka, a közepes távolság gyorsítótárazott árnyéka
+  gfx/atmosphere.js köd, ég, felhők, környezeti fény, az egész pálya árnyéka, a közepes távolság gyorsítótárazott árnyéka;
+                    a napállás és a színek (déli és aranyórás fény)
+  gfx/eye.js        szemadaptáció: a fénymérés kiértékelése és az expozíció követése
+  gfx/gi.js         a sütött szórt fény betöltése és kiolvasása az anyagokban (assets/world/gi.bin)
+  gfx/gibake.js     a szórt fény sütése (csak fejlesztéshez: ?bakegi letölti a gi.bin-t), gfx/bvh.js a sugárkövetés gyorsítóstruktúrája
+  gfx/screen.js     a két utófeldolgozás közös segédei (a láthatár a képen, az érintkezési árnyékok beállításai)
   gfx/skylut.js     a fizikai alapú égbolt táblázatai (Hillaire), betöltéskor sütve, külön szálon (skylut.worker.js)
   gfx/ground.js     talaj-, pálya- és sziklaanyagok: a KTX2-textúratömbök, a felületek keverése, csillogás,
                     homok a sziklákon, nyomok a pályán
@@ -152,6 +157,8 @@ homokfutam/
   models/pod/       Blender-szkriptek, ezekből készül a modell
   models/fx/        Blender-szkriptek a füst- és tűzképsorokhoz és a törmelékhez
   models/world/     Blender-szkriptek a pálya textúráihoz, szikláihoz, arénájához, tárgyaihoz és a láthatárhoz
+  tools/            mérő- és sütőszkriptek fejlesztéshez (headless Chrome): teljesítménymérés, képösszevetés,
+                    a szórt fény sütése; leírás: tools/README.md
 ```
 
 A fontos számok a `main.js`-ben vannak:
@@ -193,7 +200,9 @@ Minden Blenderben, kódból készül, a forrás a `models/world/` mappa:
 - `build_arena.py`: a lelátók mellvédje, a vászontetők, a pártázat, a kapubástyák és a rajtkapu (`assets/world/arena.glb`).
 - `build_props.py`: kavicsok, kövek, cserjék, csontváz, csontok, roncsdarabok (`assets/world/props.glb`).
 - `build_crowd.py`: a közönség alakjai egy képsorban (`assets/crowd_atlas.png`), négy testalkat és három karállás.
-- `build_panorama.py`: a láthatár hegyláncai (`assets/world/panorama.ktx2`).
+- `build_panorama.py`: a láthatár hegyláncai (`assets/world/panorama.ktx2`); a `-- --noon 1` kapcsolóval a déli napállással (`panorama_noon.ktx2`).
+
+A szórt fény (`assets/world/gi.bin`) nem Blenderben, hanem a játékban sül: `?bakegi` az URL-ben betölti a pályát, sugárkövetéssel kiszámolja a kanyon és a sziklaív fényét (kb. két perc), és letölti a fájlt. Akkor kell újrasütni, ha a pálya, a sziklák vagy a napállás változik.
 - `preview.py`: Cycles előnézet a modellekről.
 
 Újragenerálás a projekt gyökeréből:

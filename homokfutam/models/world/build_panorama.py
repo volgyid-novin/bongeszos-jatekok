@@ -1,11 +1,13 @@
 """The far horizon for HOMOKFUTAM: desert ranges rendered in Blender as a 360-degree band.
 
-  blender -b --factory-startup --python homokfutam/models/world/build_panorama.py -- [--samples 64]
+  blender -b --factory-startup --python homokfutam/models/world/build_panorama.py -- [--samples 64] [--noon 1]
 
 A polar terrain from 6 km to 40 km out (ridged ranges, terraced plateaus, dune seas in the low
 ground) is lit by a sun at the game's elevation and azimuth and rendered by an equirectangular
 camera over elevations -3..+9 degrees with a transparent sky. The game puts the band on a ring
 around the world and adds its own height fog.
+
+--noon 1: the midday sun of ?gfx=noon:1 (NOON_EL in gfx/atmosphere.js, whiter) -> panorama_noon*.ktx2.
 
 Writes homokfutam/assets/world/panorama.ktx2 (8192 x 512) and panorama_4k.ktx2 (4096 x 256):
 RGB colour, A coverage. Column 0 = game azimuth 0 (+x), increasing towards +z (atan2(z, x)).
@@ -27,12 +29,13 @@ import rocklib as R  # noqa: E402
 ASSETS = os.path.normpath(os.path.join(HERE, '..', '..', 'assets', 'world'))
 BUILD = os.path.join(HERE, 'build')
 SUN_EL, SUN_AZ = 0.36, -0.62           # gfx/atmosphere.js
+NOON_EL = math.radians(30)             # gfx/atmosphere.js, NOON_EL
 LAT_MIN, LAT_MAX = -3.0, 9.0            # degrees
 
 
 def args():
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
-    opt = {'samples': 64}
+    opt = {'samples': 64, 'noon': 0}
     for i in range(0, len(argv) - 1, 2):
         opt[argv[i].lstrip('-')] = int(argv[i + 1])
     return opt
@@ -92,7 +95,7 @@ def material(ob):
     R.set_colors(ob, col, np.ones(len(c)))
 
 
-def render(samples):
+def render(samples, noon=False):
     scn = bpy.context.scene
     cam_d = bpy.data.cameras.new('pano')
     cam_d.type = 'PANO'
@@ -106,11 +109,12 @@ def render(samples):
     cam.rotation_euler = (math.radians(90), 0, math.radians(-90))     # looking along +X, Z up
     scn.camera = cam
     # sun from the game's direction (game x = Blender x, game z = -Blender y)
-    sx, sz = math.cos(SUN_EL) * math.cos(SUN_AZ), math.cos(SUN_EL) * math.sin(SUN_AZ)
-    sdir = np.array([sx, -sz, math.sin(SUN_EL)])
+    el = NOON_EL if noon else SUN_EL
+    sx, sz = math.cos(el) * math.cos(SUN_AZ), math.cos(el) * math.sin(SUN_AZ)
+    sdir = np.array([sx, -sz, math.sin(el)])
     sun = bpy.data.lights.new('sun', 'SUN')
     sun.energy = 4.0
-    sun.color = (1.0, 0.82, 0.62)
+    sun.color = (1.0, 0.94, 0.86) if noon else (1.0, 0.82, 0.62)
     sun.angle = math.radians(0.6)
     so = R.link(bpy.data.objects.new('sun', sun))
     so.rotation_euler = (0, 0, 0)
@@ -119,7 +123,7 @@ def render(samples):
     world = scn.world
     world.use_nodes = True
     bg = next(n for n in world.node_tree.nodes if n.type == 'BACKGROUND')
-    bg.inputs['Color'].default_value = (0.55, 0.62, 0.78, 1)
+    bg.inputs['Color'].default_value = (0.6, 0.67, 0.8, 1) if noon else (0.55, 0.62, 0.78, 1)
     bg.inputs['Strength'].default_value = 0.55
     scn.render.film_transparent = True
     scn.cycles.samples = samples
@@ -134,7 +138,7 @@ def render(samples):
     return out
 
 
-def encode(png):
+def encode(png, tag=''):
     """Shift so column 0 is game azimuth 0, then KTX2 (ETC1S, with alpha) at 8k and 4k."""
     img = bpy.data.images.load(png)
     w, h = img.size
@@ -148,7 +152,7 @@ def encode(png):
     a = np.roll(a, -w // 2, axis=1)
     os.makedirs(ASSETS, exist_ok=True)
     tool = shutil.which('toktx')
-    for name, scale in (('panorama', 1), ('panorama_4k', 2)):
+    for name, scale in (('panorama' + tag, 1), ('panorama' + tag + '_4k', 2)):
         b = a if scale == 1 else a.reshape(h // 2, 2, w // 2, 2, 4).mean((1, 3))
         o = bpy.data.images.new('o', b.shape[1], b.shape[0], alpha=True)
         o.pixels.foreach_set(b.ravel())
@@ -171,9 +175,9 @@ def main():
     ob, h, _ = terrain()
     material(ob)
     print(f'terrain {R.tris(ob)} tris, {time.time() - t0:.0f}s')
-    png = render(opt['samples'])
+    png = render(opt['samples'], bool(opt['noon']))
     print(f'rendered in {time.time() - t0:.0f}s')
-    encode(png)
+    encode(png, '_noon' if opt['noon'] else '')
     print(f'done in {time.time() - t0:.0f}s')
 
 

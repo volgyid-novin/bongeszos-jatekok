@@ -6,6 +6,8 @@ import {
   normalWorldGeometry, faceDirection, materialColor, vertexColor, normalView, positionViewDirection, roughness,
 } from 'three/tsl';
 import { ATMO } from '../atmosphere.js';
+import { GI_ON } from '../gi.js';
+import { hfGI } from './gi.js';
 import { GU, POM_DEPTH } from '../ground.js';
 import { ss, lum, hash4, oneMinus } from './common.js';
 
@@ -239,7 +241,14 @@ class GroundLighting extends THREE.PhysicalLightingModel {
   ambientOcclusion(builder) {
     const { reflectedLight } = builder.context;
     const dotNV = normalView.dot(positionViewDirection).clamp();
-    const spec = sAO.sub(dotNV.add(sAO).pow(roughness.mul(-16).oneMinus().negate().exp2()).oneMinus()).clamp();
+    let ao = sAO;
+    if (GI_ON) {
+      // the baked light (?gfx=gi:1, gfx/gi.js): sky visibility and bounce, over the open desert's
+      const gi = hfGI(positionWorld, sNW).toVar();
+      reflectedLight.indirectDiffuse.mulAssign(gi);
+      ao = sAO.mul(min(dot(gi, vec3(0.2126, 0.7152, 0.0722)), 1));
+    }
+    const spec = ao.sub(dotNV.add(ao).pow(roughness.mul(-16).oneMinus().negate().exp2()).oneMinus()).clamp();
     reflectedLight.indirectDiffuse.mulAssign(sAO);
     reflectedLight.indirectSpecular.mulAssign(spec);
   }
@@ -399,7 +408,10 @@ export function trackNodeMaterial(Q, trackLength, u) {
     col.assign(col.mul(mix(vec3(1), gDesertTint(xz, mac), mix(0.45, 1, out))));
     const ao = mix(1, gS.ao, 0.85).mul(mix(1, mac.r, out)).toVar();
     // down in the canyon the floor sees only a strip of sky, less still by the walls
-    ao.mulAssign(oneMinus(canyon.mul(smoothstep(0.55, 1, edge).mul(0.25).add(0.35))));
+    // (hfShade, D2: deeper, as the floor of a real slot sees ~10-25 % of the sky)
+    const shade = ATMO.hfShade;
+    // (the baked light, gi, has the real thing)
+    if (!GI_ON) ao.mulAssign(oneMinus(canyon.mul(smoothstep(0.55, 1, edge).mul(mix(0.25, 0.2, shade)).add(mix(0.35, 0.62, shade)))));
     sAO.assign(ao);
     sAlb.assign(col.mul(mix(1, gS.ao, 0.35)));
     const polish = groove.mul(0.2).add(trail.r.mul(0.1)).add(oil.mul(0.42));
@@ -466,7 +478,8 @@ export function rockNodeMaterial(Q, params, u, { vertexColors, ao, arena }) {
     col.mulAssign(mix(1, tpAO, oneMinus(sandK).mul(0.3)));
     if (ao) {
       const rockAO = attribute('aAO', 'float').toVar();
-      occ.mulAssign(rockAO);
+      // (with the baked light, gi, only part of it: rAOgi; gfx/ground.js)
+      occ.mulAssign(pow(max(rockAO, 0), GI_ON ? u.rAOgi : ATMO.hfShade.mul(0.7).add(1)));
       col.mulAssign(mix(1, rockAO, u.rAOAlb));         // deep cavities stay dark in sunlight too (aoAlbedo)
     }
     sAO.assign(occ);

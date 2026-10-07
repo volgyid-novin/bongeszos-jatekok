@@ -1,10 +1,10 @@
 import * as THREE from 'three/webgpu';
 import {
-  Fn, If, Loop, float, vec2, vec3, vec4, uniform, uv, pass, mrt, output, velocity, time, screenSize, screenCoordinate,
+  Fn, If, Loop, Break, float, vec2, vec3, vec4, uniform, uv, pass, mrt, output, velocity, time, screenSize, screenCoordinate,
   mix, max, min, clamp, pow, exp, abs, sin, cos, atan, length, dot, fract, step, select, smoothstep, rtt, renderOutput,
-  texture, interleavedGradientNoise, getViewPosition, normalize,
+  texture, interleavedGradientNoise, getViewPosition, normalize, log2, exp2, perspectiveDepthToViewZ,
 } from 'three/tsl';
-import { ATMO } from '../atmosphere.js';
+import { ATMO, GRADE, PALETTE, SUN_DIR } from '../atmosphere.js';
 import { hfStaticShadow } from './atmosphere.js';
 import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import { ao as gtao } from 'three/addons/tsl/display/GTAONode.js';
@@ -12,6 +12,8 @@ import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { dof as dofNode } from 'three/addons/tsl/display/DepthOfFieldNode.js';
 import { denoise } from 'three/addons/tsl/display/DenoiseNode.js';
 import { ss, hash12, oneMinus } from './common.js';
+import { METER_W, METER_H } from '../eye.js';
+import { horizonUv, CONTACT, sunShare } from '../screen.js';
 
 // ============================================================
 //  Post-processing on WebGPURenderer (TSL nodes), the same look as gfx/post.js:
@@ -35,6 +37,8 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
   const color = scenePass.getTextureNode('output');
   const depth = scenePass.getTextureNode('depth');
   const viewZ = scenePass.getViewZNode();
+  // the scene camera's clip planes (TSL's cameraNear / cameraFar would be the post quad's camera here)
+  const camNear = uniform(camera.near), camFar = uniform(camera.far);
 
   // --- ambient occlusion: GTAO at half resolution, tinted like N8AO and faded out with distance ---
   let aoPass = null;
@@ -88,7 +92,8 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
         const phase = float((1 - g * g) / (4 * Math.PI)).div(pow(c.mul(-2 * g).add(1 + g * g), 1.5)).mul(0.75).add(0.25 / (4 * Math.PI));
         const sunL = ATMO.hfSunCol.mul(phase.mul(3.1));
         // dust in shadow still glows with the sky and the sunlit rock round it: about the shaded walls' level
-        const amb = ATMO.hfFogCol.mul(0.32);
+        // (less where the shade is darker, D2: the eye opens up to it, and bright dust turns the slot milky)
+        const amb = ATMO.hfFogCol.mul(oneMinus(ATMO.hfShade.mul(0.55)).mul(0.32));
         const T = float(1).toVar(), acc = vec3(0).toVar();
         Loop(STEPS, () => {
           const q = VOL.camPos.add(rd.mul(t)).toVar();
@@ -110,14 +115,70 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
     const base = lit;
     lit = Fn(() => { const v = volTex.sample(uv()); return vec4(base.rgb.mul(v.a).add(v.rgb), 1); })();
   }
+  // --- contact shadows (?gfx=sss:1, D6; notes and the GLSL version: gfx/post.js, ContactEffect) ----------
+  // jittered per pixel and per frame; TRAA averages it
+  const CS = { proj: uniform(new THREE.Matrix4()), projInv: uniform(new THREE.Matrix4()), camWorld: uniform(new THREE.Matrix4()), sunV: uniform(new THREE.Vector3()), frame: uniform(0) };
+  if (Q.sss) {
+    const share = sunShare(PALETTE.sunI, PALETTE.hemiI, PALETTE.envI);
+    const texel = vec2(1).div(screenSize);
+    const view = (p, d) => getViewPosition(p, d, CS.projInv);
+    const base = lit;
+    lit = Fn(() => {
+      const p = uv().toVar();
+      const d = depth.sample(p).r.toVar();
+      const k = float(0).toVar(), occ = float(0).toVar();
+      If(d.lessThan(0.99999), () => {
+        const P = view(p, d).toVar();
+        If(P.z.negate().lessThan(CONTACT.far), () => {
+          const tx = vec2(texel.x, 0), ty = vec2(0, texel.y);
+          const px1 = view(p.add(tx), depth.sample(p.add(tx)).r), px0 = view(p.sub(tx), depth.sample(p.sub(tx)).r);
+          const py1 = view(p.add(ty), depth.sample(p.add(ty)).r), py0 = view(p.sub(ty), depth.sample(p.sub(ty)).r);
+          const dx = select(abs(px1.z.sub(P.z)).lessThan(abs(P.z.sub(px0.z))), px1.sub(P), P.sub(px0));
+          const dy = select(abs(py1.z.sub(P.z)).lessThan(abs(P.z.sub(py0.z))), py1.sub(P), P.sub(py0));
+          const N = normalize(dx.cross(dy)).toVar();
+          If(dot(N, P).greaterThan(0), () => { N.assign(N.negate()); });
+          const NL = dot(N, CS.sunV);
+          If(NL.greaterThan(0.02), () => {
+            const W = CS.camWorld.mul(vec4(P, 1)).xyz;
+            const sv = hfStaticShadow(W, CS.camWorld.mul(vec4(N, 0)).xyz);
+            const kk = sv.mul(NL).mul(share);
+            k.assign(kk.div(kk.add(1)));
+            If(k.greaterThan(0.02), () => {
+              const jit = interleavedGradientNoise(screenCoordinate.add(vec2(CS.frame.mul(5.588), CS.frame.mul(2.317))));
+              Loop(CONTACT.steps, ({ i }) => {
+                const Q = P.add(N.mul(0.03)).add(CS.sunV.mul(float(i).add(jit).div(CONTACT.steps).mul(CONTACT.len))).toVar();
+                const h = CS.proj.mul(vec4(Q, 1)).toVar();
+                // (texture v runs down on this renderer)
+                const q = vec2(h.x.div(h.w).mul(0.5).add(0.5), h.y.div(h.w).mul(-0.5).add(0.5)).toVar();
+                If(q.x.lessThan(0).or(q.y.lessThan(0)).or(q.x.greaterThan(1)).or(q.y.greaterThan(1)), () => { Break(); });
+                const dz = perspectiveDepthToViewZ(depth.sample(q).r, camNear, camFar).sub(Q.z);
+                // (weaker the further the occluder: dark at the foot of a thing, gone a metre out)
+                If(dz.greaterThan(0.02).and(dz.lessThan(CONTACT.thick)), () => { occ.assign(oneMinus(float(i).add(jit).div(CONTACT.steps))); Break(); });
+              });
+              occ.mulAssign(oneMinus(smoothstep(CONTACT.far * 0.6, CONTACT.far, P.z.negate())));
+            });
+          });
+        });
+      });
+      // (?gfx=sss:2: debug view, red = in contact shadow, green = the sun's estimated share)
+      if (Q.sss === 2) return vec4(occ, k, 0, 1);
+      return vec4(base.rgb.mul(oneMinus(k.mul(occ).mul(CONTACT.strength))), 1);
+    })();
+  }
   const resolved = taa ? traa(lit, depth, scenePass.getTextureNode('velocity'), camera) : lit;
   const src = taa ? resolved.getTextureNode() : rtt(lit);
 
   // --- heat haze + speed blur + chromatic aberration (samples the frame at other uvs) ---
   const S = {
     uBlur: uniform(0), uAberr: uniform(0), uHeat: uniform(Q.heat ? 1 : 0), uCenter: uniform(new THREE.Vector2(0.5, 0.5)),
-    uDistortOn: uniform(heat ? 1 : 0),
+    uDistortOn: uniform(heat ? 1 : 0), uExposure: uniform(1),
+    uMirage: uniform(Q.mirage ? 1 : 0), uTime: uniform(0), uHz: uniform(new THREE.Vector4(0, 0.5, 0, -1)),
   };
+  // eye adaptation (?gfx=eye:1, gfx/eye.js): the exposure multiplies the frame here, in front of bloom, god
+  // rays, flare and AgX (which then gets 1), so a blown-out exit blooms too
+  const eyeOn = !!Q.eye;
+  const expo0 = renderer.toneMappingExposure || 1.1;
+  const EXPO = eyeOn ? S.uExposure : float(1);
   const distortTex = texture(heat ? heat.rt.texture : new THREE.Texture());
   const aspect = screenSize.x.div(screenSize.y);
   const speed = Fn(() => {
@@ -126,8 +187,12 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
     const sky = step(0.99999, depth.sample(p0).r);
     // heat shimmer over distant ground
     const far = smoothstep(120, 700, vz).mul(oneMinus(sky));
+    // ?gfx=mirage:1 (D5; notes: gfx/post.js): radians below the horizon, and the band just under it where the
+    // hot air over the far flats bends the sky down; the shimmer is stronger there
+    const below = S.uHz.y.add(p0.x.sub(S.uHz.x).mul(S.uHz.z)).sub(p0.y).mul(S.uHz.w);
+    const band = Q.mirage ? S.uMirage.mul(oneMinus(sky)).mul(smoothstep(120, 300, vz)).mul(smoothstep(-0.001, 0.003, below)).mul(oneMinus(smoothstep(0.012, 0.04, below))).toVar() : float(0);
     const off = vec2(sin(p0.y.mul(260).add(time.mul(7)).add(sin(p0.x.mul(35).add(time)).mul(2))),
-      cos(p0.y.mul(210).sub(time.mul(5.5)).add(p0.x.mul(20)))).mul(0.0011).mul(far).mul(S.uHeat).toVar();
+      cos(p0.y.mul(210).sub(time.mul(5.5)).add(p0.x.mul(20)))).mul(0.0011).mul(far).mul(S.uHeat).mul(band.mul(1.5).add(1)).toVar();
     // exhaust heat behind the engines
     if (heat) {
       const dist = distortTex.sample(p0);
@@ -150,8 +215,21 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
       });
       col.divAssign(8);
     });
+    if (Q.mirage) {
+      If(band.greaterThan(0.002), () => {
+        // the mirage: the frame mirrored about the horizon in this column (squashed a little, wobbling), patchy
+        // along the horizon; not where the mirrored point is nearer than the ground (a pod, a rock)
+        const vh = S.uHz.y.add(suv.x.sub(S.uHz.x).mul(S.uHz.z));
+        const wob = sin(suv.x.mul(90).add(S.uTime.mul(2.3))).mul(0.5).add(sin(suv.x.mul(37).sub(S.uTime.mul(1.7))).mul(0.5));
+        const m = vec2(suv.x.add(wob.mul(0.0015)), vh.add(vh.sub(suv.y).mul(0.8)).add(wob.mul(0.0012))).toVar();
+        const dm = depth.sample(clamp(m, 0.001, 0.999)).r;
+        const keep = max(step(0.99999, dm), step(vz, perspectiveDepthToViewZ(dm, camNear, camFar).negate()));
+        const patchy = smoothstep(0.25, 0.75, sin(suv.x.mul(13).add(sin(suv.x.mul(41).add(S.uTime.mul(0.4))).mul(0.6))).mul(0.5).add(0.5));
+        col.assign(mix(col, src.sample(m).rgb.mul(0.92), band.mul(keep).mul(mix(0.45, 0.85, patchy))));
+      });
+    }
     // scrub NaN/Inf so one bad pixel cannot spread through the bloom chain (GPU max() drops a NaN)
-    return vec4(min(max(col, vec3(0)), vec3(6e4)), 1);
+    return vec4(min(max(col, vec3(0)), vec3(6e4)).mul(EXPO), 1);
   })();
   const speedTex = rtt(speed);
 
@@ -160,7 +238,7 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
   const dofd = dofNode(speedTex, viewZ, D.focus, D.range, 3);
 
   // --- sun on screen, shared by the god rays and the lens flare ---
-  const F = { uSun: uniform(new THREE.Vector2()), uOn: uniform(0), uIntensity: uniform(Q.flare ? 1 : 0), uTint: uniform(new THREE.Color('#ffd9a8')), uRays: uniform(Q.godrays ? 1 : 0) };
+  const F = { uSun: uniform(new THREE.Vector2()), uOn: uniform(0), uIntensity: uniform(Q.flare ? 1 : 0), uTint: uniform(PALETTE.flare.clone()), uRays: uniform(Q.godrays ? 1 : 0) };
   // (no explicit LOD on the depth texture: on the WebGL2 backend that path returns a vec4 where TSL expects a float)
   const isSky = (p) => step(0.99999, depth.sample(clamp(p, 0.001, 0.999)).r);
 
@@ -168,7 +246,7 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
   // GodRaysEffect: 48 samples, density 0.94, decay 0.93, weight 0.32, exposure 0.42), half resolution
   let rays = null;
   if (Q.godrays) {
-    const sunCol = vec3(1, 0.69, 0.35);
+    const sunCol = vec3(PALETTE.rays.r, PALETTE.rays.g, PALETTE.rays.b);
     const discR = Math.atan(150 / 6000);              // the angular radius of the old sun sphere
     const rayFn = Fn(() => {
       const p = uv().toVar();
@@ -206,6 +284,8 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
       const ang = atan(d.y, d.x);
       const star = pow(abs(sin(ang.mul(6).add(0.3))), 40).add(pow(abs(sin(ang.mul(4).add(1.1))), 60).mul(0.6));
       c.addAssign(F.uTint.mul(exp(r.mul(-9)).mul(0.35).add(star.mul(exp(r.mul(-6))).mul(0.25))));
+      // glare veil (noon): a broad, faint glow over much of the frame, the squint into a midday sun
+      if (PALETTE.veil) c.addAssign(F.uTint.mul(exp(r.mul(-1.6)).mul(PALETTE.veil)));
       // anamorphic streak
       c.addAssign(vec3(1, 0.75, 0.5).mul(exp(abs(d.y).mul(-140))).mul(exp(abs(d.x).mul(-2.6))).mul(0.25));
       // ghosts along the line through the screen centre
@@ -224,8 +304,8 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
 
   // --- grade after tone mapping: split toning, contrast, saturation, vignette, grain, flash, fade ---
   const G = {
-    uSat: uniform(1.3), uContrast: uniform(1.15), uVignette: uniform(0.38), uGrain: uniform(0.022), uFade: uniform(0), uFlash: uniform(0),
-    uShadow: uniform(new THREE.Vector3(0.94, 0.98, 1.06)), uHigh: uniform(new THREE.Vector3(1.04, 1.0, 0.94)), uFlashCol: uniform(new THREE.Color('#fff3e0')),
+    uSat: uniform(GRADE.sat), uContrast: uniform(GRADE.contrast), uVignette: uniform(0.38), uGrain: uniform(0.022), uFade: uniform(0), uFlash: uniform(0),
+    uShadow: uniform(new THREE.Vector3(...GRADE.shadow)), uHigh: uniform(new THREE.Vector3(...GRADE.high)), uFlashCol: uniform(new THREE.Color('#fff3e0')),
   };
   const grade = Fn(([c0]) => {
     const p = uv();
@@ -244,14 +324,15 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
     return c;
   });
 
-  const exposure = renderer.toneMappingExposure || 1.1;
+  const exposure = eyeOn ? 1 : expo0;
   const bloomStrength = Q.bloom ? 0.85 : 0;
   const finish = (base) => {
     let hdr = base.rgb;
-    if (rays) hdr = hdr.add(rays.rgb.mul(F.uRays));
-    const bl = bloom(base, bloomStrength, 0.72, 0.92);
-    bl.smoothWidth.value = 0.25;
-    hdr = hdr.add(bl.rgb).add(flare(uv()));
+    if (rays) hdr = hdr.add(rays.rgb.mul(F.uRays).mul(EXPO));
+    // (with the eye's exposure in front, the threshold moves with the preset's exposure: the open desert blooms as before)
+    const bl = bloom(base, bloomStrength, 0.72, 0.92 * (eyeOn ? expo0 : 1));
+    bl.smoothWidth.value = 0.25 * (eyeOn ? expo0 : 1);
+    hdr = hdr.add(bl.rgb).add(flare(uv()).mul(EXPO));
     // AgX: highlights roll off to white instead of skewing yellow; the grade puts back saturation and contrast
     const mapped = vec4(hdr, 1).toneMapping(THREE.AgXToneMapping, exposure);
     return renderOutput(vec4(grade(mapped.rgb), 1), THREE.NoToneMapping, renderer.outputColorSpace);
@@ -269,9 +350,46 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
   const pipeline = makePipeline(outPlain), pipelineDof = Q.dof ? makePipeline(outDof) : pipeline;
   let dofOn = false;
 
+  // --- eye adaptation meter (gfx/eye.js; GLSL version: gfx/post.js, MeterPass) ---------------------------
+  // The scene colour into METER_W x METER_H texels after the frame: r = mean log2 luminance of 4x4 taps, g =
+  // weight (centre-weighted, sky at 0.4). The scene pass's targets are read as plain textures: a pass
+  // texture node would make this quad draw the scene pass again.
+  let meter = null;
+  if (Q.eye === 1) {
+    const rt = new THREE.RenderTarget(METER_W, METER_H, { type: THREE.FloatType, depthBuffer: false });
+    rt.texture.minFilter = rt.texture.magFilter = THREE.NearestFilter;
+    const srcC = texture(scenePass.renderTarget.textures[0]), srcD = texture(scenePass.renderTarget.depthTexture);
+    const mat = new THREE.NodeMaterial();
+    mat.fragmentNode = Fn(() => {
+      const cells = vec2(METER_W, METER_H), c0 = uv().mul(cells).floor().toVar();
+      let sum = float(0), sky = float(0);
+      for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) {
+        const p = c0.add(vec2((i + 0.5) / 4, (j + 0.5) / 4)).div(cells);
+        const c = clamp(srcC.sample(p).rgb, 0, 6e4);
+        sum = sum.add(log2(max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1e-4)));
+        sky = sky.add(step(0.99999, srcD.sample(p).r));
+      }
+      const q = c0.add(0.5).div(cells).sub(0.5).div(0.3);
+      return vec4(sum.div(16), exp(dot(q, q).mul(-0.5)).mul(mix(1, 0.4, sky.div(16))), 0, 1);
+    })();
+    const quad = new THREE.QuadMesh(mat);
+    // (drawn only when asked for: from the last frame's scene pass, once there has been one)
+    meter = {
+      ready: false,
+      read() {
+        if (!meter.ready) return null;
+        const prev = renderer.getRenderTarget();
+        renderer.setRenderTarget(rt); quad.render(renderer); renderer.setRenderTarget(prev);
+        return renderer.readRenderTargetPixelsAsync(rt, 0, 0, METER_W, METER_H);
+      },
+    };
+  }
+
   const _v = new THREE.Vector3(), _f = new THREE.Vector3();
   const api = {
     pipeline, scenePass, aoPass, taa, vol: VOL,
+    // eye adaptation: the metered frame (gfx/eye.js), and the exposure it asks for (in FX.exposure)
+    meter: meter && (() => meter.read()),
     // the same handles the tests use on the WebGL chain (gfx/post.js)
     grade: { uniforms: new Map(Object.entries(G)) },
     speed: { uniforms: new Map(Object.entries(S)) },
@@ -291,6 +409,13 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
         VOL.camPos.value.setFromMatrixPosition(camera.matrixWorld);
       }
       S.uBlur.value = v.blur || 0;
+      S.uExposure.value = v.exposure ?? expo0;
+      if (Q.mirage) { horizonUv(camera, S.uHz.value, true); S.uTime.value += dt; }
+      if (Q.sss) {
+        CS.proj.value.copy(camera.projectionMatrix); CS.projInv.value.copy(camera.projectionMatrixInverse); CS.camWorld.value.copy(camera.matrixWorld);
+        CS.sunV.value.copy(SUN_DIR).transformDirection(camera.matrixWorldInverse);
+        CS.frame.value = (CS.frame.value + 1) % 64;
+      }
       S.uAberr.value = v.aberr || 0;
       if (v.center) S.uCenter.value.copy(v.center);
       _v.copy(camera.position).addScaledVector(sunDir, 6000).project(camera);
@@ -307,7 +432,7 @@ export function createNodePost(renderer, scene, camera, Q, sunDir, heat = null) 
       }
       dofOn = wantDof;
     },
-    render() { (dofOn ? pipelineDof : pipeline).render(); },
+    render() { (dofOn ? pipelineDof : pipeline).render(); if (meter) meter.ready = true; },
   };
   return api;
 }
