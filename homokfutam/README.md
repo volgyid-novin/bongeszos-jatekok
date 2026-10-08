@@ -17,7 +17,7 @@ Utána nyisd meg: http://localhost:5173/homokfutam/ (a BLOCKSHOT marad a http://
 
 ## Játék a haverokkal
 
-A legegyszerűbb az állandó online link: **https://volgyid-novin.github.io/bongeszos-jatekok/homokfutam/**. Nyisd meg, írd be a neved, nyomj **ÚJ SZOBA**-t, és küldd el a meghívó linket.
+A legegyszerűbb az állandó online link: **https://volgyid-novin.github.io/bongeszos-jatekok/homokfutam/**. Nyisd meg, írd be a neved, a **HAVEROKKAL** menüben nyomj **ÚJ SZOBA**-t, és küldd el a meghívó linket.
 
 Ha a saját gépedről akarod futtatni: az oldalt **HTTPS-en** (vagy localhoston) kell megnyitni, különben a szoba nem tud kapcsolódni.
 
@@ -42,10 +42,10 @@ Nyisd meg a kiírt `https://….trycloudflare.com/homokfutam/` linket (ne a loca
 
 ### Hogyan megy egy futam
 
-- A szobában mindenki a **KÉSZ VAGYOK** gombot nyomja. Ha mindenki kész, a házigazda indítja a futamot.
+- A szobában hat hely van: aki belépett, a házigazda (korona) és a szabad helyek, amelyeken bot indul (a hely mutatja, melyik). Mindenki a **KÉSZ VAGYOK** gombot nyomja. Ha mindenki kész, a házigazda indítja a futamot.
 - A köröket és a botok erősségét a házigazda állítja (a listában a „házigazda” jelzésű játékos).
 - Egy futamon legfeljebb 6 ember indul. A színeket és a rajthelyeket a játék sorsolja.
-- Futam közben az **Esc** nem állítja meg a versenyt, csak a menüt hozza fel, a többiek közben mennek tovább.
+- Futam közben az **Esc** nem állítja meg a versenyt, csak a menüt hozza fel (benne az élő sorrenddel), a többiek közben mennek tovább.
 - Az eredmény akkor jelenik meg, ha minden ember célba ért, legkésőbb 25 másodperccel a te befutód után. Aki még úton van, becsült idővel szerepel.
 - Utána **VISSZA A SZOBÁBA**, és jöhet a következő futam.
 - Ha valaki kilép futam közben, a podja kiesik. Ha a házigazda lép ki, a botokat a következő játékos gépe veszi át, és a futam megy tovább.
@@ -61,10 +61,11 @@ Nyisd meg a kiírt `https://….trycloudflare.com/homokfutam/` linket (ne a loca
 | Space | csúsztatás (drift): élesebb kanyar, hűti a hajtóműveket |
 | C | kamera váltása (3 nézet) |
 | R | vissza a pályára |
+| Tab (lenyomva) | teljes sorrend |
 | Esc / P | szünet (többjátékos módban csak menü) |
 | M | hang ki/be |
 | N | zene ki/be |
-| I | FPS-mérő ki/be (a képkockaszám, a képkockaidő, a renderelő és a fokozat a képernyő tetején) |
+| I | FPS-mérő ki/be (a képkockaszám, a képkockaidő, a renderelő és a fokozat a képernyő jobb alsó sarkában) |
 | G | filmszemcse ki/be |
 | bármelyik gomb | a rajt előtti bemutató átugrása |
 
@@ -79,14 +80,29 @@ Kontrollerrel is megy: bal kar a kormány (középen finomabb, a kar szélén te
 - **Hő:** a boost gyorsít, de melegíti a hajtóműveket, és minél melegebbek, annál erősebben tol. 80 felett boost közben villog a csík és sípol a riasztás, egyre sűrűbben. Ha a csík megtelik, a pod túlmelegszik: 3 másodpercig nincs boost, és a végsebesség is kisebb.
 - **Szélárnyék:** egy másik pod mögött (6–55 méterre, nagyjából egy vonalban) kisebb a légellenállás, a végsebesség 6%-kal nagyobb. A sebességmérő mellett kiírja, hogy SZÉLÁRNYÉK, és elhalkul a menetszél.
 - **Széllökések:** kint a nyílt pályán a széllökések (látszik, ahogy jönnek: mozdul a homok, a fű és a zászlók) oldalra tolják a podot, és az orrát a szél felé fordítják. A kanyonban és az arénában nem fúj.
-- **Tökéletes rajt:** ha a gázt a „RAJT!” előtti utolsó fél másodpercben nyomod le, a pod lendülettel indul.
+- **Tökéletes rajt:** ha a gázt a „RAJT!” előtti utolsó fél másodpercben nyomod le, a pod lendülettel indul. A rajtlámpák alatti csíkon a narancs mező ez a fél másodperc, a fehér jel mutatja, mikor nyomtad le a gázt.
 - **Pálya széle:** az utolsó pár méteren zúg a pálya széle, rázkódik a kép, és rezeg a kontroller. A homokon a pod fokozatosan lassul (teljes sebességnél másodpercenként nagyjából a negyedét veszíti el, beljebb a dűnék felé a felét), és kicsit gyengébb a kormány; a sziklákba ütközni sokba kerül. Az arénában és a kanyonban fal van: ha csak súrolod, a pod befordul a fal mentén, és pár százalékot veszít, szemből nekimenni viszont nagyon drága.
 - **Ütközés:** a pod a valódi alakjával ütközik (a két hajtómű, a pilótafülke, a szárnyak és a vezérsíkok), a falak, a sziklák, a kőomlások és a sziklaív pedig ott tömörek, ahol a képen is: ami látszólag hozzáér valamihez, az hozzá is ér, és semmi nem csúszik bele a másikba. Ha a pod orra vagy farka ér hozzá valamihez, az ütés el is fordítja a podot: a falnak csapódó orr kifordul a fal mentén. A kanyon két torkolatánál a falak alja rámpaként fut le a homokba: ha ott kisodródsz, a pod felfut a sziklára, a lejtő visszaterel a pálya felé, és a fal mentén visz tovább, ahelyett hogy megakadna.
 - A rekordidődet (pályahossz szerint) és a legjobb körödet a böngésző megjegyzi. Csak az egyéni futamok számítanak bele.
 
+## A képernyő futam közben
+
+- **Bal fent:** a helyezésed és a kör, alatta az élő sorrend: mindenkinél az, hány másodperccel van előtted (+) vagy mögötted (−). Aki épp helyet cserélt, egy pillanatra ▲1 / ▼1 jelet kap. Haverokkal a botok mellett BOT áll, aki kilépett, KIESETT. Egyedül a sorrend kompakt (az élen álló, előtted, te, mögötted), haverokkal mindenki látszik. A **Tab** lenyomva tartva mindig a teljes sorrendet mutatja.
+- **Középen fent:** a kör egy csíkon, rajta minden pod, a négy szakasszal (SZIKLATŰK, KANYON, DŰNÉK, SZIKLAÍV). A szakaszhatárok a kanyon bejárata, a kanyon kijárata és a sziklaív.
+- **Jobb fent:** az idő, a köridő, és mellette a különbség a legjobb körödhöz képest (zöld: gyorsabb, sárga: lassabb). Alatta a négy szakasz: zöld, ha azt a szakaszt gyorsabban mentél, mint a legjobb körödön, sárga, ha lassabban. Szakaszhatáron fent felvillan a különbség. A legjobb kör a futam eddigi legjobb köröd, vagy ha az rekord, az egyéni futamokon elért legjobb köröd. Ezt a böngésző megjegyzi, de csak egyéni futamból.
+- **Alul középen:** a sebesség, körülötte a hő íve. 80 felett piros a sáv, csúsztatás közben kék, túlmelegedéskor villog, és kiírja, hány másodperc van még hátra (HŰL). Mellette balra az előtted, jobbra a mögötted haladó pod és a távolságotok másodpercben. Zöld, ha utolérni látszol az előtted lévőt, sárga, ha a mögötted lévő közeledik.
+- **A podok felett:** név, helyezés és távolság méterben. A távoli podok csak egy kis jelet kapnak, az egymást takaró címkék egymás fölé kerülnek, a messze előtted haladó sűrű bolyból egyetlen címke lesz („3 POD”). Haverokkal a játékosok címkéje mindig látszik.
+- **A kép széle:** ha egy pod 30 méteren belül közeledik mögötted, a kép széle azon az oldalon az ő színében világít, a nevével és a távolsággal.
+- **Jobb oldalt:** eseményfolyam: előzések, az élen történt csere, a futam leggyorsabb köre, nagy ütközések a közeledben, haverokkal a kilépők. A figyelmeztetések (TÚLMELEGEDÉS, ROSSZ IRÁNY) középen maradnak.
+- **Rajt előtt:** a kapu öt lámpája a képernyőn is, mellette a visszaszámlálás, alatta a tökéletes rajt csíkja.
+
+A **BEÁLLÍTÁSOK / KIJELZŐ** fülön ki-be kapcsolható vagy állítható: a névcímkék (KI, KÖZELIEK, MIND), a sorrend (KOMPAKT, TELJES), a minitérkép és a csík (TÉRKÉP, SZALAG, MINDKETTŐ), a hátsó jelzés, az eseményfolyam és a HUD mérete. A választást a böngésző megjegyzi.
+
+Az eredményeknél a táblázatban mindenki legjobb köre is ott van (lila: a futam leggyorsabb köre), alatta a köreid, mellette pedig egy ábra arról, hogyan változtak a helyezések a futam alatt.
+
 ## Grafika és hang
 
-A menüben a **GRAFIKA** sorban négy fokozat van. Az első indításkor a játék a géphez választ: telefonon ALACSONY vagy KÖZEPES, asztali gépen MAGAS. A választást a böngésző megjegyzi, a váltás újratölti az oldalt.
+A menüben a **BEÁLLÍTÁSOK / GRAFIKA** fülön négy fokozat van. Az első indításkor a játék a géphez választ: telefonon ALACSONY vagy KÖZEPES, asztali gépen MAGAS. A választást a böngésző megjegyzi, a váltás újratölti az oldalt.
 
 | Fokozat | Mi van benne |
 |---|---|
@@ -99,7 +115,7 @@ Ha a gép nem bírja a tempót, a felbontás magától lejjebb megy, és amikor 
 
 Teszteléshez az URL-ben is meg lehet adni: `?q=low|medium|high|ultra`, egyes beállítások pedig felülírhatók, például `?gfx=ao:0,heat:0,shadow:1024`. A MAGAS és az ULTRA fokozat grafikai bővítései egyenként is ki-be kapcsolhatók: `sky`, `csm`, `pom`, `refl`, `vol`, `aoq`, `coat`, `grass`, `geo`, `clouds`, `parts` (például `?gfx=sky:1,grass:0`; mit csinálnak és mennyibe kerülnek: `docs/visual-next-steps.md`, C), valamint a fény bővítései: `noon` (déli fény; `noon:0` a régi, aranyórás), `sunEl` (a nap magassága fokban, kipróbáláshoz), `eye` (szemadaptáció: 0 ki, 1 a képből mérve, 2 a hely szerint), `gi` (sütött szórt fény), `mirage` (délibáb), `sss` (érintkezési árnyékok; `sss:2` hibakereső nézet), `rtr` (sugárkövetett tükröződés a saját podon, csak WebGPU-n), `gloss` (polírozott podok; `gloss:0` a kopott felület, ahogy a modellben van), `tunnel` (alagút a kanyon második felében; `tunnel:0` nélküle). Ezekről: `docs/visual-next-steps.md`, D. Az élő, szeles sivatag elemei szintén: `gust` (egyetlen szél: lökések vonulnak át a pályán, ezek mozgatják a füvet, a bokrokat, a zászlókat, a homokot, az ördögszekereket és a szél hangját), `drift` (homokfolyások a pálya néhány szakaszán), `trickle` (homokzuhatagok a sziklákról), `markers` (pálya menti oszlopok lobogó szalaggal, kőhalmok, hordók), `camps` (nézők és táborok kint a pályán), `landmark` (egy óriási kotrógép roncsa a dűnék között), `wake` (a podok felkavarják a világot: fű, bokor, por, homok, ördögszekér, madarak), `lens` (koszos lencse, kipróbálásra, alapból ki). Ezekről: `docs/visual-next-steps.md`, E. A széllökések a grafikától függetlenül tolják a podokat; méréshez a `?wind=0` kikapcsolja a tolóerejüket. Az ütközések effektjei is kikapcsolhatók: `hitfx:0` a régieket hozza vissza. A régi ütközés, amely a podot egyetlen körrel számolta, méréshez `?col=0`-val jön vissza. Ezekről: `docs/visual-next-steps.md`, F.
 
-A **RENDERELŐ** sorban WEBGPU és WEBGL közül lehet választani; a váltás újratölti az oldalt, a választást a böngésző megjegyzi. Asztali gépen alapból WebGPU, ha a böngésző támogatja, különben WebGL; telefonon és tableten alapból WebGL. WebGPU-n a three.js WebGPURenderer rajzol, TSL-ben írt anyagokkal és utófeldolgozással. Az élsimítás itt időbeli (TRAA): a homok csillogása, a távoli vezetékek és a kőlapok mozgás közben jóval kevésbé vibrálnak, és nincs szükség MSAA-ra; az árnyékolás a sarkokban GTAO. A WebGPU-s rész csak ilyenkor töltődik le. Cserébe képkockánként kb. háromszor annyi processzoridőt visz el, és lassabban tölt be (a részletek: `docs/visual-next-steps.md`, B), ezért gyengébb gépen a WEBGL lehet a gyorsabb (telefonon ezért az az alapértelmezés). Az URL-ben is megadható: `?renderer=webgpu|webgl`; `?renderer=webgpu-gl` a WebGPURenderer saját WebGL2-es ágát kényszeríti (csak összehasonlításhoz, lassú).
+Ugyanott, a **RENDERELŐ** sorban WEBGPU és WEBGL közül lehet választani; a váltás újratölti az oldalt, a választást a böngésző megjegyzi. Asztali gépen alapból WebGPU, ha a böngésző támogatja, különben WebGL; telefonon és tableten alapból WebGL. WebGPU-n a three.js WebGPURenderer rajzol, TSL-ben írt anyagokkal és utófeldolgozással. Az élsimítás itt időbeli (TRAA): a homok csillogása, a távoli vezetékek és a kőlapok mozgás közben jóval kevésbé vibrálnak, és nincs szükség MSAA-ra; az árnyékolás a sarkokban GTAO. A WebGPU-s rész csak ilyenkor töltődik le. Cserébe képkockánként kb. háromszor annyi processzoridőt visz el, és lassabban tölt be (a részletek: `docs/visual-next-steps.md`, B), ezért gyengébb gépen a WEBGL lehet a gyorsabb (telefonon ezért az az alapértelmezés). Az URL-ben is megadható: `?renderer=webgpu|webgl`; `?renderer=webgpu-gl` a WebGPURenderer saját WebGL2-es ágát kényszeríti (csak összehasonlításhoz, lassú).
 
 Mi van a képen:
 
@@ -130,8 +146,10 @@ Mi van a képen:
 
 ```
 homokfutam/
-  index.html        menük, HUD, stílus
+  index.html        menük, HUD, a betöltőképernyő (a lépései: main.js, LOAD), stílus
   main.js           pálya, podok, fizika, botok, verseny, kamera, többjátékos logika
+  hud.js            a futam alatti kijelző: sorrend és különbségek, szakaszidők, névcímkék, a kör csíkja, hő, rajtlámpák,
+                    eseményfolyam (mindent a podok megtett útjából mér, ezért a többi játékosnál is működik)
   audio.js          szintetizált hang: motorok, térhatás, zengés, közönség, zene, bemondó
   net.js            P2P szoba (Trystero), üzenettípusok
   playerPod.js      a részletes pod: betöltés, podonkénti festés, mozgó részek

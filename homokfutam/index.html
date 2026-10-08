@@ -6,20 +6,27 @@
 <title>Homokfutam</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700;800&family=Saira:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;600;700;800&family=Saira:wght@400;500;600&display=swap">
 <style>
-/* Layout: full-bleed 3D canvas; HUD pinned to the corners; menus as one left-aligned glass panel over the scene. */
+/* Layout: full-bleed 3D canvas; HUD pinned to the corners (race state top left, timing top right, the lap strip top centre,
+   speed, heat and the fight for position bottom centre); menus as left-aligned glass panels over the scene. */
 :root {
   --ink: #1b140e;
   --glass: rgba(27, 20, 14, 0.66);
   --glass-strong: rgba(22, 16, 11, 0.86);
   --sand: #f2e4c9;
   --sand-dim: #c4ad8b;
+  --sand-mute: #9a8466;
   --flame: #ff7b2e;
   --arc: #c86bff;
   --line: rgba(242, 228, 201, 0.16);
+  --line-2: rgba(242, 228, 201, 0.3);
   --good: #8fe39a;
   --bad: #ff5a4a;
+  --amber: #ffc04d;
+  --fast: #b98cff;
+  --cool: #8fd0ff;
+  --ts: 0 1px 2px rgba(0,0,0,.55), 0 2px 14px rgba(0,0,0,.45);
   --font-display: "Saira Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
   --font-body: "Saira", system-ui, -apple-system, "Segoe UI", sans-serif;
   color-scheme: dark;
@@ -35,51 +42,159 @@ body {
 button { font: inherit; color: inherit; }
 button:focus-visible { outline: 2px solid var(--flame); outline-offset: 3px; }
 .num { font-variant-numeric: tabular-nums; }
-
-/* ---------- HUD ---------- */
-#hud { position: fixed; inset: 0; pointer-events: none; }
-.hud-tl, .hud-tr {
-  position: absolute; top: calc(16px + env(safe-area-inset-top, 0px));
-  display: flex; flex-direction: column; gap: 4px;
-}
-.hud-tl { left: 20px; }
-.hud-tr { right: 20px; align-items: flex-end; }
-.lbl { font-family: var(--font-display); font-weight: 500; font-size: 12px; letter-spacing: .16em; color: var(--sand-dim); text-transform: uppercase; }
-#posBig { font-family: var(--font-display); font-weight: 800; font-size: 64px; line-height: .9; text-shadow: 0 2px 18px rgba(0,0,0,.45); }
-#posBig small { font-size: 26px; font-weight: 700; color: var(--sand-dim); margin-left: 2px; }
-#lapTxt { font-family: var(--font-display); font-weight: 700; font-size: 22px; letter-spacing: .04em; }
-.trow { display: flex; gap: 12px; align-items: baseline; justify-content: flex-end; }
-.trow b { font-family: var(--font-display); font-weight: 700; font-size: 22px; min-width: 92px; text-align: right; }
-.trow.main b { font-size: 30px; }
-#bestLapVal.fresh { color: var(--good); }
-
-.hud-speed {
-  position: absolute; left: 50%; transform: translateX(-50%);
-  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
-  display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 240px;
-}
-#speedVal { font-family: var(--font-display); font-weight: 800; font-size: 76px; line-height: .85; text-shadow: 0 2px 20px rgba(0,0,0,.4); }
-.speed-unit { font-family: var(--font-display); font-weight: 500; font-size: 15px; letter-spacing: .2em; color: var(--sand-dim); }
-.heat { width: 240px; display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; }
-.heat-track { height: 6px; border-radius: 3px; background: rgba(242,228,201,.18); overflow: hidden; }
-#heatFill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--arc), var(--flame)); border-radius: 3px; transition: background .2s; }
-#heatFill.over { background: var(--bad); animation: blink .35s steps(2) infinite; }
-/* boosting past 80: the red zone (the hotter, the harder the boost, the nearer the overheat) */
-#heatFill.warn { background: linear-gradient(90deg, var(--flame), var(--bad)); animation: blink .5s steps(2) infinite; }
-/* a slide cools the engines */
-#heatFill.cool { background: linear-gradient(90deg, #8fd0ff, var(--arc)); }
-.speed-unit { position: relative; }
-#draftTag { position: absolute; left: calc(100% + 12px); top: 50%; transform: translateY(-50%); white-space: nowrap; font-size: 11px; letter-spacing: .16em; color: #9fd6ff; opacity: 0; transition: opacity .25s; }
-#draftTag.on { opacity: 1; }
-#boostTag { font-family: var(--font-display); font-weight: 700; font-size: 12px; letter-spacing: .14em; color: var(--arc); min-width: 52px; text-align: right; }
-#boostTag.off { color: var(--bad); }
 @keyframes blink { 50% { opacity: .35; } }
 
+/* ---------- HUD ----------
+   Every block is laid out for 1080p and scaled by --hs (window size x the HUD size setting, set from main.js). */
+#hud { position: fixed; inset: 0; pointer-events: none; --hs: 1; font-variant-numeric: tabular-nums; }
+.lbl { font-family: var(--font-display); font-weight: 500; font-size: 12px; letter-spacing: .16em; color: var(--sand-dim); text-transform: uppercase; }
+#hud .lbl { font-size: 13px; }
+.hud-tl { position: absolute; left: calc(36px * var(--hs)); top: calc(26px * var(--hs) + env(safe-area-inset-top, 0px)); transform-origin: 0 0; transform: scale(var(--hs)); }
+.pos-row { display: flex; align-items: flex-end; gap: 18px; text-shadow: var(--ts); }
+#posBig { font-family: var(--font-display); font-weight: 800; font-size: 86px; line-height: .8; }
+#posBig small { font-size: 30px; font-weight: 700; color: var(--sand-dim); margin-left: 3px; }
+.lapc { display: flex; flex-direction: column; padding-bottom: 3px; }
+#lapTxt { font-family: var(--font-display); font-weight: 700; font-size: 28px; line-height: 1; }
+/* live standings */
+#tower { margin-top: 16px; width: 330px; display: flex; flex-direction: column; gap: 3px; }
+.trw { display: grid; grid-template-columns: 22px 4px minmax(0, 1fr) auto 64px; align-items: center; gap: 10px; height: 32px; padding: 0 12px 0 8px;
+  border-radius: 4px; background: linear-gradient(90deg, rgba(22,16,11,.66), rgba(22,16,11,.42)); font-family: var(--font-display); font-weight: 600; font-size: 18px;
+  letter-spacing: .04em; text-transform: uppercase; }
+.trw .p { font-weight: 800; color: var(--sand-dim); text-align: right; }
+.trw i { width: 4px; height: 18px; border-radius: 1px; }
+.trw .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; }
+.trw .n em { font-style: normal; font-size: 10.5px; font-weight: 700; letter-spacing: .14em; color: var(--sand-mute); border: 1px solid var(--line-2); border-radius: 3px; padding: 0 5px; line-height: 15px; }
+.trw .g { text-align: right; font-weight: 700; white-space: nowrap; }
+.trw .c { font-size: 13px; font-weight: 800; padding: 0 5px; border-radius: 3px; line-height: 18px; color: var(--ink); }
+.trw .c.up { background: var(--good); } .trw .c.dn { background: var(--bad); }
+.trw.me { background: rgba(242,228,201,.93); color: var(--ink); }
+.trw.me .p { color: var(--ink); }
+.trw.bot .n { color: var(--sand-dim); }
+.trw.fin .g { color: var(--good); font-size: 13px; letter-spacing: .1em; }
+.trw.me.fin .g { color: #2c7a3a; }
+.trw.gone { opacity: .6; } .trw.gone .g { color: var(--bad); font-size: 13px; letter-spacing: .1em; }
+.tsep { height: 10px; padding-left: 26px; color: var(--sand); opacity: .7; font-size: 14px; letter-spacing: .32em; line-height: 6px; text-shadow: var(--ts); }
+/* lap strip */
+#strip { position: absolute; left: 50%; top: calc(32px * var(--hs) + env(safe-area-inset-top, 0px)); width: 720px; height: 44px; transform-origin: 50% 0; transform: translateX(-50%) scale(var(--hs)); }
+#strip .ln { position: absolute; left: 0; right: 0; top: 14px; height: 4px; border-radius: 2px; background: rgba(242,228,201,.3); box-shadow: 0 0 0 1px rgba(20,14,9,.25), 0 2px 8px rgba(0,0,0,.35); }
+#strip .pr { position: absolute; left: 0; top: 14px; height: 4px; width: 0; border-radius: 2px; background: rgba(242,228,201,.85); }
+#strip .tk { position: absolute; top: 9px; width: 2px; height: 14px; margin-left: -1px; background: rgba(242,228,201,.7); box-shadow: 0 0 4px rgba(0,0,0,.5); }
+#strip .sl { position: absolute; top: 27px; transform: translateX(-50%); font-family: var(--font-display); font-weight: 600; font-size: 11.5px; letter-spacing: .18em; color: var(--sand); text-shadow: var(--ts); white-space: nowrap; }
+#strip .dt { position: absolute; left: 0; top: 16px; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px; border-radius: 50%; border: 2px solid rgba(20,14,9,.9); box-sizing: border-box; }
+#strip .dt.hum { box-shadow: 0 0 0 2px rgba(242,228,201,.95); }
+#strip .dt.me { width: 19px; height: 19px; margin: -9.5px 0 0 -9.5px; border: 3px solid #fff; z-index: 2; box-shadow: 0 0 10px rgba(0,0,0,.5); }
+#strip .mel { position: absolute; left: 0; top: -12px; margin-left: -8px; font-family: var(--font-display); font-weight: 800; font-size: 12px; letter-spacing: .16em; text-shadow: var(--ts); }
+#strip .fin { position: absolute; top: 8px; left: -18px; width: 12px; height: 16px; border-radius: 1px;
+  background: conic-gradient(#fff 25%, #1b140e 0 50%, #fff 0 75%, #1b140e 0) 0 0 / 8px 8px; box-shadow: 0 0 0 1px rgba(20,14,9,.6); }
+#strip .lapn { position: absolute; left: calc(100% + 14px); top: 4px; font-family: var(--font-display); font-weight: 700; font-size: 19px; text-shadow: var(--ts); white-space: nowrap; }
+#strip .lapn small { font-size: 12px; letter-spacing: .14em; color: var(--sand-dim); margin-right: 5px; }
+/* timing */
+.hud-tr { position: absolute; right: calc(36px * var(--hs)); top: calc(26px * var(--hs) + env(safe-area-inset-top, 0px)); display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
+  transform-origin: 100% 0; transform: scale(var(--hs)); text-shadow: var(--ts); }
+.trow { display: flex; gap: 12px; align-items: baseline; justify-content: flex-end; }
+.trow b { font-family: var(--font-display); font-weight: 700; font-size: 24px; min-width: 104px; text-align: right; }
+.trow.main b { font-size: 36px; }
+#bestLapVal.fresh { color: var(--good); }
+.delta { font-family: var(--font-display); font-weight: 800; font-size: 17px; padding: 1px 7px; border-radius: 3px; color: var(--ink); text-shadow: none; background: var(--sand); }
+.delta.good { background: var(--good); } .delta.slow { background: var(--amber); }
+#sectors { display: flex; gap: 4px; margin-top: 9px; }
+#sectors .s { width: 64px; display: flex; flex-direction: column; gap: 5px; }
+#sectors .s i { position: relative; height: 6px; border-radius: 2px; background: rgba(242,228,201,.22); overflow: hidden; box-shadow: 0 0 0 1px rgba(20,14,9,.25); }
+#sectors .s i::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: var(--p, 0%); background: var(--sc, transparent); }
+#sectors .s span { font-family: var(--font-display); font-weight: 600; font-size: 10.5px; letter-spacing: .12em; color: var(--sand); opacity: .85; text-align: center; }
+#sectors .s.good { --sc: var(--good); --p: 100%; } #sectors .s.slow { --sc: var(--amber); --p: 100%; } #sectors .s.done { --sc: var(--sand); --p: 100%; }
+#sectors .s.now { --sc: rgba(242,228,201,.9); }
+/* event feed */
+#feed { position: absolute; right: calc(36px * var(--hs)); top: calc(236px * var(--hs) + env(safe-area-inset-top, 0px)); display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  transform-origin: 100% 0; transform: scale(var(--hs)); }
+.fe { display: flex; align-items: center; gap: 10px; padding: 5px 13px 5px 7px; border-radius: 4px; background: var(--glass); font-family: var(--font-display); font-weight: 600;
+  font-size: 16px; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; color: var(--sand-dim); transition: opacity .6s; }
+.fe b { font-weight: 800; color: var(--sand); }
+.fe i { width: 20px; height: 20px; border-radius: 3px; display: grid; place-items: center; font-style: normal; font-size: 11px; font-weight: 800; color: var(--ink); }
+.fe.pass i { background: var(--good); } .fe.lost i { background: var(--bad); } .fe.crash i { background: var(--amber); } .fe.fast i { background: var(--fast); }
+.fe.left i { background: var(--sand-mute); } .fe.lead i { background: var(--sand); }
+.fe.old { opacity: 0; }
+/* name tags over the pods (positioned from main.js in screen pixels) */
+#tags { position: absolute; inset: 0; overflow: hidden; }
+.tag { position: absolute; left: 0; top: 0; transform-origin: 0 0; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 11px 0 0; border-radius: 3px;
+  background: rgba(20,14,9,.7); box-shadow: inset 4px 0 0 var(--c); font-family: var(--font-display); text-transform: uppercase; white-space: nowrap; will-change: transform; }
+.tag::after { content: ""; position: absolute; left: 50%; bottom: -7px; margin-left: -6px; border: 6px solid transparent; border-top-color: rgba(20,14,9,.7); border-bottom: 0; }
+.tag .p { font-weight: 800; font-size: 15px; color: var(--sand-dim); padding-left: 13px; }
+.tag .n { font-weight: 700; font-size: 17px; letter-spacing: .06em; }
+.tag .d { font-weight: 600; font-size: 15px; color: var(--sand-dim); }
+.tag.mid { height: 26px; } .tag.mid .n { font-size: 15px; } .tag.mid .d, .tag.mid .p { font-size: 13.5px; }
+.tag.hum { background: rgba(20,14,9,.82); outline: 1.5px solid rgba(242,228,201,.55); }
+.tag.hum .n::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--sand); margin-right: 7px; vertical-align: 2px; }
+.tag.bot { opacity: .85; }
+.tag.far { height: auto; padding: 0; background: none; box-shadow: none; outline: 0; gap: 6px; font-size: 14px; text-shadow: 0 1px 2px rgba(0,0,0,.8), 0 0 10px rgba(0,0,0,.6); }
+.tag.far::after { display: none; }
+.tag.far::before { content: ""; width: 9px; height: 9px; transform: rotate(45deg); background: var(--c); box-shadow: 0 0 0 1.5px rgba(20,14,9,.8); }
+.tag.far .p { display: none; } .tag.far .n { font-size: 14px; } .tag.far .d { font-size: 14px; }
+.tag.far.hum .n::before { display: none; }
+.tag .ld { position: absolute; left: 50%; top: 100%; width: 1.5px; margin-left: -.75px; background: rgba(242,228,201,.7); box-shadow: 0 0 3px rgba(0,0,0,.6); }
+.tag .chs { display: flex; gap: 2px; padding-left: 12px; } .tag .chs i { width: 7px; height: 14px; border-radius: 1px; }
+.tag.cl { box-shadow: none; }
+/* a pod closing in from behind */
+.near { position: absolute; top: 30%; width: calc(240px * var(--hs)); height: 70%; opacity: 0; transition: opacity .25s; }
+.near.left { left: 0; } .near.right { right: 0; }
+.nearl { position: absolute; top: 62%; display: flex; align-items: center; gap: 8px; font-family: var(--font-display); font-weight: 700; font-size: 17px;
+  letter-spacing: .08em; text-transform: uppercase; text-shadow: var(--ts); white-space: nowrap; opacity: 0; transition: opacity .25s; transform: scale(var(--hs)); }
+.nearl.left { left: calc(26px * var(--hs)); transform-origin: 0 50%; } .nearl.right { right: calc(26px * var(--hs)); transform-origin: 100% 50%; }
+.nearl i { font-style: normal; color: var(--c); font-size: 15px; } .nearl b { font-weight: 800; color: var(--amber); }
+.near.on, .nearl.on { opacity: 1; }
+/* speed, heat and the fight for position */
+.hud-speed { position: absolute; left: 50%; bottom: calc(2px + env(safe-area-inset-bottom, 0px)); width: 340px; height: 232px; transform-origin: 50% 100%; transform: translateX(-50%) scale(var(--hs)); }
+.hud-speed svg { position: absolute; left: 0; top: 0; overflow: visible; }
+.hud-speed .und { fill: none; stroke: rgba(20,14,9,.5); stroke-width: 16; stroke-linecap: round; }
+.hud-speed .trk { fill: none; stroke: rgba(242,228,201,.22); stroke-width: 10; stroke-linecap: round; }
+.hud-speed .red { fill: none; stroke: rgba(255,90,74,.5); stroke-width: 10; }
+#heatArc { fill: none; stroke: url(#heatGrad); stroke-width: 10; stroke-linecap: round; filter: drop-shadow(0 0 6px rgba(255,123,46,.55)); }
+.hud-speed .tick { stroke: var(--bad); stroke-width: 3; }
+.hud-speed.warn #heatArc, .hud-speed.over #heatArc { animation: blink .45s steps(2) infinite; }
+.hud-speed.cool #heatArc { filter: drop-shadow(0 0 7px rgba(143,208,255,.7)); }
+#speedVal { position: absolute; left: 0; right: 0; top: 64px; text-align: center; font-family: var(--font-display); font-weight: 800; font-size: 98px; line-height: .85; text-shadow: var(--ts); }
+.speed-unit { position: absolute; left: 0; right: 0; top: 150px; text-align: center; font-family: var(--font-display); font-weight: 600; font-size: 15px; letter-spacing: .26em; color: var(--sand); opacity: .85; text-shadow: var(--ts); }
+.chips { position: absolute; left: -60px; right: -60px; top: 178px; display: flex; justify-content: center; gap: 6px; }
+.chip { font-family: var(--font-display); font-weight: 800; font-size: 13px; letter-spacing: .16em; padding: 2px 8px; border-radius: 3px; border: 1.5px solid currentColor; background: rgba(20,14,9,.55); }
+#boostTag { color: var(--arc); opacity: .55; } #boostTag.on { opacity: 1; background: rgba(200,107,255,.22); }
+#boostTag.off { color: var(--bad); opacity: 1; } #boostTag.cool { color: var(--cool); opacity: 1; }
+#draftTag { color: #9fd6ff; }
+.heat-l, #heatVal { position: absolute; top: 212px; font-family: var(--font-display); font-weight: 700; font-size: 13px; letter-spacing: .16em; color: var(--sand); text-shadow: var(--ts); }
+.heat-l { left: -4px; } #heatVal { right: -4px; }
+.bat { position: absolute; bottom: 44px; display: flex; flex-direction: column; gap: 1px; font-family: var(--font-display); text-transform: uppercase; text-shadow: var(--ts); white-space: nowrap; }
+.bat.ahead { right: calc(100% + 14px); align-items: flex-end; } .bat.behind { left: calc(100% + 14px); align-items: flex-start; }
+.bat .lbl { color: var(--sand); opacity: .8; }
+.bat .nm { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 18px; letter-spacing: .06em; }
+.bat .nm i { width: 4px; height: 16px; border-radius: 1px; background: var(--c); }
+.bat b { font-weight: 800; font-size: 40px; line-height: 1; }
+.bat b.good { color: var(--good); } .bat b.warn { color: var(--amber); }
 #minimap {
-  position: absolute; left: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-  width: 170px; height: 170px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(27,20,14,.55), rgba(27,20,14,.25) 70%, transparent 72%);
+  position: absolute; left: calc(30px * var(--hs)); bottom: calc(26px * var(--hs) + env(safe-area-inset-bottom, 0px));
+  width: calc(170px * var(--hs)); height: calc(170px * var(--hs)); border-radius: 50%;
+  background: radial-gradient(circle, rgba(27,20,14,.6), rgba(27,20,14,.3) 70%, transparent 72%);
 }
+/* start lights and the perfect-start meter */
+#lights { position: absolute; left: 50%; top: calc(100px * var(--hs) + env(safe-area-inset-top, 0px)); display: flex; align-items: center; gap: 14px; padding: 10px 18px 10px 16px;
+  border-radius: 6px; background: var(--glass-strong); transform-origin: 50% 0; transform: translateX(-50%) scale(var(--hs)); }
+#lights b { font-family: var(--font-display); font-weight: 800; font-size: 54px; line-height: 1; min-width: 36px; text-align: center; margin-right: 6px; }
+.lamp { width: 42px; height: 42px; border-radius: 50%; background: #2b2118; box-shadow: inset 0 0 0 2px rgba(242,228,201,.12); }
+.lamp.on { background: radial-gradient(circle at 40% 35%, #ffc2b8, #ff3b2a 55%, #a3150b); box-shadow: 0 0 18px rgba(255,59,42,.85), 0 0 0 2px rgba(255,130,110,.5); }
+.lamp.go { background: radial-gradient(circle at 40% 35%, #d8ffe0, #55ff86 55%, #138a32); box-shadow: 0 0 18px rgba(85,255,134,.85), 0 0 0 2px rgba(140,255,170,.5); }
+#meter { position: absolute; left: 50%; top: calc(188px * var(--hs) + env(safe-area-inset-top, 0px)); width: 440px; transform-origin: 50% 0; transform: translateX(-50%) scale(var(--hs)); }
+#meter .trk { position: relative; height: 8px; border-radius: 4px; background: rgba(242,228,201,.28); box-shadow: 0 0 0 1px rgba(20,14,9,.35); }
+#meter .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 4px; background: rgba(242,228,201,.9); }
+#meter .win { position: absolute; right: -2px; top: -5px; bottom: -5px; border-radius: 4px; background: rgba(255,123,46,.4); border: 2px solid var(--flame); box-sizing: border-box; }
+#meter .win span { position: absolute; right: 0; bottom: calc(100% + 5px); white-space: nowrap; font-family: var(--font-display); font-weight: 800; font-size: 12px; letter-spacing: .16em; color: var(--flame); text-shadow: var(--ts); }
+#meter .hit { position: absolute; top: -7px; width: 3px; height: 22px; margin-left: -1.5px; background: #fff; box-shadow: 0 0 6px rgba(0,0,0,.6); }
+#meter.good .hit { background: var(--good); }
+#meter p { margin: 10px 0 0; text-align: center; font-family: var(--font-display); font-weight: 600; font-size: 13px; letter-spacing: .16em; text-shadow: var(--ts); }
+/* sector split pop-up */
+#split { position: absolute; left: 50%; top: calc(100px * var(--hs) + env(safe-area-inset-top, 0px)); display: flex; align-items: center; gap: 16px; padding: 7px 20px; border-radius: 4px;
+  background: var(--glass-strong); white-space: nowrap; transform-origin: 50% 0; transform: translateX(-50%) scale(var(--hs)); }
+#split .lbl { color: var(--sand); font-size: 15px; font-weight: 700; }
+#split b { font-family: var(--font-display); font-weight: 800; font-size: 42px; line-height: 1; }
+#split.good b { color: var(--good); } #split.slow b { color: var(--amber); }
+#split small { font-family: var(--font-display); font-weight: 600; font-size: 12px; letter-spacing: .14em; color: var(--sand-dim); }
 #center {
   position: absolute; left: 0; right: 0; top: 30%; text-align: center;
   font-family: var(--font-display); font-weight: 800; font-size: 120px; line-height: 1;
@@ -87,18 +202,23 @@ button:focus-visible { outline: 2px solid var(--flame); outline-offset: 3px; }
 }
 #center.go { color: var(--flame); }
 #center small { display: block; font-size: 22px; font-weight: 600; letter-spacing: .18em; color: var(--sand); margin-top: 10px; }
+/* the middle slot: lap times, toggles and warnings */
 #toast {
-  position: absolute; left: 50%; top: 20%; transform: translateX(-50%);
+  position: absolute; left: 50%; top: calc(214px * var(--hs) + env(safe-area-inset-top, 0px)); transform-origin: 50% 0; transform: translateX(-50%) scale(var(--hs));
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
   font-family: var(--font-display); font-weight: 700; font-size: 26px; letter-spacing: .12em;
   padding: 6px 18px; border-radius: 4px; background: var(--glass); white-space: nowrap;
 }
-#toast.warn { color: var(--bad); }
+#toast.warn { padding: 8px 26px 9px; background: rgba(120,22,12,.8); border: 1px solid rgba(255,90,74,.75); font-weight: 800; font-size: 32px; letter-spacing: .14em; color: #ffe0d9; }
+#toast small { font-size: 13px; font-weight: 600; letter-spacing: .18em; color: #ffb6aa; }
 #fps {
-  position: fixed; left: 50%; top: calc(10px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); z-index: 30;
+  position: fixed; right: 12px; bottom: calc(10px + env(safe-area-inset-bottom, 0px)); z-index: 30;
   pointer-events: none; padding: 4px 12px; border-radius: 4px; background: var(--glass); white-space: nowrap;
   font-family: var(--font-display); font-weight: 700; font-size: 17px; letter-spacing: .06em;
 }
 #fps small { margin-left: 10px; font-weight: 500; font-size: 13px; letter-spacing: .1em; color: var(--sand-dim); }
+#hud.nomap #minimap, #hud.nostrip #strip { display: none; }
+#hud.menu-open .hud-tl, #hud.menu-open #feed { visibility: hidden; }   /* the pause menu shows the standings itself */
 
 /* ---------- Touch controls ---------- */
 #touch { position: fixed; inset: auto 0 0 0; height: 0; pointer-events: none; }
@@ -114,19 +234,20 @@ button:focus-visible { outline: 2px solid var(--flame); outline-offset: 3px; }
 #tBoost { right: 18px; width: 86px; height: 86px; color: var(--arc); }
 #tBrake { right: 116px; }
 #tSlide { right: 24px; bottom: calc(122px + env(safe-area-inset-bottom, 0px)); font-size: 13px; }
-body.touch #minimap { bottom: auto; top: calc(130px + env(safe-area-inset-top, 0px)); left: 12px; width: 120px; height: 120px; }
+body.touch .bat { display: none; }
+body.touch #fps { right: auto; left: 50%; transform: translateX(-50%); bottom: auto; top: calc(84px + env(safe-area-inset-top, 0px)); }
 
 /* ---------- Panels ---------- */
 .screen {
   position: fixed; inset: 0; display: flex; align-items: flex-start;
   padding-inline: max(16px, 6vw); padding-block: 24px;
-  background: linear-gradient(90deg, rgba(20,14,9,.78) 0%, rgba(20,14,9,.4) 45%, rgba(20,14,9,0) 75%);
+  background: linear-gradient(90deg, rgba(20,14,9,.86) 0%, rgba(20,14,9,.62) 36%, rgba(20,14,9,.18) 62%, rgba(20,14,9,0) 80%);
   overflow-y: auto;
 }
 .panel { width: min(440px, 100%); display: flex; flex-direction: column; gap: 22px; margin-block: auto; }
-.brand { font-family: var(--font-display); font-weight: 800; font-size: clamp(54px, 11vw, 92px); line-height: .82; letter-spacing: -.01em; text-wrap: balance; margin: 0; }
+.brand { font-family: var(--font-display); font-weight: 800; font-size: clamp(54px, 9vw, 100px); line-height: .8; letter-spacing: -.01em; text-wrap: balance; margin: 0; }
 .brand span { color: var(--flame); }
-.tag { margin: 0; color: var(--sand-dim); font-size: 15px; line-height: 1.5; max-width: 38ch; }
+.tag-line { margin: 0; color: var(--sand-dim); font-size: 15px; line-height: 1.5; max-width: 38ch; }
 .opt { display: flex; flex-direction: column; gap: 8px; }
 .opt-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
@@ -148,28 +269,60 @@ body.touch #minimap { bottom: auto; top: calc(130px + env(safe-area-inset-top, 0
   font-family: var(--font-display); font-weight: 700; font-size: 17px; letter-spacing: .1em; text-align: left;
 }
 .ghost:hover { background: rgba(242,228,201,.08); }
+.ghost.hot { border-color: var(--flame); color: var(--flame); }
 .btns { display: flex; flex-direction: column; gap: 10px; }
+.btn-row { display: flex; gap: 10px; } .btn-row .cta { flex: 1.4; } .btn-row .ghost { flex: 1; text-align: center; }
 .keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13.5px; color: var(--sand-dim); }
 .keys kbd {
   font-family: var(--font-display); font-weight: 700; font-size: 13px; letter-spacing: .06em; color: var(--sand);
   border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; justify-self: start; white-space: nowrap;
 }
-.record { font-size: 14px; color: var(--sand-dim); }
-.record b { color: var(--sand); font-family: var(--font-display); font-weight: 700; font-size: 17px; }
-.res-head { font-family: var(--font-display); font-weight: 800; font-size: clamp(56px, 12vw, 88px); line-height: .85; margin: 0; }
-.res-head small { font-size: .38em; color: var(--sand-dim); font-weight: 700; letter-spacing: .1em; margin-left: 8px; }
-.res-sub { margin: 0; color: var(--sand-dim); }
-table.res { width: 100%; border-collapse: collapse; font-size: 15px; }
-table.res td { padding: 7px 4px; border-bottom: 1px solid var(--line); }
-table.res td:first-child { font-family: var(--font-display); font-weight: 700; width: 28px; color: var(--sand-dim); }
-table.res td:last-child { text-align: right; font-family: var(--font-display); font-weight: 700; font-size: 17px; }
-table.res tr.me td { color: var(--flame); }
-.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
-#loading { position: fixed; inset: 0; display: grid; place-items: center; background: var(--ink); font-family: var(--font-display); font-weight: 700; letter-spacing: .2em; color: var(--sand-dim); }
-#err { color: var(--bad); max-width: 40ch; text-align: center; letter-spacing: 0; font-family: var(--font-body); font-weight: 500; }
+.p-note { margin: 0; color: var(--sand-dim); font-size: 14px; line-height: 1.5; }
+.res-head { font-family: var(--font-display); font-weight: 800; font-size: clamp(56px, 10vw, 112px); line-height: .8; margin: 0; }
+.res-head small { font-size: .34em; color: var(--sand-dim); font-weight: 700; letter-spacing: .1em; margin-left: 8px; }
+.res-sub { margin: 0; color: var(--sand-dim); font-size: 16px; }
+.res-sub b { color: var(--good); font-weight: 600; }
+/* ---------- Loading: dusk over the dunes while the track builds; progress, the step, a tip ----------
+   (everything that moves is a transform or opacity animation, so it keeps moving while the main thread builds) */
+#loading { position: fixed; inset: 0; z-index: 40; overflow: hidden; background: var(--ink); transition: opacity .6s ease; }
+#loading.done { opacity: 0; pointer-events: none; }
+.ld-sky { position: absolute; inset: 0;
+  background: radial-gradient(ellipse 70% 44% at 70% 80%, rgba(255,150,70,.45), rgba(255,150,70,0) 70%),
+    radial-gradient(ellipse 120% 60% at 50% 100%, rgba(120,70,36,.55), rgba(120,70,36,0) 70%),
+    linear-gradient(180deg, #140d09 0%, #1d140d 28%, #2f1e13 52%, #4c2e1a 72%, #6b3f22 85%, #2a1c12 100%); }
+.ld-sun { position: absolute; left: 70%; top: 79%; width: 9vmin; height: 9vmin; margin: -4.5vmin 0 0 -4.5vmin; border-radius: 50%;
+  background: radial-gradient(circle, #ffe2b8 0%, #ffb067 45%, rgba(255,140,60,0) 70%); opacity: .9; }
+.ld-land { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: max(18.75vw, 30vh); }
+.ld-wind { position: absolute; left: 0; right: 0; bottom: 6vh; height: 34vh; }
+.ld-wind i { position: absolute; left: 0; height: 1px; width: 160px; border-radius: 1px; opacity: 0;
+  background: linear-gradient(90deg, rgba(242,228,201,0), rgba(242,228,201,.55), rgba(242,228,201,0)); animation: gust 5s linear infinite; }
+@keyframes gust { 0% { transform: translateX(-20vw); opacity: 0; } 15% { opacity: .5; } 80% { opacity: .35; } 100% { transform: translateX(110vw); opacity: 0; } }
+.ld-main { position: absolute; inset: 0; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between;
+  padding: max(28px, 9vh) max(16px, 6vw) max(24px, 7vh); }
+.ld-sub { margin: 14px 0 0; font-family: var(--font-display); font-weight: 600; font-size: 16px; letter-spacing: .3em; color: var(--sand-dim); }
+.ld-bottom { width: min(560px, 100%); display: flex; flex-direction: column; gap: 12px; }
+.ld-row { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+#ldStep { color: var(--sand); font-size: 14px; font-weight: 600; }
+#ldPct { font-family: var(--font-display); font-weight: 800; font-size: 28px; line-height: 1; }
+.ld-bar { position: relative; height: 4px; border-radius: 2px; background: rgba(242,228,201,.16); overflow: hidden; }
+#ldFill { position: absolute; inset: 0; transform-origin: 0 50%; transform: scaleX(0); background: linear-gradient(90deg, #c86bff, var(--flame)); transition: transform .3s ease-out; }
+.ld-bar::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 22%; background: linear-gradient(90deg, rgba(255,240,220,0), rgba(255,240,220,.55), rgba(255,240,220,0));
+  animation: shimmer 1.6s ease-in-out infinite; }
+@keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(460%); } }
+.ld-tip { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; align-items: baseline; margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+.ld-tip .lbl { color: var(--flame); }
+#ldTip { margin: 0; font-size: 15px; line-height: 1.5; color: var(--sand); min-height: 3em; transition: opacity .4s; text-wrap: pretty; }
+#ldTip.out { opacity: 0; }
+.ld-meta { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 12px; letter-spacing: .18em; color: var(--sand-mute); }
+#err { color: #ffb6aa; max-width: 52ch; font-size: 15px; line-height: 1.5; padding: 12px 16px; border-radius: 6px; background: rgba(120,22,12,.6); border: 1px solid rgba(255,90,74,.6); }
+#loading.failed .ld-bar, #loading.failed .ld-row, #loading.failed .ld-tip { display: none; }
+#loading.failed .ld-wind { display: none; }
+@media (max-height: 500px) { .ld-tip { display: none; } }
+@media (prefers-reduced-motion: reduce) { .ld-wind, .ld-bar::after { display: none; } }
 
-
-/* ---------- Name, multiplayer, room ---------- */
+/* ---------- Main menu: the menu on the left, the chosen page next to it ---------- */
+.menu-wrap { display: flex; align-items: flex-start; gap: clamp(24px, 4vw, 60px); margin-block: auto; width: 100%; }
+.menu-left { width: min(400px, 100%); flex: none; display: flex; flex-direction: column; gap: 24px; }
 .field { display: flex; flex-direction: column; gap: 8px; }
 input.txt {
   font-family: var(--font-display); font-weight: 700; font-size: 18px; letter-spacing: .06em; color: var(--sand);
@@ -179,36 +332,105 @@ input.txt {
 input.txt::placeholder { color: var(--sand-dim); opacity: .6; }
 input.txt:focus-visible { outline: 2px solid var(--flame); outline-offset: 2px; }
 input.txt.err { border-color: var(--bad); }
-.mp { display: flex; flex-direction: column; gap: 10px; padding-top: 18px; border-top: 1px solid var(--line); }
-.mp-row { display: grid; grid-template-columns: 1fr 86px auto; gap: 8px; }
-.mp-row .ghost { text-align: center; padding-inline: 12px; }
-#codeInput { text-transform: uppercase; text-align: center; letter-spacing: .22em; }
+.nav { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.nav button { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: center; text-align: left; cursor: pointer;
+  padding: 13px 8px 13px 20px; border: 0; border-bottom: 1px solid var(--line); background: transparent; }
+.nav button b { font-family: var(--font-display); font-weight: 800; font-size: 29px; letter-spacing: .08em; line-height: 1.05; color: var(--sand-dim); }
+.nav button span { grid-column: 1; font-size: 13.5px; color: var(--sand-mute); }
+.nav button em { grid-row: 1 / span 2; grid-column: 2; font-style: normal; font-family: var(--font-display); font-weight: 800; font-size: 22px; color: var(--sand-mute); }
+.nav button:hover b { color: var(--sand); }
+.nav button[aria-pressed="true"] { background: linear-gradient(90deg, rgba(255,123,46,.2), rgba(255,123,46,0)); }
+.nav button[aria-pressed="true"]::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 4px; border-radius: 2px; background: var(--flame); }
+.nav button[aria-pressed="true"] b { color: var(--sand); } .nav button[aria-pressed="true"] span { color: var(--sand-dim); } .nav button[aria-pressed="true"] em { color: var(--flame); }
+.page { width: min(520px, 100%); box-sizing: border-box; padding: 28px 30px 30px; border-radius: 8px; background: rgba(22,16,11,.8); border: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 20px; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+.page h3 { margin: 0; font-family: var(--font-display); font-weight: 800; font-size: 34px; letter-spacing: .06em; line-height: 1; }
+.page h3 small { display: block; margin-top: 6px; font-size: 14px; font-weight: 600; letter-spacing: .16em; color: var(--sand-dim); }
+.recs { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 0; border-block: 1px solid var(--line); }
+.recs div { display: flex; flex-direction: column; gap: 2px; }
+.recs b { font-family: var(--font-display); font-weight: 700; font-size: 28px; }
+.or { display: flex; align-items: center; gap: 12px; color: var(--sand-mute); font-size: 13px; }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.join { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+#codeInput { text-transform: uppercase; text-align: center; letter-spacing: .5em; font-size: 26px; padding: 8px 12px; }
+.join .ghost { text-align: center; padding-inline: 22px; }
 .note { margin: 0; font-size: 13.5px; color: var(--flame); }
-.ghost.hot { border-color: var(--flame); color: var(--flame); }
-.room-code { font-family: var(--font-display); font-weight: 800; font-size: clamp(64px, 14vw, 104px); line-height: .85; letter-spacing: .08em; color: var(--flame); }
-.invite { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
-.invite code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; color: var(--sand-dim); overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; }
-.players { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.players li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--line); font-size: 15px; }
-.players li em { font-style: normal; color: var(--sand-dim); font-size: 13px; margin-left: 6px; }
-.players li b { font-family: var(--font-display); font-weight: 700; letter-spacing: .08em; color: var(--sand-dim); white-space: nowrap; }
-.players li b.ok { color: var(--good); }
-.room-status { margin: 0; color: var(--sand-dim); font-size: 14px; line-height: 1.5; min-height: 1.5em; }
+.ptabs { display: flex; gap: 22px; border-bottom: 1px solid var(--line); }
+.ptabs button { padding: 0 0 10px; border: 0; background: none; cursor: pointer; font-family: var(--font-display); font-weight: 700; font-size: 16px; letter-spacing: .14em; color: var(--sand-mute); }
+.ptabs button[aria-pressed="true"] { color: var(--sand); box-shadow: inset 0 -3px 0 var(--flame); }
+.ptab { display: flex; flex-direction: column; gap: 18px; }
+.gfx-note { font-size: 12.5px; color: var(--sand-dim); margin: 0; }
 .seg button:disabled { cursor: default; }
 .seg button:disabled:not([aria-pressed="true"]) { opacity: .55; }
 .cta.on { background: var(--sand); }
+@media (max-width: 900px) {
+  .menu-wrap { flex-direction: column; margin-block: 0; }
+  .page { width: min(520px, 100%); }
+}
+
+/* ---------- Lobby ---------- */
+.lobby { width: min(600px, 100%); display: flex; flex-direction: column; gap: 20px; margin-block: auto; }
+.lobby-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 24px; align-items: end; }
+.room-code { font-family: var(--font-display); font-weight: 800; font-size: clamp(64px, 12vw, 112px); line-height: .8; letter-spacing: .08em; color: var(--flame); }
+.invite { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; min-width: 0; }
+.invite code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; color: var(--sand-dim); overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; }
+.slots { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.slot { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding-right: 14px; min-height: 66px; border-radius: 6px;
+  background: rgba(242,228,201,.07); border: 1px solid var(--line); overflow: hidden; }
+.slot > i { align-self: stretch; background: var(--sand); }
+.slot.me > i { background: var(--flame); }
+.slot .n { min-width: 0; }
+.slot .n b { display: block; font-family: var(--font-display); font-weight: 700; font-size: 22px; letter-spacing: .04em; line-height: 1.1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot .n span { display: flex; gap: 6px; align-items: center; font-family: var(--font-display); font-weight: 600; font-size: 12px; letter-spacing: .14em; color: var(--sand-dim); text-transform: uppercase; }
+.slot .n span svg { width: 14px; height: 14px; color: var(--amber); }
+.slot .st { font-family: var(--font-display); font-weight: 800; font-size: 14px; letter-spacing: .14em; padding: 3px 9px; border-radius: 3px; white-space: nowrap; }
+.st.ok { background: var(--good); color: var(--ink); } .st.wait { border: 1px solid var(--line-2); color: var(--sand-dim); }
+.slot.empty { border-style: dashed; background: transparent; }
+.slot.empty > i { background: transparent; }
+.slot.empty .n b { color: var(--sand-dim); font-size: 18px; }
+.room-status { margin: 0; color: var(--sand-dim); font-size: 14px; line-height: 1.5; min-height: 1.5em; }
+@media (max-width: 640px) { .slots { grid-template-columns: 1fr; } .lobby-head { grid-template-columns: 1fr; gap: 12px; } }
+
+/* ---------- Results ---------- */
+.res-wrap { display: flex; align-items: flex-start; gap: clamp(24px, 4vw, 56px); margin-block: auto; width: 100%; }
+.res-panel { width: min(580px, 100%); flex: none; display: flex; flex-direction: column; gap: 18px; }
+.rt { display: flex; flex-direction: column; }
+.rt > div { display: grid; grid-template-columns: 26px minmax(0, 1fr) 96px 112px; gap: 12px; align-items: center; padding: 8px 4px; border-bottom: 1px solid var(--line);
+  font-family: var(--font-display); font-weight: 600; font-size: 18px; letter-spacing: .03em; }
+.rt > div.h { font-size: 12px; font-weight: 600; letter-spacing: .16em; color: var(--sand-mute); padding-block: 4px 6px; }
+.rt .p { color: var(--sand-dim); font-weight: 700; }
+.rt .nm { display: flex; align-items: center; gap: 9px; text-transform: uppercase; min-width: 0; white-space: nowrap; overflow: hidden; }
+.rt .nm i { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.rt .nm em { font-style: normal; font-size: 10.5px; font-weight: 700; letter-spacing: .14em; color: var(--sand-mute); border: 1px solid var(--line-2); border-radius: 3px; padding: 0 5px; line-height: 15px; }
+.rt .t, .rt .bl { text-align: right; font-weight: 700; }
+.rt .bl.fast span { background: var(--fast); color: var(--ink); border-radius: 3px; padding: 1px 6px; }
+.rt .bl.pb { color: var(--good); }
+.rt > div.me { color: var(--flame); }
+.rt > div.gone { opacity: .55; } .rt > div.gone .t { color: var(--bad); font-size: 13px; letter-spacing: .1em; }
+.rt > div.est .t { color: var(--sand-dim); }
+.laps { display: flex; gap: 8px; flex-wrap: wrap; }
+.laps div { flex: 1 1 90px; padding: 8px 10px; border-radius: 4px; background: rgba(242,228,201,.06); border: 1px solid var(--line); display: flex; flex-direction: column; }
+.laps b { font-family: var(--font-display); font-weight: 700; font-size: 22px; }
+.laps div.pb { border-color: rgba(143,227,154,.55); } .laps div.pb b { color: var(--good); }
+.chart { width: min(620px, 100%); box-sizing: border-box; padding: 22px 24px 18px; border-radius: 8px; background: rgba(22,16,11,.8); border: 1px solid var(--line); }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; margin-top: 10px; }
+.chart text { font-family: var(--font-display); font-weight: 700; }
+#replayTag { position: absolute; right: max(16px, 4vw); top: calc(16px + env(safe-area-inset-top, 0px)); font-family: var(--font-display); font-weight: 800; font-size: 20px; letter-spacing: .2em; color: var(--flame); display: flex; align-items: center; gap: 8px; }
+@media (max-width: 1100px) { .res-wrap { flex-direction: column; margin-block: 0; } }
+
+/* ---------- Pause ---------- */
+.live { display: inline-flex; align-items: center; gap: 9px; font-family: var(--font-display); font-weight: 800; font-size: 14px; letter-spacing: .18em; color: var(--bad); }
+.live::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--bad); animation: blink 1s steps(2) infinite; }
+#pauseTower { display: flex; flex-direction: column; gap: 3px; }
+#pauseTower .trw { height: 38px; font-size: 20px; }
 
 @media (max-width: 640px) {
-  #posBig { font-size: 48px; }
-  .trow b { font-size: 18px; min-width: 76px; } .trow.main b { font-size: 22px; }
-  #speedVal { font-size: 56px; }
-  .hud-speed { min-width: 0; }
-  body.touch .hud-speed { bottom: calc(118px + env(safe-area-inset-bottom, 0px)); }
-  .heat { width: 190px; }
+  .screen { background: rgba(20,14,9,.74); align-items: flex-start; }
   #center { font-size: 84px; }
-  .screen { background: rgba(20,14,9,.7); align-items: flex-start; }
 }
-@media (prefers-reduced-motion: reduce) { #heatFill.over, #heatFill.warn { animation: none; } }
+@media (max-width: 700px) { #hud #strip { display: none; } }
+@media (max-height: 500px) { .brand { font-size: 52px; } .menu-left { gap: 16px; } .nav button { padding-block: 9px; } .nav button b { font-size: 24px; } }
+@media (prefers-reduced-motion: reduce) { .hud-speed.warn #heatArc, .hud-speed.over #heatArc, .live::before { animation: none; } }
 
 /* ---------- Cinematics: letterbox, title and name cards, photo mode ---------- */
 #cine { position: fixed; inset: 0; pointer-events: none; }
@@ -229,11 +451,9 @@ input.txt.err { border-color: var(--bad); }
 #nameCard .nm small { display: block; font-size: 14px; font-weight: 600; letter-spacing: .2em; color: var(--sand-dim); }
 #skipHint { position: absolute; right: max(16px, 4vw); bottom: calc(11vh + 26px); font-family: var(--font-display); font-weight: 600; font-size: 14px; letter-spacing: .18em; color: var(--sand-dim); opacity: 0; transition: opacity .4s; }
 #cine.on.intro #skipHint { opacity: .85; }
-#replayTag { position: absolute; right: max(16px, 4vw); top: calc(16px + env(safe-area-inset-top, 0px)); font-family: var(--font-display); font-weight: 800; font-size: 20px; letter-spacing: .2em; color: var(--flame); display: flex; align-items: center; gap: 8px; }
 #replayTag::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--bad); animation: blink 1s steps(2) infinite; }
 #photoHelp { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); padding: 10px 16px; border-radius: 6px; background: var(--glass); font-size: 13px; color: var(--sand-dim); display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 32px); box-sizing: border-box; }
 #photoHelp kbd { font-family: var(--font-display); font-weight: 700; color: var(--sand); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; margin-right: 6px; }
-.gfx-note { font-size: 12.5px; color: var(--sand-dim); margin: 0; }
 </style>
 </head>
 <body>
@@ -241,26 +461,42 @@ input.txt.err { border-color: var(--bad); }
 <div id="fps" class="num" hidden></div>
 
 <div id="hud" hidden>
+  <div id="tags"></div>
+  <div class="near left" id="nearL"></div><div class="near right" id="nearR"></div>
+  <div class="nearl left" id="nearLl"></div><div class="nearl right" id="nearRl"></div>
+  <canvas id="minimap" width="340" height="340"></canvas>
   <div class="hud-tl">
-    <span class="lbl">Helyezés</span>
-    <div id="posBig" class="num">1<small>/6</small></div>
-    <div id="lapTxt" class="num">KÖR 1/3</div>
+    <div class="pos-row">
+      <span id="posBig" class="num">1<small>/6</small></span>
+      <span class="lapc"><span class="lbl">Kör</span><b id="lapTxt" class="num">1/3</b></span>
+    </div>
+    <div id="tower"></div>
   </div>
+  <div id="strip"></div>
   <div class="hud-tr">
     <div class="trow main"><span class="lbl">Idő</span><b id="totalVal" class="num">0:00.00</b></div>
-    <div class="trow"><span class="lbl">Kör</span><b id="lapVal" class="num">0:00.00</b></div>
+    <div class="trow"><span class="lbl">Kör</span><span id="deltaVal" class="delta num" hidden></span><b id="lapVal" class="num">0:00.00</b></div>
     <div class="trow"><span class="lbl">Legjobb</span><b id="bestLapVal" class="num">–</b></div>
+    <div id="sectors"></div>
   </div>
-  <canvas id="minimap" width="340" height="340"></canvas>
-  <div class="hud-speed">
+  <div id="feed"></div>
+  <div class="hud-speed" id="speedBox">
+    <svg viewBox="0 0 340 232" width="340" height="232" aria-hidden="true">
+      <defs><linearGradient id="heatGrad" x1="0" x2="1"><stop id="heatG0" offset="0" stop-color="#c86bff"/><stop id="heatG1" offset="1" stop-color="#ff7b2e"/></linearGradient></defs>
+      <path id="heatUnd" class="und"/><path id="heatTrk" class="trk" pathLength="100"/><path id="heatRed" class="red" pathLength="100" stroke-dasharray="20 100" stroke-dashoffset="-80"/>
+      <path id="heatArc" pathLength="100" stroke-dasharray="0 100"/>
+      <line id="heatTick" class="tick"/>
+    </svg>
     <div id="speedVal" class="num">0</div>
-    <div class="speed-unit">KM/H<span id="draftTag">SZÉLÁRNYÉK</span></div>
-    <div class="heat">
-      <span class="lbl">Hő</span>
-      <div class="heat-track"><div id="heatFill"></div></div>
-      <span id="boostTag">BOOST</span>
-    </div>
+    <div class="speed-unit">KM/H</div>
+    <div class="chips"><span class="chip" id="boostTag">BOOST</span><span class="chip" id="draftTag" hidden>SZÉLÁRNYÉK</span></div>
+    <span class="heat-l">HŐ</span><span id="heatVal" class="num">0</span>
+    <div class="bat ahead" id="batAhead" hidden></div>
+    <div class="bat behind" id="batBehind" hidden></div>
   </div>
+  <div id="lights" hidden><b id="lightsDigit">3</b><i class="lamp"></i><i class="lamp"></i><i class="lamp"></i><i class="lamp"></i><i class="lamp"></i></div>
+  <div id="meter" hidden><div class="trk"><div class="fill" id="meterFill"></div><div class="win" id="meterWin"><span>TÖKÉLETES RAJT</span></div><i class="hit" id="meterHit" hidden></i></div><p>GÁZ AZ UTOLSÓ FÉL MÁSODPERCBEN</p></div>
+  <div id="split" hidden><span class="lbl" id="splitName"></span><b id="splitVal" class="num"></b><small id="splitSub"></small></div>
   <div id="center"></div>
   <div id="toast" hidden></div>
 </div>
@@ -274,146 +510,245 @@ input.txt.err { border-color: var(--bad); }
 </div>
 
 <section id="menu" class="screen" hidden>
-  <div class="panel">
-    <h1 class="brand">HOMOK<br><span>FUTAM</span></h1>
-    <p class="tag">Podverseny a sivatagban: rajt az arénából, ki a sziklatűk közé, át a kanyonon, és vissza a tribünök elé. Öt ellenfél vár.</p>
-    <div class="field">
-      <label class="lbl" for="nameInput">Neved</label>
-      <input class="txt" id="nameInput" maxlength="16" placeholder="Játékos" autocomplete="off" spellcheck="false">
-    </div>
-    <div class="opt">
-      <span class="lbl">Körök</span>
-      <div class="seg" id="lapsSeg">
-        <button id="laps1" data-v="1" aria-pressed="false">1 KÖR</button>
-        <button id="laps3" data-v="3" aria-pressed="true">3 KÖR</button>
-        <button id="laps5" data-v="5" aria-pressed="false">5 KÖR</button>
+  <div class="menu-wrap">
+    <div class="menu-left">
+      <h1 class="brand">HOMOK<br><span>FUTAM</span></h1>
+      <div class="field">
+        <label class="lbl" for="nameInput">Neved</label>
+        <input class="txt" id="nameInput" maxlength="16" placeholder="Játékos" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="nav" id="menuNav">
+        <button data-page="solo" aria-pressed="true"><b>EGYEDÜL</b><em aria-hidden="true">→</em><span id="navSoloSub">Öt bot ellen</span></button>
+        <button data-page="friends" aria-pressed="false"><b>HAVEROKKAL</b><em aria-hidden="true">→</em><span>2–6 játékos, szobakóddal</span></button>
+        <button data-page="settings" aria-pressed="false"><b>BEÁLLÍTÁSOK</b><em aria-hidden="true">→</em><span>Kijelző, grafika, hang</span></button>
+        <button data-page="controls" aria-pressed="false"><b>IRÁNYÍTÁS</b><em aria-hidden="true">→</em><span>Billentyűzet, kontroller, telefon</span></button>
       </div>
     </div>
-    <div class="opt">
-      <span class="lbl">Ellenfelek</span>
-      <div class="seg" id="diffSeg">
-        <button id="diff0" data-v="0" aria-pressed="false">KÖNNYŰ</button>
-        <button id="diff1" data-v="1" aria-pressed="true">NORMÁL</button>
-        <button id="diff2" data-v="2" aria-pressed="false">PROFI</button>
+
+    <div class="page" id="page-solo">
+      <h3>EGYEDÜL<small>ÖT BOT ELLEN</small></h3>
+      <p class="p-note">Podverseny a sivatagban: rajt az arénából, ki a sziklatűk közé, át a kanyonon, és vissza a tribünök elé.</p>
+      <div class="opt">
+        <span class="lbl">Körök</span>
+        <div class="seg" id="lapsSeg">
+          <button id="laps1" data-v="1" aria-pressed="false">1 KÖR</button>
+          <button id="laps3" data-v="3" aria-pressed="true">3 KÖR</button>
+          <button id="laps5" data-v="5" aria-pressed="false">5 KÖR</button>
+        </div>
       </div>
-    </div>
-    <div class="opt">
-      <span class="lbl">Grafika</span>
-      <div class="seg" id="gfxSeg">
-        <button data-v="0" aria-pressed="false">ALACSONY</button>
-        <button data-v="1" aria-pressed="false">KÖZEPES</button>
-        <button data-v="2" aria-pressed="false">MAGAS</button>
-        <button data-v="3" aria-pressed="false">ULTRA</button>
+      <div class="opt">
+        <span class="lbl">Ellenfelek</span>
+        <div class="seg" id="diffSeg">
+          <button id="diff0" data-v="0" aria-pressed="false">KÖNNYŰ</button>
+          <button id="diff1" data-v="1" aria-pressed="true">NORMÁL</button>
+          <button id="diff2" data-v="2" aria-pressed="false">PROFI</button>
+        </div>
       </div>
-      <p class="gfx-note" id="gfxNote" hidden>A váltás újratölti az oldalt.</p>
+      <div class="recs" id="recordTxt"></div>
+      <button class="cta" id="startBtn"><span>RAJT</span><span aria-hidden="true">→</span></button>
     </div>
-    <div class="opt">
-      <span class="lbl">Renderelő</span>
-      <div class="seg" id="rendererSeg">
-        <button data-v="0" aria-pressed="false">WEBGPU</button>
-        <button data-v="1" aria-pressed="false">WEBGL</button>
-      </div>
-      <p class="gfx-note" id="rendererNote" hidden></p>
-    </div>
-    <div class="opt-pair">
-    <div class="opt">
-      <span class="lbl">FPS-mérő</span>
-      <div class="seg" id="fpsSeg">
-        <button data-v="0" aria-pressed="true">KI</button>
-        <button data-v="1" aria-pressed="false">BE</button>
-      </div>
-    </div>
-    <div class="opt">
-      <span class="lbl">Filmszemcse</span>
-      <div class="seg" id="grainSeg">
-        <button data-v="0" aria-pressed="false">KI</button>
-        <button data-v="1" aria-pressed="true">BE</button>
-      </div>
-      <p class="gfx-note" id="grainNote" hidden>ALACSONY fokozaton nincs filmszemcse.</p>
-    </div>
-    </div>
-    <button class="cta" id="startBtn"><span>RAJT EGYEDÜL</span><span aria-hidden="true">→</span></button>
-    <div class="record" id="recordTxt"></div>
-    <div class="mp">
-      <span class="lbl">Haverokkal · 2–6 játékos</span>
+
+    <div class="page" id="page-friends" hidden>
+      <h3>HAVEROKKAL<small>2–6 JÁTÉKOS · SZERVER NÉLKÜL</small></h3>
       <p id="inviteNote" class="note" hidden>Meghívtak egy szobába: írd be a neved, és nyomj a BELÉPÉS gombra.</p>
-      <div class="mp-row">
-        <button class="ghost" id="createBtn">ÚJ SZOBA</button>
-        <input class="txt" id="codeInput" maxlength="4" placeholder="KÓD" autocomplete="off" spellcheck="false" aria-label="Szobakód">
-        <button class="ghost" id="joinBtn">BELÉPÉS</button>
+      <button class="cta" id="createBtn"><span>ÚJ SZOBA</span><span aria-hidden="true">+</span></button>
+      <div class="or">vagy lépj be egy szobába</div>
+      <div class="opt">
+        <label class="lbl" for="codeInput">Szobakód</label>
+        <div class="join">
+          <input class="txt" id="codeInput" maxlength="4" placeholder="KÓD" autocomplete="off" spellcheck="false">
+          <button class="ghost" id="joinBtn">BELÉPÉS</button>
+        </div>
+      </div>
+      <p class="p-note">A böngészők közvetlenül kapcsolódnak egymáshoz. Az üres helyeken botok versenyeznek, a köröket és a botokat a házigazda állítja.</p>
+    </div>
+
+    <div class="page" id="page-settings" hidden>
+      <div class="ptabs" id="setTabs">
+        <button data-tab="hud" aria-pressed="true">KIJELZŐ</button>
+        <button data-tab="gfx" aria-pressed="false">GRAFIKA</button>
+        <button data-tab="snd" aria-pressed="false">HANG</button>
+      </div>
+      <div class="ptab" id="tab-hud">
+        <div class="opt">
+          <span class="lbl">Névcímkék a podok felett</span>
+          <div class="seg" id="tagsSeg"><button data-v="0" aria-pressed="false">KI</button><button data-v="1" aria-pressed="true">KÖZELIEK</button><button data-v="2" aria-pressed="false">MIND</button></div>
+        </div>
+        <div class="opt-pair">
+          <div class="opt">
+            <span class="lbl">Sorrend</span>
+            <div class="seg" id="towerSeg"><button data-v="0" aria-pressed="true">KOMPAKT</button><button data-v="1" aria-pressed="false">TELJES</button></div>
+          </div>
+          <div class="opt">
+            <span class="lbl">HUD mérete</span>
+            <div class="seg" id="scaleSeg"><button data-v="90" aria-pressed="false">90%</button><button data-v="100" aria-pressed="true">100%</button><button data-v="115" aria-pressed="false">115%</button></div>
+          </div>
+        </div>
+        <div class="opt">
+          <span class="lbl">Pálya</span>
+          <div class="seg" id="mapSeg"><button data-v="1" aria-pressed="false">TÉRKÉP</button><button data-v="2" aria-pressed="false">SZALAG</button><button data-v="3" aria-pressed="true">MINDKETTŐ</button></div>
+        </div>
+        <div class="opt-pair">
+          <div class="opt">
+            <span class="lbl">Hátsó jelzés</span>
+            <div class="seg" id="nearSeg"><button data-v="0" aria-pressed="false">KI</button><button data-v="1" aria-pressed="true">BE</button></div>
+          </div>
+          <div class="opt">
+            <span class="lbl">Eseményfolyam</span>
+            <div class="seg" id="feedSeg"><button data-v="0" aria-pressed="false">KI</button><button data-v="1" aria-pressed="true">BE</button></div>
+          </div>
+        </div>
+        <div class="opt-pair">
+          <div class="opt">
+            <span class="lbl">FPS-mérő</span>
+            <div class="seg" id="fpsSeg"><button data-v="0" aria-pressed="true">KI</button><button data-v="1" aria-pressed="false">BE</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="ptab" id="tab-gfx" hidden>
+        <div class="opt">
+          <span class="lbl">Grafika</span>
+          <div class="seg" id="gfxSeg">
+            <button data-v="0" aria-pressed="false">ALACSONY</button>
+            <button data-v="1" aria-pressed="false">KÖZEPES</button>
+            <button data-v="2" aria-pressed="false">MAGAS</button>
+            <button data-v="3" aria-pressed="false">ULTRA</button>
+          </div>
+          <p class="gfx-note" id="gfxNote" hidden>A váltás újratölti az oldalt.</p>
+        </div>
+        <div class="opt">
+          <span class="lbl">Renderelő</span>
+          <div class="seg" id="rendererSeg">
+            <button data-v="0" aria-pressed="false">WEBGPU</button>
+            <button data-v="1" aria-pressed="false">WEBGL</button>
+          </div>
+          <p class="gfx-note" id="rendererNote" hidden></p>
+        </div>
+        <div class="opt">
+          <span class="lbl">Filmszemcse</span>
+          <div class="seg" id="grainSeg">
+            <button data-v="0" aria-pressed="false">KI</button>
+            <button data-v="1" aria-pressed="true">BE</button>
+          </div>
+          <p class="gfx-note" id="grainNote" hidden>ALACSONY fokozaton nincs filmszemcse.</p>
+        </div>
+      </div>
+      <div class="ptab" id="tab-snd" hidden>
+        <div class="opt-pair">
+          <div class="opt">
+            <span class="lbl">Hang</span>
+            <div class="seg" id="soundSeg"><button data-v="0" aria-pressed="false">KI</button><button data-v="1" aria-pressed="true">BE</button></div>
+          </div>
+          <div class="opt">
+            <span class="lbl">Zene</span>
+            <div class="seg" id="musicSeg"><button data-v="0" aria-pressed="false">KI</button><button data-v="1" aria-pressed="true">BE</button></div>
+          </div>
+        </div>
+        <p class="p-note">Futam közben is: M a hang, N a zene.</p>
       </div>
     </div>
-    <div class="keys" id="keysHelp">
-      <kbd>W / ↑</kbd><span>gáz</span>
-      <kbd>S / ↓</kbd><span>fék</span>
-      <kbd>A D / ← →</kbd><span>kormányzás</span>
-      <kbd>Shift</kbd><span>boost (melegíti a hajtóműveket)</span>
-      <kbd>Space</kbd><span>csúsztatás: élesebb kanyar, hűti a hajtóműveket</span>
-      <kbd>C</kbd><span>kamera</span>
-      <kbd>R</kbd><span>vissza a pályára</span>
-      <kbd>Esc / P</kbd><span>szünet</span>
-      <kbd>M</kbd><span>hang ki/be</span>
-      <kbd>N</kbd><span>zene ki/be</span>
-      <kbd>I</kbd><span>FPS-mérő ki/be</span>
-      <kbd>G</kbd><span>filmszemcse ki/be</span>
+
+    <div class="page" id="page-controls" hidden>
+      <div class="ptabs" id="ctlTabs">
+        <button data-tab="kb" aria-pressed="true">BILLENTYŰZET</button>
+        <button data-tab="pad" aria-pressed="false">KONTROLLER</button>
+        <button data-tab="phone" aria-pressed="false">TELEFON</button>
+      </div>
+      <div class="keys ptab" id="tab-kb">
+        <kbd>W / ↑</kbd><span>gáz</span>
+        <kbd>S / ↓</kbd><span>fék</span>
+        <kbd>A D / ← →</kbd><span>kormányzás</span>
+        <kbd>Shift</kbd><span>boost (melegíti a hajtóműveket)</span>
+        <kbd>Space</kbd><span>csúsztatás: élesebb kanyar, hűti a hajtóműveket</span>
+        <kbd>C</kbd><span>kamera</span>
+        <kbd>R</kbd><span>vissza a pályára</span>
+        <kbd>Tab</kbd><span>teljes sorrend, amíg lenyomva tartod</span>
+        <kbd>Esc / P</kbd><span>szünet</span>
+        <kbd>M</kbd><span>hang ki/be</span>
+        <kbd>N</kbd><span>zene ki/be</span>
+        <kbd>I</kbd><span>FPS-mérő ki/be</span>
+        <kbd>G</kbd><span>filmszemcse ki/be</span>
+      </div>
+      <div class="keys ptab" id="tab-pad" hidden>
+        <kbd>Bal kar</kbd><span>kormány (középen finomabb)</span>
+        <kbd>RT</kbd><span>gáz</span>
+        <kbd>LT</kbd><span>fék</span>
+        <kbd>X / RB</kbd><span>boost</span>
+        <kbd>LB / B</kbd><span>csúsztatás</span>
+        <kbd>Y</kbd><span>kamera</span>
+        <kbd>Start</kbd><span>menü</span>
+      </div>
+      <div class="ptab" id="tab-phone" hidden>
+        <p class="p-note">Telefonon a gáz automatikus. A kormány, a fék és a boost a képernyő alján van, a DRIFT gomb a boost fölött.</p>
+      </div>
     </div>
   </div>
 </section>
 
 <section id="room" class="screen" hidden>
-  <div class="panel">
-    <div class="opt">
-      <span class="lbl">Szobakód</span>
-      <div class="room-code" id="roomCode">----</div>
+  <div class="lobby">
+    <div class="lobby-head">
+      <div class="opt"><span class="lbl">Szobakód</span><div class="room-code" id="roomCode">----</div></div>
+      <div class="invite"><code id="inviteLink"></code><button class="ghost" id="copyBtn">LINK MÁSOLÁSA</button></div>
     </div>
-    <div class="invite">
-      <code id="inviteLink"></code>
-      <button class="ghost" id="copyBtn">LINK MÁSOLÁSA</button>
-    </div>
-    <ul class="players" id="playerList"></ul>
     <div class="opt">
-      <span class="lbl">Körök</span>
-      <div class="seg" id="roomLapsSeg">
-        <button id="rl1" data-v="1" aria-pressed="false">1 KÖR</button>
-        <button id="rl3" data-v="3" aria-pressed="true">3 KÖR</button>
-        <button id="rl5" data-v="5" aria-pressed="false">5 KÖR</button>
+      <span class="lbl" id="slotsLbl">Játékosok</span>
+      <div class="slots" id="playerList"></div>
+    </div>
+    <div class="opt-pair">
+      <div class="opt">
+        <span class="lbl">Körök</span>
+        <div class="seg" id="roomLapsSeg">
+          <button id="rl1" data-v="1" aria-pressed="false">1</button>
+          <button id="rl3" data-v="3" aria-pressed="true">3</button>
+          <button id="rl5" data-v="5" aria-pressed="false">5</button>
+        </div>
       </div>
-    </div>
-    <div class="opt">
-      <span class="lbl">Botok</span>
-      <div class="seg" id="roomDiffSeg">
-        <button id="rd0" data-v="0" aria-pressed="false">KÖNNYŰ</button>
-        <button id="rd1" data-v="1" aria-pressed="true">NORMÁL</button>
-        <button id="rd2" data-v="2" aria-pressed="false">PROFI</button>
+      <div class="opt">
+        <span class="lbl">Botok</span>
+        <div class="seg" id="roomDiffSeg">
+          <button id="rd0" data-v="0" aria-pressed="false">KÖNNYŰ</button>
+          <button id="rd1" data-v="1" aria-pressed="true">NORMÁL</button>
+          <button id="rd2" data-v="2" aria-pressed="false">PROFI</button>
+        </div>
       </div>
     </div>
     <p class="room-status" id="roomStatus"></p>
-    <button class="cta" id="readyBtn"><span id="readyTxt">KÉSZ VAGYOK</span><span aria-hidden="true">✓</span></button>
-    <button class="ghost" id="leaveBtn">KILÉPÉS A SZOBÁBÓL</button>
+    <div class="btn-row">
+      <button class="cta" id="readyBtn"><span id="readyTxt">KÉSZ VAGYOK</span><span aria-hidden="true">✓</span></button>
+      <button class="ghost" id="leaveBtn">KILÉPÉS</button>
+    </div>
   </div>
 </section>
 
 <section id="pause" class="screen" hidden>
   <div class="panel">
-    <h2 class="brand">SZÜNET</h2>
+    <h2 class="brand" id="pauseTitle">SZÜNET</h2>
+    <span class="live" id="pauseLive" hidden>A FUTAM MEGY TOVÁBB</span>
+    <div id="pauseTower"></div>
     <div class="btns">
       <button class="cta" id="resumeBtn"><span>FOLYTATÁS</span><span aria-hidden="true">→</span></button>
       <button class="ghost" id="restartBtn">ÚJRAINDÍTÁS</button>
       <button class="ghost" id="photoBtn">FOTÓ MÓD</button>
       <button class="ghost" id="menuBtn">FŐMENÜ</button>
     </div>
+    <p class="p-note" id="pauseNote" hidden>A többiek közben versenyeznek, a podod gáz nélkül siklik. Esc: vissza a versenybe.</p>
   </div>
 </section>
 
 <section id="result" class="screen" hidden>
-  <div class="panel">
-    <h2 class="res-head" id="resHead">1.<small>HELY</small></h2>
-    <p class="res-sub" id="resSub"></p>
-    <table class="res" id="resTable"></table>
-    <div class="btns">
-      <button class="cta" id="againBtn"><span>ÚJ FUTAM</span><span aria-hidden="true">→</span></button>
-      <button class="ghost" id="resMenuBtn">FŐMENÜ</button>
+  <div class="res-wrap">
+    <div class="res-panel">
+      <h2 class="res-head" id="resHead">1.<small>HELY</small></h2>
+      <p class="res-sub" id="resSub"></p>
+      <div class="rt" id="resTable"></div>
+      <div class="opt" id="resLapsBox"><span class="lbl">Köreid</span><div class="laps" id="resLaps"></div></div>
+      <div class="btn-row">
+        <button class="cta" id="againBtn"><span>ÚJ FUTAM</span><span aria-hidden="true">→</span></button>
+        <button class="ghost" id="resMenuBtn">FŐMENÜ</button>
+      </div>
     </div>
+    <div class="chart" id="resChartBox"><span class="lbl">Helyezés a futam alatt</span><div id="resChart"></div></div>
   </div>
 </section>
 
@@ -429,14 +764,91 @@ input.txt.err { border-color: var(--bad); }
   <span><kbd>F</kbd>élességállítás</span><span><kbd>H</kbd>súgó elrejtése</span><span><kbd>ENTER</kbd>kép mentése</span><span><kbd>ESC</kbd>vissza</span>
 </div>
 
-<div id="loading">PÁLYA ÉPÍTÉSE…</div>
+<div id="loading" role="status" aria-label="Betöltés">
+  <div class="ld-sky"></div><div class="ld-sun"></div>
+  <svg class="ld-land" viewBox="0 0 1600 300" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
+    <path fill="#3a2416" d="M0 300V224H430L442 206H600L612 224H1000L1010 196H1100L1108 224H1290L1302 168H1440L1452 224H1600V300Z"/>
+    <path fill="#24170e" d="M0 300V240H1600V300Z M610 240C610 150 646 118 700 116C754 118 790 150 790 240H762C762 186 736 160 700 160C664 160 638 186 638 240Z
+      M848 240L850 218L851 218L853 195L849 195L851 166L856 166L858 141L852 141L853 117L856 117L858 85L844 85L846 64L894 64L896 85L882 85L883 117L887 117L889 141L883 141L885 166L888 166L890 195L887 195L889 218L889 218L891 240Z M928 240L929 227L930 227L931 210L929 210L930 196L932 196L933 183L930 183L931 166L932 166L933 147L924 147L926 136L954 136L956 147L947 147L948 166L949 166L950 183L948 183L948 196L951 196L952 210L949 210L950 227L951 227L952 240Z M1132 240L1135 212L1133 212L1136 181L1132 181L1135 144L1143 144L1145 113L1135 113L1137 73L1142 73L1144 38L1125 38L1127 30L1193 30L1195 38L1175 38L1177 73L1186 73L1189 113L1177 113L1179 144L1188 144L1191 181L1181 181L1183 212L1188 212L1191 240Z M1219 240L1220 223L1222 223L1223 200L1223 200L1225 179L1225 179L1226 156L1220 156L1222 137L1227 137L1228 126L1217 126L1219 118L1253 118L1255 126L1246 126L1247 137L1250 137L1251 156L1247 156L1248 179L1248 179L1249 200L1248 200L1249 223L1250 223L1252 240Z M1499 240L1501 218L1506 218L1507 198L1503 198L1504 172L1506 172L1508 149L1502 149L1504 130L1508 130L1509 107L1496 107L1498 96L1542 96L1544 107L1531 107L1532 130L1535 130L1536 149L1532 149L1534 172L1535 172L1537 198L1531 198L1532 218L1539 218L1542 240Z"/>
+    <path fill="#1b140e" d="M0 300V262C200 246 380 272 620 258C840 244 1020 274 1260 260C1420 250 1520 262 1600 254V300Z"/>
+    <path fill="none" stroke="rgba(255,170,100,.3)" stroke-width="1.5" d="M0 262C200 246 380 272 620 258C840 244 1020 274 1260 260C1420 250 1520 262 1600 254"/>
+  </svg>
+  <div class="ld-wind" aria-hidden="true">
+    <i style="top:8%;width:200px;animation-duration:4.8s;animation-delay:-.6s"></i><i style="top:22%;width:120px;animation-duration:3.9s;animation-delay:-2.4s"></i>
+    <i style="top:35%;width:240px;animation-duration:5.6s;animation-delay:-3.8s"></i><i style="top:47%;width:150px;animation-duration:4.2s;animation-delay:-1.3s"></i>
+    <i style="top:58%;width:190px;animation-duration:5.1s;animation-delay:-4.4s"></i><i style="top:69%;width:110px;animation-duration:3.6s;animation-delay:-.2s"></i>
+    <i style="top:78%;width:260px;animation-duration:6s;animation-delay:-2.9s"></i><i style="top:90%;width:140px;animation-duration:4.5s;animation-delay:-3.3s"></i>
+  </div>
+  <div class="ld-main">
+    <div><p class="brand">HOMOK<br><span>FUTAM</span></p><p class="ld-sub">PODVERSENY A SIVATAGBAN</p></div>
+    <div class="ld-bottom">
+      <div class="ld-row"><span class="lbl" id="ldStep">BETÖLTÉS</span><b id="ldPct" class="num">0%</b></div>
+      <div class="ld-bar"><i id="ldFill"></i></div>
+      <p class="ld-meta" id="ldMeta"></p>
+      <div class="ld-tip"><span class="lbl">Tipp</span><p id="ldTip"></p></div>
+      <div id="err" hidden></div>
+    </div>
+  </div>
+</div>
 
-<script type="module" src="./main.js"></script>
 <script>
+  // The loading screen's progress: main.js reports its steps through HF_LOAD (defined here, before the module runs).
+  (function () {
+    var el = document.getElementById('loading'), fill = document.getElementById('ldFill'), pct = document.getElementById('ldPct'),
+      stepEl = document.getElementById('ldStep'), tipEl = document.getElementById('ldTip'), meta = document.getElementById('ldMeta');
+    var touch = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+    var TIPS = [
+      'Boost az egyenesben, csúsztatás a kanyarban: a csúsztatás hűti a hajtóműveket, utána jöhet a következő boost.',
+      'Ha a hő íve megtelik, a pod túlmelegszik: 3 másodpercig nincs boost, és a végsebesség is kisebb.',
+      'Egy másik pod mögött, 6–55 méterre szélárnyékban vagy: kisebb a légellenállás, 6%-kal nagyobb a végsebesség.',
+      'Tökéletes rajt: add a gázt a RAJT! előtti utolsó fél másodpercben, amikor a rajtlámpák alatti csík a narancs mezőben jár.',
+      'Ha túlhúzod a kormányt, a pod orra elszalad: engedd el, és a pod visszakapaszkodik.',
+      'Kint a nyílt pályán a széllökések oldalra tolják a podot. Látszik, ahogy jönnek: mozdul a homok, a fű és a zászlók.',
+      'A kanyon két torkolatánál a fal alja rámpa: ha kisodródsz, felfutsz rá, és visszaterel a pályára.',
+      'Haverokkal: HAVEROKKAL, ÚJ SZOBA, és küldd el a linket. A szabad helyeken botok versenyeznek.',
+    ].concat(touch ? ['Telefonon a gáz automatikus: a fék és a boost a jobb alsó sarokban van, a DRIFT gomb a boost fölött.'] : [
+      'A homok lassít, a sziklába csapódni drága. Ha elakadtál, az R visszatesz a pályára.',
+      'Futam közben a Tab lenyomva a teljes sorrendet mutatja.',
+      'A C a három kamera között vált, az M a hangot, az N a zenét kapcsolja.',
+    ]);
+    var cur = 0, next = 0, shown = 0, k = Math.floor(Math.random() * TIPS.length);
+    function draw() { fill.style.transform = 'scaleX(' + shown.toFixed(4) + ')'; pct.textContent = Math.round(shown * 100) + '%'; }
+    function set(p, label, nxt) {
+      if (p > cur) cur = p;
+      next = Math.max(cur, nxt == null ? cur : nxt);
+      if (label) stepEl.textContent = label;
+      if (shown < cur) shown = cur;
+      draw();
+    }
+    // between two reports the bar creeps on towards the next step, so a long step does not look stuck
+    var creep = setInterval(function () {
+      var target = cur + (next - cur) * 0.92;
+      if (shown < target - 0.0005) { shown += (target - shown) * 0.05; draw(); }
+    }, 100);
+    function tip() { tipEl.textContent = TIPS[k++ % TIPS.length]; }
+    tip();
+    var rot = setInterval(function () { tipEl.classList.add('out'); setTimeout(function () { tip(); tipEl.classList.remove('out'); }, 400); }, 6500);
+    window.HF_LOAD = set;
+    // report a step, then give the browser a frame to show it (the work after it blocks the page)
+    set.step = function (p, label, nxt) { set(p, label, nxt); return new Promise(function (r) { requestAnimationFrame(function () { setTimeout(r, 0); }); }); };
+    set.meta = function (t) { meta.textContent = t; };
+    set.done = function () {
+      set(1, 'KÉSZ', 1); clearInterval(creep); clearInterval(rot);
+      el.classList.add('done');
+      setTimeout(function () { el.hidden = true; }, 600);
+    };
+    set.fail = function (msg) {
+      clearInterval(creep); clearInterval(rot);
+      el.classList.remove('done'); el.hidden = false; el.classList.add('failed');
+      var e = document.getElementById('err'); e.textContent = msg; e.hidden = false;
+    };
+    set(0.02, 'A JÁTÉK LETÖLTÉSE', 0.06);
+  })();
   window.addEventListener('error', function (e) {
     var el = document.getElementById('loading');
-    if (el && !el.hidden) el.innerHTML = '<div id="err">A játék nem tudott elindulni: ' + (e.message || 'ismeretlen hiba') + '<br>Kell hozzá WebGL-t támogató böngésző.</div>';
+    if (el && !el.hidden && !el.classList.contains('done')) window.HF_LOAD.fail('A játék nem tudott elindulni: ' + (e.message || 'ismeretlen hiba') + '. Kell hozzá WebGL-t támogató böngésző.');
   });
 </script>
+<script type="module" src="./main.js"></script>
 </body>
 </html>

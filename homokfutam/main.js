@@ -32,8 +32,13 @@ import { createBeam, createBeamLights, createBeamFlares } from './gfx/beam.js';
 import { FxBatch, shown } from './gfx/fxbatch.js';
 import { buildDressing } from './world/dressing.js';
 import { createAudio } from './audio.js';
+import { createHUD } from './hud.js';
 
 const Q = pickQuality();
+// the loading screen (index.html, HF_LOAD): the steps of the build, and the preset it is building
+const LOAD = window.HF_LOAD || Object.assign(() => {}, { step: async () => {}, meta: () => {}, done: () => { document.getElementById('loading').hidden = true; } });
+LOAD.meta(`${{ low: 'ALACSONY', medium: 'KÖZEPES', high: 'MAGAS', ultra: 'ULTRA' }[Q.name] ?? Q.name.toUpperCase()} GRAFIKA · ${RENDERER.toUpperCase()}`);
+LOAD(0.06, 'A PÁLYA ÉPÜL', 0.14);
 const SKY_READY = loadSky();       // ?gfx=sky:1: the sky tables bake in a worker while the world is built
 await loadNodes();             // WebGPURenderer: the node materials (gfx/tsl/), before anything is built
 if (!GPU) installAtmosphere();
@@ -2517,6 +2522,7 @@ function crashFx(r, x, z, power, replay = false) {
   if ((r.crashCD ?? 0) > 0) return;
   r.crashCD = 3;
   if (!replay) r.crashN = (r.crashN ?? 0) + 1;
+  if (!replay && (state === 'race' || state === 'finished')) HUD.crash(r, player, raceT);
   // (the parts that come off: on this machine only for the pods it drives; the others' come with their state)
   const torn = !replay && r.ctl !== 'net' ? breakParts(r, x, z, power) : 0;
   r.dmg = 4.5; r.shudder = 1; r.dmgEngine = Math.random() < 0.5 ? 0 : 1;
@@ -2640,13 +2646,15 @@ function kickPod(r, x, z, nx, nz, power, cap) {
 }
 let toastTimer = 0;
 const toastEl = document.getElementById('toast');
-function toast(text, warn = false, dur = 1.6) {
+// the middle slot: lap times and toggles, and warnings in red (sub: a smaller second line)
+function toast(text, warn = false, dur = 1.6, sub = '') {
   toastEl.textContent = text;
+  if (sub) toastEl.appendChild(document.createElement('small')).textContent = sub;
   toastEl.classList.toggle('warn', warn);
   toastEl.hidden = false;
   toastTimer = dur;
 }
-function onOverheat() { toast('TÚLMELEGEDÉS', true); sfx('boom', 0.6); }
+function onOverheat() { toast('TÚLMELEGEDÉS', true, 1.8, '3 MÁSODPERCIG NINCS BOOST'); sfx('boom', 0.6); }
 
 // world metres per pixel at 1 m from the camera (beam strands keep a minimum on-screen width)
 let PX_SCALE = 0.001;
@@ -2928,7 +2936,7 @@ function updateWind(dt) {
 let state = 'loading';   // loading | menu | countdown | race | finished | results | paused
 let pausedFrom = null;
 let laps = 3, diff = 1, raceT = 0, countT = 0, finishWait = 0, lastCount = 0, throttleAt = -1;
-let camMode = 0, camYaw = 0, camY = 0, fov = 60, simT = 0, centerTimer = 0, bestLapRace = Infinity, newRecord = false;
+let camMode = 0, camYaw = 0, camY = 0, fov = 60, simT = 0, centerTimer = 0, bestLapRace = Infinity, newRecord = false, prevBestLap = Infinity;
 const STORE_KEY = 'homokfutam:v1';
 const loadStore = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch { return {}; } };
 const saveStore = (o) => { try { localStorage.setItem(STORE_KEY, JSON.stringify(o)); } catch { /* storage blocked */ } };
@@ -2965,7 +2973,8 @@ function newRace() {
     Object.assign(r, { aiOff: 0, aiOffT: 0, aiBoost: false, lapStart: 0, throttle: 0, brake: 0, boostIn: false, pitch: 0, roll: 0 });
   });
   partsReset();
-  raceT = 0; countT = 3.2; finishWait = 0; lastCount = 9; throttleAt = -1; bestLapRace = Infinity; newRecord = false;
+  raceT = 0; countT = 3.2; finishWait = 0; lastCount = 9; throttleAt = -1; bestLapRace = Infinity; newRecord = false; prevBestLap = store.lap ?? Infinity;
+  HUD.reset(racers, { laps, mp: !!MP.room });
   camYaw = player.yaw; camY = player.y + 4; CAMV.dist = CAMS[camMode].d;
   stopReplay();
   TRAILS.clear();
@@ -2977,6 +2986,7 @@ function newRace() {
   setLights(0, false);
   showScreen(null);
   hudEl.hidden = CINE.introT > 0; touchEl.hidden = !touchMode || CINE.introT > 0;
+  hudEl.classList.remove('menu-open');
   $('photoBtn').hidden = !!MP.room;
   centerEl.textContent = ''; toastEl.hidden = true;
   $('bestLapVal').classList.remove('fresh');
@@ -2999,18 +3009,27 @@ function showMenu() {
   renderRecord();
   showScreen(menuEl);
 }
+// the pause menu: with friends the race goes on, so it says so and keeps the live standings in view
+function showPause(open) {
+  const m = !!MP.room;
+  $('pauseTitle').textContent = m ? 'MENÜ' : 'SZÜNET';
+  $('pauseLive').hidden = !m; $('pauseNote').hidden = !m;
+  $('resumeBtn').firstElementChild.textContent = m ? 'VISSZA A VERSENYBE' : 'FOLYTATÁS';
+  hudEl.classList.toggle('menu-open', open);
+  showScreen(open ? pauseEl : null);
+  if (open) $('resumeBtn').focus({ preventScroll: true });
+}
 function togglePause() {
   if (MP.room) {               // the race keeps running for everyone else: just an overlay
     if (state !== 'countdown' && state !== 'race' && state !== 'finished') return;
     MP.menuOpen = !MP.menuOpen;
-    showScreen(MP.menuOpen ? pauseEl : null);
-    if (MP.menuOpen) $('resumeBtn').focus({ preventScroll: true });
+    showPause(MP.menuOpen);
     return;
   }
   if (state === 'photo') { exitPhoto(); return; }
-  if (state === 'paused') { state = pausedFrom; showScreen(null); hudEl.hidden = CINE.introT > 0; return; }
+  if (state === 'paused') { state = pausedFrom; showPause(false); hudEl.hidden = CINE.introT > 0; return; }
   if (state === 'countdown' || state === 'race' || state === 'finished') {
-    pausedFrom = state; state = 'paused'; showScreen(pauseEl); $('resumeBtn').focus({ preventScroll: true });
+    pausedFrom = state; state = 'paused'; showPause(true);
   }
 }
 function onPlayerLap(lt) {
@@ -3042,28 +3061,41 @@ function showResults() {
   startReplay();
   hudEl.hidden = true; touchEl.hidden = true;
   const ranks = standings(), pos = ranks.indexOf(player) + 1;
+  const myBest = player.lapTimes.length ? Math.min(...player.lapTimes) : Infinity;
+  const pbLap = !MP.room && isFinite(myBest) && !(prevBestLap <= myBest);
   $('resHead').innerHTML = `${pos}.<small>HELY</small>`;
-  $('resSub').textContent = `Idő ${fmtTime(player.finishTime)} · legjobb kör ${fmtTime(Math.min(...player.lapTimes))}` + (newRecord ? ' · új rekord!' : '');
+  $('resSub').innerHTML = (player.finished ? `Idő ${fmtTime(player.finishTime)}` : 'Nem értél célba') + ` · legjobb kör ${fmtTime(myBest)}`
+    + (newRecord ? ' · <b>új rekord</b>' : pbLap ? ' · <b>új legjobb kör</b>' : '');
   $('againBtn').firstElementChild.textContent = MP.room ? 'VISSZA A SZOBÁBA' : 'ÚJ FUTAM';
-  $('resMenuBtn').textContent = MP.room ? 'KILÉPÉS A SZOBÁBÓL' : 'FŐMENÜ';
-  $('resTable').innerHTML = ranks.map((r, k) => {
-    let t;
+  $('resMenuBtn').textContent = MP.room ? 'KILÉPÉS' : 'FŐMENÜ';
+  const fast = HUD.fastest;
+  $('resTable').innerHTML = '<div class="h"><span>#</span><span>PILÓTA</span><span class="t">IDŐ</span><span class="bl">LEGJOBB KÖR</span></div>' + ranks.map((r, k) => {
+    let t, est = false;
     if (r.finished) t = k === 0 ? fmtTime(r.finishTime) : '+' + (r.finishTime - ranks[0].finishTime).toFixed(2);
-    else if (r.gone) t = 'kiesett';
-    else {
+    else if (r.gone) t = 'KIESETT';
+    else {                     // still on the way: an estimate from the average speed so far
       const avg = Math.max(r.prog / Math.max(raceT, 1), 50);
-      t = '+' + (raceT + (laps * TR.L - r.prog) / avg - ranks[0].finishTime).toFixed(1);
+      t = '~+' + (raceT + (laps * TR.L - r.prog) / avg - ranks[0].finishTime).toFixed(1); est = true;
     }
-    return `<tr class="${r.player ? 'me' : ''}"><td>${k + 1}</td><td><span class="swatch" style="background:${r.color}"></span>${r.player ? 'Te' : escapeHtml(r.name)}</td><td class="num">${t}</td></tr>`;
+    const lts = HUD.lapsOf(r), bl = lts.length ? Math.min(...lts) : Infinity, isFast = fast.n === r.n && isFinite(bl);
+    const blTxt = !isFinite(bl) ? '–' : isFast ? `<span>${fmtTime(bl)}</span>` : fmtTime(bl);
+    const cls = [r.player ? 'me' : '', r.gone ? 'gone' : '', est ? 'est' : ''].filter(Boolean).join(' ');
+    return `<div class="${cls}"><span class="p">${k + 1}</span><span class="nm"><i style="background:${r.color}"></i>${escapeHtml(r.player ? 'Te' : r.name)}${MP.room && !r.owner ? '<em>BOT</em>' : ''}</span>`
+      + `<span class="t num">${t}</span><span class="bl num${isFast ? ' fast' : ''}${r.player && pbLap && !isFast ? ' pb' : ''}">${blTxt}</span></div>`;
   }).join('');
+  $('resLaps').innerHTML = player.lapTimes.map((lt, i) => `<div class="${lt === myBest && player.lapTimes.length > 1 ? 'pb' : ''}"><span class="lbl">${i + 1}. kör</span><b class="num">${fmtTime(lt)}</b></div>`).join('');
+  $('resLapsBox').hidden = !player.lapTimes.length;
+  const chart = HUD.chartSVG(racers, player);
+  $('resChart').innerHTML = chart;
+  $('resChartBox').hidden = !chart;
   showScreen(resultEl);
   $('againBtn').focus({ preventScroll: true });
 }
 function renderRecord() {
   const b = store.best?.[laps];
-  $('recordTxt').innerHTML = b
-    ? `Rekordod (${laps} kör): <b class="num">${fmtTime(b)}</b>` + (store.lap ? ` · legjobb kör <b class="num">${fmtTime(store.lap)}</b>` : '')
-    : `Még nincs rekordod ${laps} körön.`;
+  $('recordTxt').innerHTML = `<div><span class="lbl">Rekordod · ${laps} kör</span><b class="num">${fmtTime(b)}</b></div>`
+    + `<div><span class="lbl">Legjobb kör</span><b class="num">${fmtTime(store.lap)}</b></div>`;
+  $('navSoloSub').textContent = b ? `Öt bot ellen · rekordod ${fmtTime(b)}` : 'Öt bot ellen';
 }
 
 function stepSim(dt) {
@@ -3077,7 +3109,7 @@ function stepSim(dt) {
     countT -= dt;
     const c = Math.ceil(countT);
     if (c !== lastCount && c > 0 && c <= 3) {
-      lastCount = c; centerEl.textContent = c; centerEl.className = ''; centerTimer = 1.2;
+      lastCount = c;                // (the digits are in the HUD's start lights, next to the lamps)
       setLights(c === 3 ? 2 : c === 2 ? 4 : 5, false); sfx('beep');
       announce(c === 3 ? 'three' : c === 2 ? 'two' : 'one');
     }
@@ -3454,29 +3486,29 @@ function drawMinimap() {
     mmx.arc(mmX(r.x), mmY(r.z), r.player ? 9 : 6.5, 0, TAU);
     mmx.fillStyle = r.color; mmx.fill();
     mmx.lineWidth = r.player ? 3 : 2; mmx.strokeStyle = r.player ? '#fff' : 'rgba(27,20,14,.8)'; mmx.stroke();
+    if (MP.room && r.owner && !r.player) {      // the other players: a ring around the dot
+      mmx.beginPath(); mmx.arc(mmX(r.x), mmY(r.z), 10.5, 0, TAU);
+      mmx.lineWidth = 2.5; mmx.strokeStyle = 'rgba(242,228,201,.95)'; mmx.stroke();
+    }
   }
 }
+// hud.js: the standings, gaps, sectors, name tags, the lap strip, heat, the start lights
+const HUD = createHUD({ camera, TR, fmtTime, archS: () => (ROCKS.arch ? TR.s[ROCKS.arch.i] : 0), touch: window.matchMedia('(pointer: coarse)').matches });
 const hudCache = {};
 function setHTML(id, v) { if (hudCache[id] !== v) { hudCache[id] = v; $(id).innerHTML = v; } }
-function updateHUD() {
-  const pos = standings().indexOf(player) + 1;
-  setHTML('posBig', `${pos}<small>/${racers.length}</small>`);
-  setHTML('lapTxt', player.finished ? 'CÉLBAN' : `KÖR ${clamp(player.lap + 1, 1, laps)}/${laps}`);
+function updateHUD(dt = 0) {
+  HUD.update({
+    racers, player, ranks: standings(), raceT, dt, countT, throttleAt,
+    state: state === 'paused' ? pausedFrom : state, paused: state === 'paused',
+    intro: CINE.introT > 0, cine: CINE.finishT > 0 || !!CINE.replay, pauseOpen: !pauseEl.hidden,
+  });
+  setHTML('lapTxt', player.finished ? 'CÉL' : `${clamp(player.lap + 1, 1, laps)}/${laps}`);
   const t = state === 'countdown' ? 0 : player.finished ? player.finishTime : raceT;
   setHTML('totalVal', fmtTime(t));
   setHTML('lapVal', fmtTime(player.finished ? player.lapTimes[player.lapTimes.length - 1] : state === 'countdown' ? 0 : raceT - player.lapStart));
   setHTML('bestLapVal', fmtTime(bestLapRace));
-  setHTML('speedVal', String(Math.round(Math.abs(player.fwd) * 3.6)));
-  $('heatFill').style.width = player.heat.toFixed(1) + '%';
-  const over = player.overheat > 0;
-  $('heatFill').classList.toggle('over', over);
-  $('heatFill').classList.toggle('warn', !over && player.boosting && player.heat > 80);
-  $('heatFill').classList.toggle('cool', !over && player.cooling > 0.3);
-  $('draftTag').classList.toggle('on', player.draft > 0.35 && !player.finished);
-  $('boostTag').classList.toggle('off', over);
-  setHTML('boostTag', over ? 'HŰL' : 'BOOST');
   if (state === 'race' && player.wrong > 1.2) toast('ROSSZ IRÁNY', true, 0.3);
-  drawMinimap();
+  if (HUD.S.map & 1) drawMinimap();
 }
 
 // ============================================================
@@ -3530,7 +3562,34 @@ $('resMenuBtn').addEventListener('click', () => (MP.room ? leaveRoom() : showMen
 onPress.Escape = onPress.KeyP = togglePause;
 onPress.KeyC = () => { camMode = (camMode + 1) % CAMS.length; };
 onPress.KeyR = () => { if (state === 'race') { respawn(player); toast('VISSZA A PÁLYÁRA'); } };
-onPress.KeyM = () => { setMuted(!SND.muted); toast(SND.muted ? 'HANG KI' : 'HANG BE'); };
+onPress.KeyM = () => { setMuted(!SND.muted); syncSeg('soundSeg', SND.muted ? 0 : 1); toast(SND.muted ? 'HANG KI' : 'HANG BE'); };
+// Tab held: the full standings
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Tab' || !(state === 'race' || state === 'countdown' || state === 'finished')) return;
+  e.preventDefault(); HUD.setTab(true);
+});
+window.addEventListener('keyup', (e) => { if (e.code === 'Tab') HUD.setTab(false); });
+window.addEventListener('blur', () => HUD.setTab(false));
+// main menu: the four pages, the tabs inside them
+function showPage(p) {
+  document.querySelectorAll('#menuNav button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.page === p)));
+  for (const k of ['solo', 'friends', 'settings', 'controls']) $('page-' + k).hidden = k !== p;
+}
+$('menuNav').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) showPage(b.dataset.page); });
+function bindTabs(id) {
+  const btns = [...$(id).querySelectorAll('button')];
+  const show = (t) => btns.forEach((b) => { b.setAttribute('aria-pressed', String(b.dataset.tab === t)); $('tab-' + b.dataset.tab).hidden = b.dataset.tab !== t; });
+  btns.forEach((b) => b.addEventListener('click', () => show(b.dataset.tab)));
+  return show;
+}
+bindTabs('setTabs');
+const showControls = bindTabs('ctlTabs');
+// display settings (hud.js keeps them)
+for (const [seg, key] of [['tagsSeg', 'tags'], ['towerSeg', 'tower'], ['mapSeg', 'map'], ['nearSeg', 'near'], ['feedSeg', 'feed'], ['scaleSeg', 'scale']]) {
+  syncSeg(seg, HUD.S[key]);
+  bindSeg(seg, (v) => HUD.set(key, v));
+}
+bindSeg('soundSeg', (v) => setMuted(v === 0));
 // FPS meter and film grain: menu rows and keys I / G (not while typing in a text field), saved in the browser
 const FPS = { on: false, n: 0, t0: 0 };
 const loadPref = (k, d) => { try { const v = localStorage.getItem('homokfutam:' + k); return v === null ? d : v === '1'; } catch { return d; } };
@@ -3572,16 +3631,22 @@ syncSeg('grainSeg', grainOn && Q.post ? 1 : 0);          // (no post-processing 
 setFps(loadPref('fps', false));
 onPress.KeyI = (e) => { if (typing(e)) return; setFps(!FPS.on); toast(FPS.on ? 'FPS-MÉRŐ BE' : 'FPS-MÉRŐ KI'); };
 onPress.KeyG = (e) => { if (typing(e) || !Q.post) return; setGrain(!grainOn); toast(grainOn ? 'FILMSZEMCSE BE' : 'FILMSZEMCSE KI'); };
-onPress.KeyN = () => { AUDIO.setMusic(!AUDIO.musicOn); toast(AUDIO.musicOn ? 'ZENE BE' : 'ZENE KI'); try { localStorage.setItem('homokfutam:music', AUDIO.musicOn ? '1' : '0'); } catch { /* storage blocked */ } };
+function setMusic(on) {
+  AUDIO.setMusic(on);
+  syncSeg('musicSeg', on ? 1 : 0);
+  try { localStorage.setItem('homokfutam:music', on ? '1' : '0'); } catch { /* storage blocked */ }
+}
+onPress.KeyN = () => { setMusic(!AUDIO.musicOn); toast(AUDIO.musicOn ? 'ZENE BE' : 'ZENE KI'); };
+bindSeg('musicSeg', (v) => setMusic(v === 1));
 try { if (localStorage.getItem('homokfutam:music') === '0') AUDIO.setMusic(false); } catch { /* storage blocked */ }
+syncSeg('musicSeg', AUDIO.musicOn ? 1 : 0);
+syncSeg('soundSeg', SND.muted ? 0 : 1);
 document.addEventListener('click', (e) => { if (e.target.closest?.('button')) { initAudio(); sfx('ui'); } });
 canvas.addEventListener('pointerdown', () => initAudio());
 document.addEventListener('visibilitychange', () => { if (!MP.room && document.hidden && state !== 'paused') togglePause(); });
 touchMode = window.matchMedia('(pointer: coarse)').matches;
 document.body.classList.toggle('touch', touchMode);
-if (touchMode) {
-  $('keysHelp').innerHTML = '<kbd>◀ ▶</kbd><span>kormányzás (a gáz automatikus)</span><kbd>FÉK</kbd><span>lassítás</span><kbd>BOOST</kbd><span>gyorsítás, melegíti a hajtóműveket</span>';
-}
+if (touchMode) showControls('phone');
 document.fonts?.load('800 92px "Saira Condensed"').then(() => gantrySign && gantrySign()).catch(() => {});
 
 // ============================================================
@@ -3594,6 +3659,7 @@ const randomCode = () => Array.from({ length: 4 }, () => CODE_CHARS[Math.floor(M
 const HTML_ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const escapeHtml = (v) => String(v).replace(/[&<>"']/g, (c) => HTML_ESC[c]);
 const cleanName = (v) => String(v ?? '').trim().slice(0, 16) || 'Játékos';
+const CROWN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M2 12 L3 5 L6.5 8.5 L8 3.5 L9.5 8.5 L13 5 L14 12 Z"/></svg>';
 const inviteUrl = (code) => `${location.origin}${location.pathname}#${code}`;
 const nameInput = $('nameInput'), codeInput = $('codeInput');
 try { nameInput.value = localStorage.getItem('homokfutam:name') || ''; } catch { /* storage blocked */ }
@@ -3606,6 +3672,7 @@ function menuNote(text, warn) {
   const el = $('inviteNote');
   el.textContent = text; el.hidden = !text;
   el.style.color = warn ? 'var(--bad)' : '';
+  if (text) showPage('friends');
 }
 function readInvite() {
   const code = location.hash.replace('#', '').toUpperCase();
@@ -3660,7 +3727,7 @@ function enterRoom(code) {
     const p = MP.peers.get(pid);
     MP.peers.delete(pid);
     const who = p ? p.name : 'Valaki';
-    if (MP.inRace) toast(`${who.toUpperCase()} KILÉPETT`); else roomNote(`${who} kilépett.`);
+    if (MP.inRace) HUD.feed('left', `<b>${escapeHtml(who.toLocaleUpperCase('hu'))}</b> KILÉPETT`); else roomNote(`${who} kilépett.`);
     peerLeftRace(pid);
     renderRoom();
     maybeStart();
@@ -3725,11 +3792,18 @@ function renderRoom() {
   $('roomCode').textContent = room.code;
   $('inviteLink').textContent = inviteUrl(room.code);
   const rows = [[selfId, { name: myName(), ready: MP.myReady, racing: false }], ...MP.peers];
-  $('playerList').innerHTML = rows.map(([id, p]) => {
-    const tags = (id === selfId ? '<em>te</em>' : '') + (id === host ? '<em>házigazda</em>' : '');
-    const st = p.racing ? '<b>VERSENYEZ…</b>' : p.ready ? '<b class="ok">KÉSZ</b>' : '<b>NEM KÉSZ</b>';
-    return `<li><span>${escapeHtml(p.name)}${tags}</span>${st}</li>`;
+  // six slots in start order (the host first, as maybeStart hands them out); the bot that drives each free one
+  const all = new Map(rows), order = [host, ...[...all.keys()].filter((id) => id !== host).sort()].filter((id) => all.has(id));
+  let slots = order.slice(0, 6).map((id) => {
+    const p = all.get(id);
+    const tags = [id === selfId ? 'te' : '', id === host ? `${CROWN} házigazda` : ''].filter(Boolean).join(' · ') || 'játékos';
+    const st = p.racing ? '<span class="st wait">VERSENYEZ…</span>' : p.ready ? '<span class="st ok">KÉSZ</span>' : '<span class="st wait">VÁR…</span>';
+    return `<div class="slot${id === selfId ? ' me' : ''}"><i></i><div class="n"><b>${escapeHtml(p.name)}</b><span>${tags}</span></div>${st}</div>`;
   }).join('');
+  for (let k = order.length; k < 6; k++) slots += `<div class="slot empty"><i></i><div class="n"><b>Szabad hely</b><span>bot vezeti: ${ROSTER[k].name}</span></div><span class="st wait">BOT</span></div>`;
+  $('playerList').innerHTML = slots;
+  const free = 6 - Math.min(6, order.length);
+  $('slotsLbl').textContent = `Játékosok · ${Math.min(6, order.length)} / 6` + (free ? ` · ${free === 1 ? 'a szabad helyen' : `a ${free} szabad helyen`} bot indul` : '');
   syncSeg('roomLapsSeg', MP.rLaps);
   syncSeg('roomDiffSeg', MP.rDiff);
   for (const b of document.querySelectorAll('#roomLapsSeg button, #roomDiffSeg button')) b.disabled = !room.isHost;
@@ -3845,7 +3919,10 @@ function netStep(r, dt) {
   Object.assign(r, { vx: n.vx, vz: n.vz, fwd: n.fwd, lat: n.lat, steer: n.steer, throttle: n.th, boosting: !!(n.f & 1),
     overheat: n.f & 2 ? 1 : 0, heat: n.heat, pitch: n.pitch, lap: n.lap, finished: !!(n.f & 4), finishTime: n.ft });
   r.prog = n.lap * TR.L + n.s;
-  if (r.crashN !== undefined && n.crash > r.crashN) crashFx(r, r.x, r.z, 50, true);
+  if (r.crashN !== undefined && n.crash > r.crashN) {
+    crashFx(r, r.x, r.z, 50, true);
+    if (state === 'race' || state === 'finished') HUD.crash(r, player, raceT);
+  }
   r.crashN = n.crash;
   if (n.broken !== (r.broken || 0)) partsTo(r, n.broken);
 }
@@ -3938,7 +4015,7 @@ function frame(now) {
   placeSunShadow();
   if (MID) { MID.update(camera); MID.pods(racers.map((r) => !r.gone && r.mesh), camera); }
   if (LIVE && player && !player.gone) LIVE.update(livePos(), player.mesh, racers.map((r) => r !== player && r.mesh));
-  if (state === 'countdown' || state === 'race' || state === 'finished' || state === 'paused') updateHUD();
+  if (state === 'countdown' || state === 'race' || state === 'finished' || state === 'paused') updateHUD(dt);
   updateAudio(dt, state === 'countdown' || state === 'race' || state === 'finished' || state === 'results');
   renderFrame(dt);
   if (PHOTO.shot) { PHOTO.shot = false; savePhoto(); }
@@ -4150,6 +4227,7 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
           for (const p of POOLS) p.update(dt * 4);
           updateFlying(dt * 4);
           if (CINE.finishT > 0) CINE.finishT = Math.max(0, CINE.finishT - dt * 4);
+          if (state === 'race' || state === 'finished') updateHUD(dt * 4);    // (the HUD measures gaps as the race goes)
         }
       }
       updateCamera(0.5); if (state !== 'results') updateHUD(); renderFrame(0.016);
@@ -4254,8 +4332,10 @@ let BIRDS = null;        // the birds on the canyon rim that startle (world/bird
 const WORLD_BOUNDS = new THREE.Box3(new THREE.Vector3(-1850, -70, -2450), new THREE.Vector3(2050, 270, 1000));
 async function boot(data) {
   if (PB_SKY) { await SKY_READY; scene.environment = buildEnvironment(renderer); }       // (the loading timeout may have won the race)
+  await LOAD.step(0.6, 'TALAJTÉRKÉP', 0.64);
   try { await bakeMacro(renderer, scene, { x0: TERRAIN.cx - TERRAIN.size / 2, z0: TERRAIN.cz - TERRAIN.size / 2, size: TERRAIN.size, res: 1024 }); }
   catch (e) { console.warn('HOMOKFUTAM: macro map failed', e); }
+  await LOAD.step(0.64, 'TÁRGYAK A PÁLYA MENTÉN', 0.68);
   if (PROPS_MODELS) {
     try {
       ROCKS.scatter = buildScatter({ scene, TR, Q, groundQuery, rng, models: PROPS_MODELS, rockMat: boulderMatAO, metalMat: ARENA_MATS.metal,
@@ -4291,6 +4371,7 @@ async function boot(data) {
       console.log(`HOMOKFUTAM: landmark at ${spot ? `${Math.round(spot.x)}, ${Math.round(spot.z)} (nearest pass ${Math.round(spot.near)} m, score ${spot.score.toFixed(0)})` : 'nowhere'} in ${Math.round(performance.now() - t0)} ms`);
     } catch (e) { console.warn('HOMOKFUTAM: landmark failed', e); }
   }
+  await LOAD.step(0.68, 'ÁRNYÉKOK SÜTÉSE', 0.73);
   // the ray tracer's BVH builds in a worker while the shadows and probes bake (?gfx=rtr:1, D9)
   const rtReady = RTR ? rtStart() : null;
   bakeWorldShadow(renderer, scene, WORLD_BOUNDS, Q.staticShadow);
@@ -4303,6 +4384,7 @@ async function boot(data) {
     console.log(`HOMOKFUTAM: mid shadow: ${n} static casters, ${MID.draws} draws`);
   }
   // the baked light (?gfx=gi:1, D4) before the probes: they see the world lit by it
+  await LOAD.step(0.73, 'FÉNY ÉS FÉNYPRÓBÁK', 0.8);
   if (GI_ON) await loadGI(SUN_DIR, TUNNEL.length ? 'gi_tunnel.bin' : 'gi.bin');
   try { PROBES = bakePodProbes(); } catch (e) { console.warn('HOMOKFUTAM: light probes failed', e); }
   if (PROBES?.canyon) { canyonMat.envMap = PROBES.canyon; canyonMat.needsUpdate = true; }        // sky through the slot, red rock all round
@@ -4317,6 +4399,7 @@ async function boot(data) {
     const moves = (o) => { for (let p = o; p; p = p.parent) if (p.userData.dynamic) return true; return false; };
     scene.traverse((o) => { if (o.isMesh && o.castShadow && !moves(o)) o.castShadow = false; });
   }
+  await LOAD.step(0.8, 'POR, HOMOK, UTÓFELDOLGOZÁS', GPU ? 0.88 : 0.97);
   try { HAZE = buildHaze({ scene, TR, rangeWhere, arch: ROCKS.arch, Q }); } catch (e) { console.warn('HOMOKFUTAM: haze failed', e); }
   // sand pouring from the rock (?gfx=trickle:1, E3): off the canyon rim, the tunnel's lips and ceiling, the arch and
   // the bridge; placed against the built rock (raycasts up into the overhangs, the walls' own profiles)
@@ -4355,14 +4438,14 @@ async function boot(data) {
   // (eye: 2, or when the chain cannot meter)
   if (rtReady) { await rtReady; rtUpdate(); }
   if (Q.eye) EYE = createEye(renderer.toneMappingExposure || 1, Q.eye === 1 ? post?.meter ?? null : null, zoneEV);
-  if (GPU) await precompile();
+  if (GPU) { await LOAD.step(0.88, 'SHADEREK FORDÍTÁSA · EZ TART A LEGTOVÁBB', 0.99); await precompile(); }
   if (data && data.laps) { laps = data.laps; syncSeg('lapsSeg', laps); }
   if (data && data.diff != null) { diff = data.diff; syncSeg('diffSeg', diff); }
   if (data && data.muted) setMuted(true);
   showMenu();
   readInvite();
   window.addEventListener('hashchange', readInvite);
-  requestAnimationFrame((t) => { lastT = t; frame(t); $('loading').hidden = true; });
+  requestAnimationFrame((t) => { lastT = t; frame(t); LOAD.done(); });
   // ?bakegi (dev): bake the light volumes for ?gfx=gi:1 and download them as gi.bin (for assets/world/)
   if (new URLSearchParams(location.search).has('bakegi')) {
     const r = await bakeGI();
@@ -4379,7 +4462,12 @@ async function bakeGI(opts = {}) {
   } finally { for (const l of ROCKS.lods) l.update(camera.position); }
 }
 // show the game once the surface textures are in (or after 10 s, whatever happens first)
-const texturesReady = Promise.race([Promise.all([SURF.ready, GROUND_READY, ROCKS_READY, POD_READY, ARENA_READY, PROPS_READY, COURSE_READY, LANDMARK_READY, DRESS.ready, SKY_READY]), new Promise((r) => setTimeout(r, 15000))]);
+const ASSETS = [SURF.ready, GROUND_READY, ROCKS_READY, POD_READY, ARENA_READY, PROPS_READY, COURSE_READY, LANDMARK_READY, DRESS.ready, SKY_READY];
+let assetsIn = 0;
+const assetIn = () => LOAD(0.14 + 0.44 * (++assetsIn / ASSETS.length), `MODELLEK ÉS TEXTÚRÁK · ${assetsIn}/${ASSETS.length}`, 0.6);
+LOAD(0.14, `MODELLEK ÉS TEXTÚRÁK · 0/${ASSETS.length}`, 0.58);
+for (const a of ASSETS) Promise.resolve(a).then(assetIn, assetIn);
+const texturesReady = Promise.race([Promise.all(ASSETS), new Promise((r) => setTimeout(r, 15000))]);
 const hot = window.claude && window.claude.hot;
 if (hot && typeof hot.snapshot === 'function') { try { hot.snapshot(() => ({ laps, diff, muted: SND.muted })); } catch { /* ignore */ } }
 if (hot && typeof hot.ready === 'function') hot.ready((d) => texturesReady.then(() => boot(d)));
