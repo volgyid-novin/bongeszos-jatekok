@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#05060b">
+<title>Fénykard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=Barlow:wght@400;500;600;700&display=swap">
+<style>
+/* Two roles on one page: #pc is the game (full-bleed 3D arena, menus as a left panel over it, a thin HUD in a match),
+   #pad is the phone controller (?kard=...). Single dark theme on purpose; the accent is the chosen blade colour. */
+:root {
+  --ink: #05060b;
+  --panel: rgba(8, 10, 18, .8);
+  --line: rgba(150, 175, 230, .16);
+  --line-hi: rgba(150, 175, 230, .34);
+  --text: #e8edf9;
+  --dim: #8d97b0;
+  --blade: #4d92ff;
+  --good: #58f0a0;
+  --warn: #ffc864;
+  --bad: #ff5a4a;
+  --font-display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Barlow", "Segoe UI", system-ui, sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; overflow: hidden; background: var(--ink); color: var(--text);
+  font-family: var(--font-body); font-size: 16px;
+  -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+}
+body.playing { cursor: crosshair; }
+canvas#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+button { font: inherit; color: inherit; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--blade); outline-offset: 2px; }
+.num { font-variant-numeric: tabular-nums lining-nums; }
+.lbl { font-size: 13px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--dim); }
+.pill {
+  display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+  font-size: 14px; font-weight: 600; padding: 4px 12px 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim);
+}
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .8; }
+.pill.ok { color: var(--good); border-color: rgba(88, 240, 160, .35); }
+.pill.warn { color: var(--warn); border-color: rgba(255, 200, 100, .35); }
+.pill.bad { color: var(--bad); border-color: rgba(255, 90, 74, .35); }
+
+/* ---------- menus ---------- */
+.screen {
+  position: fixed; inset: 0; display: flex; align-items: flex-start;
+  padding-inline: max(16px, 5vw); padding-block: 24px;
+  background: linear-gradient(90deg, rgba(5, 6, 11, .94) 0%, rgba(5, 6, 11, .7) 38%, rgba(5, 6, 11, 0) 70%);
+  overflow-y: auto;
+}
+.panel { width: min(470px, 100%); display: flex; flex-direction: column; gap: 18px; margin-block: auto; }
+.brand {
+  font-family: var(--font-display); font-weight: 700; font-size: clamp(64px, 11vw, 104px); line-height: .85; margin: 0;
+  letter-spacing: -.01em; text-transform: uppercase;
+}
+.brand span { color: var(--blade); text-shadow: 0 0 18px var(--blade), 0 0 42px color-mix(in srgb, var(--blade) 50%, transparent); }
+.tag { margin: 0; color: var(--dim); font-size: 17px; line-height: 1.45; max-width: 42ch; }
+.opt { display: flex; flex-direction: column; gap: 8px; }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button {
+  border: 0; background: transparent; padding: 9px 4px; cursor: pointer; font-weight: 700; font-size: 14px; letter-spacing: .06em; color: var(--dim);
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+}
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button i { width: 70%; height: 4px; border-radius: 2px; background: var(--c); box-shadow: 0 0 8px var(--c); }
+.seg button[aria-pressed="true"] { background: rgba(232, 237, 249, .1); color: var(--text); }
+.seg button:hover { color: var(--text); }
+.cta {
+  border: 0; border-radius: 6px; padding: 15px 20px; cursor: pointer; background: var(--blade); color: var(--ink);
+  font-family: var(--font-display); font-weight: 700; font-size: 20px; letter-spacing: .06em;
+  display: flex; justify-content: space-between; align-items: center;
+  box-shadow: 0 0 24px color-mix(in srgb, var(--blade) 35%, transparent), inset 0 -3px 0 rgba(0, 0, 0, .22);
+}
+.cta:hover { filter: brightness(1.12); }
+.cta.on { background: var(--text); }
+.ghost { border: 1px solid var(--line); border-radius: 6px; padding: 11px 16px; cursor: pointer; background: transparent; font-weight: 700; font-size: 16px; letter-spacing: .06em; text-align: left; }
+.ghost:hover { background: rgba(232, 237, 249, .07); border-color: var(--line-hi); }
+.ghost.hot { border-color: var(--blade); color: var(--blade); }
+.btns { display: flex; flex-direction: column; gap: 10px; }
+input.txt {
+  font-family: var(--font-body); font-weight: 600; font-size: 18px; color: var(--text); letter-spacing: .02em;
+  background: rgba(232, 237, 249, .05); border: 1px solid var(--line); border-radius: 6px; padding: 9px 12px; min-width: 0; width: 100%; box-sizing: border-box;
+  -webkit-user-select: text; user-select: text;
+}
+input.txt::placeholder { color: var(--dim); opacity: .6; }
+input.txt.err { border-color: var(--bad); }
+.mp { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--line); }
+.mp-row { display: grid; grid-template-columns: 1fr 90px auto; gap: 8px; }
+.mp-row .ghost { text-align: center; }
+#codeInput { text-transform: uppercase; text-align: center; letter-spacing: .2em; }
+.note { margin: 0; font-size: 15px; line-height: 1.4; color: var(--blade); }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; font-size: 15px; color: var(--dim); }
+.keys kbd { font-family: var(--font-body); font-weight: 700; font-size: 14px; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 0 7px; justify-self: start; white-space: nowrap; }
+.touchnote { margin: 0; font-size: 15px; line-height: 1.4; color: var(--warn); }
+
+/* phone pairing box (moved between the menu and the room) */
+.pairbox { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: rgba(232, 237, 249, .03); }
+.pair-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.link { border: 0; background: none; padding: 0; cursor: pointer; font-size: 13px; font-weight: 700; letter-spacing: .12em; color: var(--blade); }
+.pair-body { display: grid; grid-template-columns: 148px 1fr; gap: 16px; align-items: center; }
+.qr { width: 148px; height: 148px; border-radius: 6px; overflow: hidden; background: #fff; }
+.qr svg { width: 100%; height: 100%; display: block; }
+.steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 15px; line-height: 1.35; color: var(--dim); }
+.steps b { color: var(--text); }
+.pair-link { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--dim); overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; opacity: .8; }
+.pairbox.live .pair-body, .pairbox.live .pair-link { display: none; }
+
+.room-code { font-family: var(--font-display); font-weight: 700; font-size: clamp(64px, 12vw, 100px); line-height: .85; letter-spacing: .08em; color: var(--blade); text-shadow: 0 0 22px color-mix(in srgb, var(--blade) 45%, transparent); }
+.invite { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.invite code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; color: var(--dim); overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; }
+.players { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.players li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--line); font-size: 17px; }
+.players li em { font-style: normal; color: var(--dim); font-size: 14px; margin-left: 8px; }
+.players .pr { display: flex; gap: 12px; align-items: center; }
+.players .ph { font-size: 13px; color: var(--dim); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
+.players .ph.ok { color: var(--good); border-color: rgba(88, 240, 160, .35); }
+.players li b { font-weight: 700; letter-spacing: .06em; color: var(--dim); white-space: nowrap; font-size: 14px; }
+.players li b.ok { color: var(--good); }
+.players .sw { width: 22px; height: 4px; border-radius: 2px; display: inline-block; margin-right: 10px; vertical-align: middle; box-shadow: 0 0 6px currentColor; }
+.room-status { margin: 0; color: var(--dim); font-size: 16px; line-height: 1.45; min-height: 1.45em; }
+.res-head { font-family: var(--font-display); font-weight: 700; text-transform: uppercase; font-size: clamp(60px, 11vw, 96px); line-height: .85; margin: 0; }
+.res-head.win { color: var(--blade); text-shadow: 0 0 22px color-mix(in srgb, var(--blade) 45%, transparent); }
+.res-head.lose { color: var(--bad); }
+.res-sub { margin: 0; color: var(--dim); font-size: 17px; }
+table.restab { width: 100%; border-collapse: collapse; font-size: 16px; }
+table.restab th { text-align: right; font-weight: 700; padding: 6px 4px; border-bottom: 1px solid var(--line); font-size: 15px; }
+table.restab th:first-child { text-align: left; }
+table.restab td { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: right; font-weight: 700; }
+table.restab td:first-child { text-align: left; color: var(--dim); font-weight: 500; }
+
+/* ---------- HUD ---------- */
+#hud { position: fixed; inset: 0; pointer-events: none; }
+.bars {
+  position: absolute; top: calc(14px + env(safe-area-inset-top, 0px)); left: 16px; right: 16px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 18px; align-items: start;
+}
+.side { display: flex; flex-direction: column; gap: 6px; }
+.side.op { align-items: flex-end; }
+.side .nm { display: flex; gap: 10px; align-items: center; font-weight: 700; font-size: 18px; text-shadow: 0 1px 3px #000; }
+.side.op .nm { flex-direction: row-reverse; }
+.pips { display: flex; gap: 5px; }
+.pips i { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--dim); box-sizing: border-box; }
+.side.me .pips i.on { background: var(--me); border-color: var(--me); box-shadow: 0 0 8px var(--me); }
+.side.op .pips i.on { background: var(--op); border-color: var(--op); box-shadow: 0 0 8px var(--op); }
+.hp { width: min(420px, 100%); height: 12px; border-radius: 3px; background: rgba(0, 0, 0, .55); border: 1px solid rgba(255, 255, 255, .14); overflow: hidden; display: flex; }
+.side.op .hp { justify-content: flex-end; }
+.hp i { display: block; height: 100%; transition: width .25s; }
+.side.me .hp i { background: var(--me); box-shadow: 0 0 12px var(--me); }
+.side.op .hp i { background: var(--op); box-shadow: 0 0 12px var(--op); }
+.hpn { font-size: 14px; font-weight: 600; color: var(--dim); }
+.round { font-family: var(--font-display); font-weight: 700; font-size: 20px; letter-spacing: .14em; color: var(--text); text-shadow: 0 1px 3px #000; padding-top: 2px; }
+#ctrlHint { position: absolute; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); font-size: 14px; color: var(--dim); white-space: nowrap; text-shadow: 0 1px 2px #000; }
+#holdMsg {
+  position: absolute; left: 50%; top: 30%; transform: translateX(-50%); padding: 14px 24px; border-radius: 8px; max-width: min(560px, 90vw);
+  background: rgba(5, 6, 11, .88); border: 1px solid var(--warn); color: var(--warn); font-size: 19px; font-weight: 600; text-align: center;
+}
+#pops { position: absolute; left: 50%; top: 40%; }
+.pop { position: absolute; transform: translateX(-50%); font-family: var(--font-display); font-weight: 700; font-size: 34px; color: #ffd0a0; text-shadow: 0 0 12px #ff6a20; animation: pop .9s ease-out forwards; white-space: nowrap; }
+.pop.big { font-size: 46px; color: #fff0c0; }
+@keyframes pop { from { opacity: 1; translate: 0 0; } to { opacity: 0; translate: 0 -70px; } }
+#banner {
+  position: fixed; left: 0; right: 0; top: 24%; text-align: center; pointer-events: none; opacity: 0;
+  font-family: var(--font-display); font-weight: 700; text-transform: uppercase; font-size: clamp(48px, 9vw, 104px); letter-spacing: .04em;
+  color: var(--text); text-shadow: 0 0 24px rgba(160, 190, 255, .45), 0 2px 6px #000;
+}
+#banner.show { opacity: 1; animation: banner .45s cubic-bezier(.2, 1.4, .4, 1); }
+#banner.go { color: var(--blade); text-shadow: 0 0 28px var(--blade), 0 2px 6px #000; }
+#banner.win { color: var(--good); }
+#banner.lose { color: var(--bad); }
+@keyframes banner { from { transform: scale(1.35); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+#toast {
+  position: fixed; left: 50%; top: calc(64px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); pointer-events: none; opacity: 0; transition: opacity .2s;
+  padding: 6px 16px; border-radius: 6px; background: rgba(5, 6, 11, .85); border: 1px solid var(--line-hi); font-weight: 600; font-size: 15px;
+}
+#toast.show { opacity: 1; }
+#vignette { position: fixed; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at center, transparent 45%, rgba(255, 40, 20, .55) 100%); }
+#vignette.hurt { animation: hurt .5s ease-out; }
+@keyframes hurt { from { opacity: 1; } to { opacity: 0; } }
+#loading { position: fixed; inset: 0; display: grid; place-items: center; background: var(--ink); font-family: var(--font-display); font-size: 36px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+#err { color: var(--bad); max-width: 40ch; text-align: center; font-family: var(--font-body); font-size: 17px; letter-spacing: 0; text-transform: none; padding: 16px; }
+
+@media (max-width: 860px) {
+  .screen { background: rgba(5, 6, 11, .84); }
+  .pair-body { grid-template-columns: 120px 1fr; }
+  .qr { width: 120px; height: 120px; }
+  #ctrlHint { white-space: normal; text-align: center; width: 90vw; }
+}
+
+/* ---------- phone controller ---------- */
+#pad {
+  position: fixed; inset: 0; display: flex; flex-direction: column; gap: 14px; box-sizing: border-box;
+  padding: calc(14px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  overscroll-behavior: none; touch-action: manipulation;
+  background: radial-gradient(ellipse at 50% 120%, color-mix(in srgb, var(--blade) 22%, transparent), transparent 60%), var(--ink);
+}
+.pad-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.pad-brand { font-family: var(--font-display); font-weight: 700; font-size: 26px; text-transform: uppercase; }
+.pad-brand span { color: var(--blade); text-shadow: 0 0 12px var(--blade); }
+#padConn { color: var(--warn); border-color: rgba(255, 200, 100, .35); }
+#padConn.ok { color: var(--good); border-color: rgba(88, 240, 160, .35); }
+.pad-note { margin: 0; padding: 10px 12px; border-radius: 6px; border: 1px solid rgba(255, 90, 74, .4); color: #ffb3a8; font-size: 15px; line-height: 1.4; }
+.pad-start { flex: 1; display: flex; flex-direction: column; gap: 18px; justify-content: center; }
+.pad-arm {
+  border: 0; border-radius: 12px; padding: 30px 20px; cursor: pointer; background: var(--blade); color: var(--ink);
+  font-family: var(--font-display); font-weight: 700; font-size: 34px; letter-spacing: .08em;
+  box-shadow: 0 0 40px color-mix(in srgb, var(--blade) 45%, transparent);
+}
+.pad-arm:active { filter: brightness(1.15); transform: translateY(1px); }
+.pad-how { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; color: var(--dim); font-size: 16px; line-height: 1.4; }
+.pad-warn { margin: 0; color: var(--warn); font-size: 15px; }
+.pad-live { flex: 1; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.pad-status { font-family: var(--font-display); font-weight: 700; font-size: 22px; line-height: 1.2; }
+.pad-hp { display: flex; flex-direction: column; gap: 8px; }
+.pad-hp .row { display: grid; grid-template-columns: 76px 1fr 34px; gap: 10px; align-items: center; font-size: 13px; font-weight: 700; letter-spacing: .1em; color: var(--dim); }
+.pad-hp .bar { height: 10px; border-radius: 3px; background: rgba(255, 255, 255, .08); overflow: hidden; }
+.pad-hp .bar i { display: block; height: 100%; background: var(--blade); transition: width .25s; }
+.pad-hp .op .bar i { background: var(--dim); }
+.pad-hp b { text-align: right; color: var(--text); letter-spacing: 0; }
+.pad-ready {
+  border: 1px solid var(--blade); border-radius: 10px; padding: 18px; cursor: pointer; background: transparent; color: var(--blade);
+  font-family: var(--font-display); font-weight: 700; font-size: 24px; letter-spacing: .08em;
+}
+.pad-ready.on { background: var(--blade); color: var(--ink); }
+.pad-cal {
+  position: relative; flex: 1; min-height: 180px; border-radius: 14px; overflow: hidden; cursor: pointer; touch-action: none;
+  border: 2px solid color-mix(in srgb, var(--blade) 60%, transparent); background: rgba(232, 237, 249, .04);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 16px;
+  -webkit-touch-callout: none;
+}
+.pad-cal b { position: relative; font-family: var(--font-display); font-size: 32px; letter-spacing: .1em; }
+.pad-cal small { position: relative; font-size: 15px; color: var(--dim); text-align: center; }
+.pad-cal .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: color-mix(in srgb, var(--blade) 35%, transparent); }
+.pad-cal.hold .fill { width: 100%; transition: width .45s linear; }
+.pad-cal em { position: absolute; left: 0; right: 0; bottom: 14px; font-style: normal; font-weight: 700; color: var(--blade); opacity: 0; transition: opacity .2s; }
+.pad-cal em.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="pc" hidden>
+  <canvas id="view"></canvas>
+  <div id="vignette"></div>
+
+  <div id="hud" hidden>
+    <div class="bars">
+      <div class="side me">
+        <div class="nm"><span id="nameMe"></span><span class="pips" id="pipsMe"></span></div>
+        <div class="hp"><i id="hpMe"></i></div>
+        <span class="hpn num" id="hpMeTxt">100</span>
+      </div>
+      <div class="round" id="roundTxt"></div>
+      <div class="side op">
+        <div class="nm"><span id="nameOp"></span><span class="pips" id="pipsOp"></span></div>
+        <div class="hp"><i id="hpOp"></i></div>
+        <span class="hpn num" id="hpOpTxt">100</span>
+      </div>
+    </div>
+    <div id="pops"></div>
+    <div id="holdMsg" hidden></div>
+    <div id="ctrlHint"></div>
+  </div>
+  <div id="banner"></div>
+  <div id="toast"></div>
+
+  <section id="menu" class="screen" hidden>
+    <div class="panel">
+      <h1 class="brand">Fény<span>kard</span></h1>
+      <p class="tag">Fénykardpárbaj 1v1. A telefonod a kard markolata: ahogy forgatod, úgy mozog a penge a monitoron.</p>
+      <div class="opt">
+        <label class="lbl" for="nameInput">Neved</label>
+        <input class="txt" id="nameInput" maxlength="16" placeholder="Játékos" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="menuPair"></div>
+      <div class="opt">
+        <span class="lbl">A penge színe</span>
+        <div class="seg col-seg"></div>
+      </div>
+      <button class="cta" id="soloBtn"><span>GYAKORLÁS A ROBOT ELLEN</span><span aria-hidden="true">→</span></button>
+      <p class="touchnote" id="touchNote" hidden>Ezt az oldalt a gépen nyisd meg. A telefonnal a gép képernyőjén megjelenő QR-kódot olvasd be.</p>
+      <div class="mp">
+        <span class="lbl">Egy barátod ellen · 1v1</span>
+        <p id="inviteNote" class="note" hidden></p>
+        <div class="mp-row">
+          <button class="ghost" id="createBtn">ÚJ SZOBA</button>
+          <input class="txt" id="codeInput" maxlength="4" placeholder="KÓD" autocomplete="off" spellcheck="false" aria-label="Szobakód">
+          <button class="ghost" id="joinBtn">BELÉPÉS</button>
+        </div>
+      </div>
+      <div class="keys">
+        <kbd>Telefon</kbd><span>a kard: a teteje a penge</span>
+        <kbd>W S A D</kbd><span>előre, hátra, oldalazás (nem kötelező)</span>
+        <kbd>Telefon nélkül</kbd><span>az egér mozgatja a kardot</span>
+        <kbd>Esc</kbd><span>menü</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="room" class="screen" hidden>
+    <div class="panel">
+      <div class="opt">
+        <span class="lbl">Szobakód</span>
+        <div class="room-code" id="roomCode">----</div>
+      </div>
+      <div class="invite">
+        <code id="inviteLink"></code>
+        <button class="ghost" id="copyBtn">LINK MÁSOLÁSA</button>
+      </div>
+      <ul class="players" id="playerList"></ul>
+      <div id="roomPair"></div>
+      <div class="opt">
+        <span class="lbl">A penge színe</span>
+        <div class="seg col-seg"></div>
+      </div>
+      <p class="room-status" id="roomStatus"></p>
+      <button class="cta" id="readyBtn"><span id="readyTxt">KÉSZ VAGYOK</span><span aria-hidden="true">✓</span></button>
+      <button class="ghost" id="leaveBtn">KILÉPÉS A SZOBÁBÓL</button>
+    </div>
+  </section>
+
+  <section id="pause" class="screen" hidden>
+    <div class="panel">
+      <h2 class="brand">Szünet</h2>
+      <p class="tag" id="pauseNote"></p>
+      <div class="btns">
+        <button class="cta" id="resumeBtn"><span>FOLYTATÁS</span><span aria-hidden="true">→</span></button>
+        <button class="ghost" id="soundBtn">HANG: BE</button>
+        <button class="ghost" id="ggBtn">FELADOM</button>
+        <button class="ghost" id="quitBtn">KILÉPÉS A FŐMENÜBE</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="result" class="screen" hidden>
+    <div class="panel">
+      <h2 class="res-head" id="resHead">Győzelem</h2>
+      <p class="res-sub" id="resSub"></p>
+      <table class="restab num" id="resTable"></table>
+      <div class="btns">
+        <button class="cta" id="againBtn"><span id="againTxt">ÚJ MECCS</span><span aria-hidden="true">→</span></button>
+        <button class="ghost" id="resMenuBtn">FŐMENÜ</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="pairbox" id="pairBox">
+    <div class="pair-head">
+      <span class="lbl">A telefonod a kard</span>
+      <button class="link" id="qrToggle" hidden>QR-KÓD</button>
+    </div>
+    <div class="pair-body">
+      <div class="qr" id="qr"></div>
+      <ol class="steps">
+        <li>Olvasd be a QR-kódot a telefon kamerájával.</li>
+        <li>A telefonon nyomd meg: <b>KARD BE</b>.</li>
+        <li>Fogd úgy, mint egy távirányítót: a teteje a monitor felé, a képernyője felfelé.</li>
+      </ol>
+    </div>
+    <span class="pill" id="pairState">Nincs telefon</span>
+    <code class="pair-link" id="pairLink"></code>
+  </div>
+</div>
+
+<section id="pad" hidden>
+  <header class="pad-top">
+    <span class="pad-brand">Fény<span>kard</span></span>
+    <span id="padConn" class="pill">Kapcsolódás a géphez…</span>
+  </header>
+  <p class="pad-note" id="padNote" hidden></p>
+  <div id="padStart" class="pad-start">
+    <button id="armBtn" class="pad-arm">KARD BE</button>
+    <ol class="pad-how">
+      <li>Fogd a telefont úgy, mint egy távirányítót: a teteje mutasson a monitor felé, a képernyője felfelé.</li>
+      <li>A telefon teteje a penge: ahová mutat, oda mutat a kard.</li>
+      <li>Ha elcsúszik az irány, fogd a monitor felé, és tartsd nyomva az <b>IGAZÍTÁS</b> gombot.</li>
+    </ol>
+    <p class="pad-warn">Fogd erősen! Ha van csuklópánt, használd.</p>
+  </div>
+  <div id="padLive" class="pad-live" hidden>
+    <div class="pad-status" id="padStatus">Csatlakozás…</div>
+    <div class="pad-hp" id="padHp" hidden>
+      <div class="row"><span>TE</span><div class="bar"><i id="padHpMe"></i></div><b id="padHpMeTxt" class="num">100</b></div>
+      <div class="row op"><span>ELLENFÉL</span><div class="bar"><i id="padHpOp"></i></div><b id="padHpOpTxt" class="num">100</b></div>
+    </div>
+    <button id="padReady" class="pad-ready" hidden>KÉSZ VAGYOK</button>
+    <button id="calBtn" class="pad-cal"><span class="fill"></span><b>IGAZÍTÁS</b><small>Fogd a monitor felé, és tartsd nyomva</small><em id="calMsg"></em></button>
+  </div>
+</section>
+
+<div id="loading">Fénykard</div>
+
+<script type="module" src="./main.js"></script>
+<script>
+  window.addEventListener('error', function (e) {
+    var el = document.getElementById('loading');
+    if (el && !el.hidden) el.innerHTML = '<div id="err">A játék nem tudott elindulni: ' + (e.message || 'ismeretlen hiba') + '<br>Kell hozzá WebGL-t támogató böngésző.</div>';
+  });
+</script>
+</body>
+</html>
