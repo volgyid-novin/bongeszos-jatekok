@@ -4,11 +4,12 @@
 
 Játékszerver nincs: a két böngésző közvetlenül kapcsolódik egymáshoz (WebRTC, Trystero/Nostr).
 
-A projektben van még három játék:
+A projektben van még négy játék:
 
 - **HOMOKFUTAM**: 3D podverseny 2–6 játékosnak a `/homokfutam/` címen. Leírás: [homokfutam/README.md](homokfutam/README.md).
 - **HADÚR**: valós idejű stratégia, emberek az orkok ellen, 1v1 (vagy a gép ellen) a `/hadur/` címen. Leírás: [hadur/README.md](hadur/README.md).
 - **FÉNYKARD**: fénykardpárbaj 1v1, a telefonod giroszkópja a kard, a `/fenykard/` címen. Leírás: [fenykard/README.md](fenykard/README.md).
+- **HÁGÓ**: képregényes MOBA, 2v2 (vagy 1v1) minionokkal, tornyokkal és egy őrrel a szurdokban, a `/hago/` címen. Leírás: [hago/README.md](hago/README.md).
 
 **Játék online, telepítés nélkül:**
 
@@ -16,6 +17,7 @@ A projektben van még három játék:
 - HOMOKFUTAM: https://volgyid-novin.github.io/bongeszos-jatekok/homokfutam/
 - HADÚR: https://volgyid-novin.github.io/bongeszos-jatekok/hadur/
 - FÉNYKARD: https://volgyid-novin.github.io/bongeszos-jatekok/fenykard/
+- HÁGÓ: https://volgyid-novin.github.io/bongeszos-jatekok/hago/
 
 Az oldalt a GitHub Pages szolgálja ki. Minden `main` ágra feltöltött változás után a `.github/workflows/pages.yml` újrabuildeli és kiteszi, pár perc alatt.
 
