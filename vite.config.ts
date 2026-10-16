@@ -3,7 +3,7 @@ import { defineConfig } from 'vite'
 
 // Relative base so the build works from any subpath (GitHub Pages, Netlify, etc.)
 // allowedHosts lets a Cloudflare quick tunnel (https://*.trycloudflare.com) reach the local server.
-// Five pages: BLOCKSHOT at /, HOMOKFUTAM at /homokfutam/, HADÚR at /hadur/, FÉNYKARD at /fenykard/ and HÁGÓ at /hago/
+// Six pages: BLOCKSHOT at /, HOMOKFUTAM at /homokfutam/, HADÚR at /hadur/, FÉNYKARD at /fenykard/, HÁGÓ at /hago/ and PAJZSUGRÁS at /pajzsugras/
 export default defineConfig({
   base: './',
   build: {
@@ -15,6 +15,7 @@ export default defineConfig({
         hadur: fileURLToPath(new URL('./hadur/index.html', import.meta.url)),
         fenykard: fileURLToPath(new URL('./fenykard/index.html', import.meta.url)),
         hago: fileURLToPath(new URL('./hago/index.html', import.meta.url)),
+        pajzsugras: fileURLToPath(new URL('./pajzsugras/index.html', import.meta.url)),
       },
     },
   },

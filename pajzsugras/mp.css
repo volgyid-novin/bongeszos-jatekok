@@ -1,0 +1,125 @@
+/* PAJZSUGRÁS: the SZOBA (race.js) and RANGLISTA (leaderboard.js) screens and the in-game room overlay.
+   Colours, fonts and the .panel / .btn / .top / .scroll / .coin / .targets classes come from the inline CSS of index.html. */
+
+#scr-room, #scr-lb { flex-direction: column; align-items: stretch; justify-content: flex-start; }
+input[type=text].err { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- SZOBA: before joining ---------- */
+.mp-form { width: min(860px, 100%); margin: 0 auto; }
+.mp-field { display: grid; grid-template-columns: 90px 1fr; align-items: center; gap: 14px; margin-bottom: 22px; }
+.mp-field input { max-width: 340px; }
+.mp-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; }
+.mp-col .sub { min-height: 66px; }
+.mp-col .row input { flex: 1; min-width: 0; max-width: 150px; text-align: center; font-family: var(--font-head); font-size: 22px; letter-spacing: .3em; text-transform: uppercase; padding-left: 18px; }
+.mp-note { margin: 18px 0 0; color: var(--dim); }
+.mp-note.bad { color: var(--bad); }
+
+/* ---------- SZOBA: in a room ---------- */
+.mp-grid { display: grid; grid-template-columns: minmax(300px, 5fr) minmax(360px, 7fr); gap: 20px; width: min(1180px, 100%); margin: 0 auto; align-items: start; }
+.mp-lblrow { display: flex; justify-content: space-between; align-items: baseline; margin: 18px 0 8px; }
+.mp-lblrow span:last-child { color: var(--teal); font-size: 12px; letter-spacing: .1em; }
+.mp-left > .lbl:first-child { margin-bottom: 2px; }
+.mp-code { font-family: var(--font-head); font-size: 76px; line-height: 1.05; letter-spacing: .22em; padding-left: .22em; color: var(--teal); text-shadow: 0 0 28px rgba(46,230,212,.4); user-select: text; -webkit-user-select: text; }
+.mp-link { display: flex; gap: 10px; margin: 8px 0 4px; align-items: stretch; }
+.mp-link input { flex: 1; min-width: 0; font-size: 13px; padding: 7px 10px; color: var(--dim); }
+.mp-link .btn { padding: 10px 18px; font-size: 13px; white-space: nowrap; }
+.mp-warn { margin: 12px 0 0; padding: 10px 14px; background: rgba(255,92,74,.14); border-left: 3px solid var(--bad); color: #ffb3a8; font-size: 14px; line-height: 1.45; }
+.mp-players { display: flex; flex-direction: column; gap: 4px; }
+.mp-pl { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 4px 12px 4px 0; background: linear-gradient(90deg, rgba(14,24,34,.9), rgba(14,24,34,.45)); font-size: 16px; }
+.mp-pl i { align-self: stretch; width: 5px; background: var(--c); box-shadow: 0 0 10px var(--c); }
+.mp-pl .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.mp-pl em { font-style: normal; font-family: var(--font-head); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; padding: 2px 8px; border-radius: 2px; background: var(--teal); color: #04120f; }
+.mp-pl em.you { background: var(--orange); color: #1c0e04; }
+.mp-pl em.warn { background: var(--bad); color: #1a0502; }
+.mp-pl .pt { color: var(--dim); font-size: 14px; min-width: 56px; text-align: right; }
+.mp-left .mp-field { margin: 22px 0 0; grid-template-columns: 70px 1fr; }
+.mp-maps { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.mp-map { position: relative; display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: 10px; align-items: center; text-align: left; cursor: pointer; padding: 8px 12px 8px 14px;
+  color: var(--ink); background: linear-gradient(180deg, rgba(20,34,46,.95), rgba(12,22,31,.95)); border: 1px solid var(--line); border-left: 4px solid var(--dc); border-radius: 2px; transition: transform .12s, border-color .15s, background .15s; }
+.mp-map b { grid-row: 1 / 3; font-family: var(--font-head); font-weight: 400; font-size: 22px; color: rgba(255,255,255,.28); }
+.mp-map span { font-family: var(--font-head); font-size: 14px; letter-spacing: .06em; text-transform: uppercase; }
+.mp-map small { color: var(--dc); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+.mp-map:not([disabled]):hover { transform: translateY(-2px); border-color: var(--orange); }
+.mp-map.on { background: linear-gradient(180deg, color-mix(in srgb, var(--dc) 30%, #0e1822), color-mix(in srgb, var(--dc) 14%, #0a131b)); border-color: var(--dc); box-shadow: 0 0 16px color-mix(in srgb, var(--dc) 40%, transparent); }
+.mp-map.on b { color: var(--dc); }
+.mp-map[disabled] { cursor: default; }
+.mp-map[disabled]:not(.on) { opacity: .55; }
+.mp-status { margin: 16px 0; color: var(--dim); font-size: 15px; line-height: 1.5; min-height: 46px; }
+.mp-actions { margin-bottom: 4px; }
+
+/* ---------- boards (room screen, Tab, results) ---------- */
+.mp-table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.mp-table th { text-align: left; font-family: var(--font-head); font-weight: 400; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--mute); padding: 4px 8px; }
+.mp-table th:nth-child(n+3), .mp-table td:nth-child(n+3) { text-align: right; }
+.mp-table td { padding: 7px 8px; border-top: 1px solid rgba(110,215,232,.1); }
+.mp-table .rk { width: 30px; color: var(--dim); font-family: var(--font-head); }
+.mp-table .nm { font-weight: 600; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-table .nm i { display: inline-block; width: 4px; height: 14px; margin-right: 9px; vertical-align: -2px; background: var(--c); }
+.mp-table .pt { color: var(--gold); font-family: var(--font-head); min-width: 44px; }
+.mp-table .tt { color: var(--teal); font-family: var(--font-head); }
+.mp-table tr.me td { background: rgba(255,138,42,.16); }
+
+/* ---------- in-game overlay (#race-hud) ---------- */
+#race-hud .mp-badge, #race-hud .mp-board, #race-hud .mp-lock { display: none; }
+body:has(#hud:not([hidden])) #race-hud .mp-badge:not([hidden]) { display: block; }
+body:has(#hud:not([hidden])) #race-hud .mp-board:not([hidden]) { display: block; }
+body:has(#hud:not([hidden])) #race-hud .mp-lock:not([hidden]) { display: block; }
+/* a race started without a click in the game: the mouse is not captured yet. Slim bar, the view stays live and clickable */
+.mp-lock { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%); padding: 8px 22px; background: rgba(6,12,18,.82); border: 1px solid var(--orange); font-family: var(--font-head); font-size: 15px; letter-spacing: .12em; text-transform: uppercase; color: var(--orange-l); text-shadow: var(--ts); white-space: nowrap; animation: mpin .25s ease-out; }
+body.playing.mp-nolock { cursor: default; }
+/* the results card stays above a screen (the pause menu) that is up */
+body:has(.screen:not([hidden])) #race-hud.over { z-index: 30; }
+body:has(.screen:not([hidden])) #race-hud.over .mp-board { top: 4vh; transform: translateX(-50%); }
+.mp-badge { position: absolute; left: 22px; top: 18px; padding: 6px 14px; background: rgba(6,12,18,.6); font-family: var(--font-head); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); text-shadow: var(--ts); }
+.mp-badge b { color: var(--teal); letter-spacing: .24em; }
+.mp-badge small { display: block; margin-top: 3px; font-family: var(--font-body); font-size: 11.5px; letter-spacing: .08em; color: var(--mute); }
+.mp-board { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, 92vw); padding: 18px 24px 16px; background: linear-gradient(180deg, rgba(14,24,34,.94), rgba(9,15,22,.9)); border: 1px solid var(--line-2); box-shadow: 0 18px 60px rgba(0,0,0,.6); animation: mpin .25s ease-out; }
+@keyframes mpin { from { opacity: 0; } }
+.mp-board.res { border-color: var(--gold); box-shadow: 0 18px 60px rgba(0,0,0,.6), 0 0 34px rgba(255,210,74,.2); }
+.mp-board h3 { margin: 0 0 10px; font-family: var(--font-head); font-weight: 400; font-size: 20px; letter-spacing: .1em; text-transform: uppercase; color: var(--teal); }
+.mp-board.res h3 { color: var(--gold); }
+.mp-hint { margin: 10px 0 0; color: var(--mute); font-size: 13px; text-align: center; }
+
+/* ---------- RANGLISTA ---------- */
+.lb-scroll { width: min(980px, 100%); }
+.lb-tabs { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 2px 14px; }
+.lb-tab { flex: none; display: flex; align-items: center; gap: 9px; cursor: pointer; padding: 9px 16px 9px 12px; color: var(--ink); background: linear-gradient(180deg, rgba(20,34,46,.95), rgba(12,22,31,.95)); border: 1px solid var(--line); border-bottom: 3px solid var(--dc); border-radius: 2px; transition: transform .12s, border-color .15s; }
+.lb-tab b { font-family: var(--font-head); font-weight: 400; font-size: 17px; color: var(--dc); }
+.lb-tab span { font-family: var(--font-head); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
+.lb-tab:hover { transform: translateY(-2px); border-color: var(--orange); }
+.lb-tab.on { background: linear-gradient(180deg, color-mix(in srgb, var(--dc) 28%, #0e1822), color-mix(in srgb, var(--dc) 12%, #0a131b)); border-color: var(--dc); }
+.lb-panel { padding: 22px 28px 18px; }
+.lb-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; margin-bottom: 14px; }
+.lb-head h3 { display: inline-block; margin: 0 14px 0 0; font-family: var(--font-head); font-weight: 400; font-size: 30px; letter-spacing: .06em; text-transform: uppercase; }
+.chip { display: inline-block; vertical-align: 6px; font-family: var(--font-head); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; padding: 4px 11px; background: var(--dc); color: #060b10; clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%); }
+.lb-targets { border-top: 0; padding-top: 0; gap: 14px; font-size: 13px; }
+.lb-table { width: 100%; border-collapse: collapse; }
+.lb-table th { text-align: left; font-family: var(--font-head); font-weight: 400; font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--mute); padding: 6px 10px; }
+.lb-table td { padding: 8px 10px; border-top: 1px solid rgba(110,215,232,.1); font-size: 16px; }
+.lb-table .rk { width: 52px; font-family: var(--font-head); color: var(--dim); }
+.lb-table .nm { font-weight: 600; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-table .nm small { color: var(--orange-l); font-weight: 400; }
+.lb-table .tm { font-family: var(--font-head); font-size: 17px; }
+.lb-table .df { color: var(--mute); font-size: 14px; }
+.lb-table .md { width: 54px; text-align: center; }
+.lb-table th:nth-child(3), .lb-table th:nth-child(4), .lb-table td.tm, .lb-table td.df { text-align: right; }
+.lb-table th:last-child { text-align: center; }
+.lb-table tr.p1 .rk { color: var(--gold); } .lb-table tr.p2 .rk { color: var(--silver); } .lb-table tr.p3 .rk { color: var(--bronze); }
+.lb-table tr.me td { background: rgba(255,138,42,.18); }
+.lb-table tr.me td:first-child { box-shadow: inset 3px 0 var(--orange); }
+.lb-table tr.gap td { text-align: center; color: var(--mute); padding: 2px; border-top: 0; }
+.lb-status { margin: 16px 0 4px; color: var(--dim); font-size: 16px; text-align: center; padding: 22px 0; }
+.lb-status.busy::before { content: ""; display: inline-block; width: 14px; height: 14px; margin-right: 10px; vertical-align: -2px; border: 2px solid var(--line-2); border-top-color: var(--teal); border-radius: 50%; animation: lbspin .8s linear infinite; }
+@keyframes lbspin { to { transform: rotate(360deg); } }
+.lb-local { margin: 12px 0 0; color: var(--dim); font-size: 14px; }
+.lb-local b { color: var(--teal); font-family: var(--font-head); font-weight: 400; }
+.lb-foot { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.lb-note { margin: 0; color: var(--mute); font-size: 13px; }
+.lb-actions .btn { padding: 11px 20px; font-size: 13px; }
+
+@media (max-width: 900px) {
+  .mp-grid { grid-template-columns: 1fr; }
+  .mp-cols { grid-template-columns: 1fr; gap: 18px; }
+  .mp-code { font-size: 56px; }
+}

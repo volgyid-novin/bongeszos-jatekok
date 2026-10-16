@@ -7,9 +7,11 @@
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:pj": "node pajzsugras/test/run.mjs"
   },
   "dependencies": {
+    "@noble/secp256k1": "^3.2.0",
     "n8ao": "^2.0.1",
     "postprocessing": "^6.39.5",
     "three": "^0.186.1",
