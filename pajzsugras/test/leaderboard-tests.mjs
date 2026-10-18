@@ -2,6 +2,8 @@
 // Fake DOM + mock relays; nostr.js is shared with the nostr suite, so every case starts from useRelays() (new relays, empty cache).
 import { test, assert, setGlobal, sleep } from './harness.mjs';
 import { guardWebSocket, memStorage, brokenStorage, makeRelays, forge, El, fakeMaps, DIFF_LABEL } from './support.mjs';
+import { routeFloor } from '../sim/world.js';
+import { TICK } from '../sim/const.js';
 
 guardWebSocket();
 const N = await import('../nostr.js');                 // the same instance leaderboard.js imports
@@ -17,8 +19,8 @@ const useRelays = (spec) => {
 const ALPHA = { id: 'alpha', hash: 'hash-alpha', authorTime: 40, cpCount: 2 };   // = fakeMaps() alpha; fastest credible time ceil(0.5 x 40 x 120) = 2400 ticks
 
 // a fresh leaderboard.js instance + the `app` object it needs (see the contract at the top of main.js)
-async function setupLb(box = { pb: null }) {
-  const maps = fakeMaps(), lb = new El(), toasts = [], L = new Map();
+async function setupLb(box = { pb: null }, maps = fakeMaps()) {
+  const lb = new El(), toasts = [], L = new Map();
   const app = {
     maps, DIFF_LABEL, settings: { name: 'Teszt' }, store: { getPB: () => box.pb }, mapId: 'alpha', mode: 'solo', state: 'playing', world: null,
     mapHashOf: (id) => (maps.has(id) ? 'hash-' + id : null),
@@ -125,4 +127,103 @@ test('leaderboard screen (hardening): a fresh but malformed session cache must n
   app.emit('screen', { id: 'lb' });
   await sleep(100);   // (an exception in render() surfaces as an unhandled rejection, which fails the case)
   assert.ok(!lb.querySelector('.lb-status').textContent.includes('betöltése'), 'still "loading": ' + lb.querySelector('.lb-status').textContent);
+});
+
+// ---------------------------------------------------------------- maps without medals / without a finish (the exports of the editor)
+// a map: authorTime 0 = no proof route (no medals); finish: false = no goal yet; the finish box starts `far` metres from the start along +x
+const mkMap = (id, { authorTime = 0, finish = true, far = 10, order = 1, cps = [] } = {}) => ({
+  meta: { id, name: id.toUpperCase(), order, diff: 'konnyu', authorTime },
+  build: () => ({
+    mapHash: 'hash-' + id, start: { pos: [0, 0, 0], yaw: 0 }, pads: [], movers: [],
+    checkpoints: cps.map((c, i) => ({ i, label: 'CP' + (i + 1), min: c.min, max: c.max })),
+    finish: finish ? { min: [far, 0, 0], max: [far + 1, 2, 1] } : null,
+  }),
+});
+const registry = (...list) => ({ list, ids: list.map((e) => e.meta.id), get: (id) => list.find((e) => e.meta.id === id) || null, has: (id) => list.some((e) => e.meta.id === id) });
+const waitFor = async (re, el, sel) => { for (let i = 0; i < 80 && !re.test(el.querySelector(sel).innerHTML); i++) await sleep(25); };
+
+test('leaderboard screen: a map without an author time (no medals) lists its rows - no medal column, no medal targets, no crash, the gap row fits the table', async () => {
+  setGlobal('localStorage', memStorage()); setGlobal('sessionStorage', memStorage());
+  const GAMMA = { id: 'gamma', hash: 'hash-gamma', authorTime: 0, cpCount: 0 };
+  const events = [];
+  for (let i = 0; i < 55; i++) events.push((await forge(GAMMA, { ticks: 600 + i * 10, name: 'P' + i })).ev);   // more than the 50 of the top list
+  const mine = await N.buildEvent(GAMMA, { ticks: 5000, splits: [], name: 'Én' });
+  useRelays({ a: okRelay([...events, mine]), b: okRelay([...events, mine]) });
+  const { app, lb } = await setupLb({ pb: null }, registry(mkMap('gamma')));
+  const rejections = [];
+  const onRej = (e) => rejections.push(e);
+  process.on('unhandledRejection', onRej);
+  try {
+    app.emit('screen', { id: 'lb' });
+    await waitFor(/P0/, lb, '.lb-body');
+    const html = lb.querySelector('.lb-body').innerHTML;
+    assert.match(html, /P0/, 'the rows are there: ' + lb.querySelector('.lb-status').textContent);
+    assert.ok(!html.includes('<th>Érem</th>') && !html.includes('class="md"') && !html.includes('coin'), 'no medal column, no coins');
+    assert.equal((html.match(/<th>/g) || []).length, 4, 'four columns: #, Játékos, Idő, Különbség');
+    assert.match(html, /<tr class="gap"><td colspan="4">/, 'my row below the top 50 comes after a gap row as wide as the table');
+    assert.match(html, /class="me[^"]*"><td class="rk">56<\/td>/, 'and it is mine');
+    assert.ok(!lb.querySelector('.lb-head').innerHTML.includes('lb-targets'), 'no medal targets');
+    assert.deepEqual(rejections, [], 'render() did not throw');
+  } finally { process.off('unhandledRejection', onRej); }
+});
+
+test('leaderboard screen: a map with an author time keeps its medal column and targets', async () => {
+  setGlobal('localStorage', memStorage()); setGlobal('sessionStorage', memStorage());
+  useRelays({ a: okRelay([(await forge(ALPHA, { ticks: 4000, name: 'Gyors', splits: [1500, 3000] })).ev]), b: okRelay() });
+  const { app, lb } = await setupLb();
+  app.emit('screen', { id: 'lb' });
+  await waitFor(/Gyors/, lb, '.lb-body');
+  const html = lb.querySelector('.lb-body').innerHTML;
+  assert.ok(html.includes('<th>Érem</th>') && html.includes('class="md"'), 'medal column');
+  assert.ok(lb.querySelector('.lb-head').innerHTML.includes('lb-targets'), 'medal targets');
+});
+
+test('leaderboard screen: maps without a finish are not on the board while another map has one; with none that has one all are listed (the screen is never empty); an empty registry is a note, not a crash', async () => {
+  setGlobal('localStorage', memStorage()); setGlobal('sessionStorage', memStorage());
+  useRelays({ a: okRelay(), b: okRelay() });
+  const goalless = mkMap('delta', { finish: false, order: 2 });
+  const mixed = await setupLb({ pb: null }, registry(mkMap('gamma'), goalless));
+  mixed.app.emit('screen', { id: 'lb' });
+  assert.deepEqual(mixed.lb.querySelectorAll('.lb-tab').map((t) => t.dataset.map), ['gamma'], 'only the map with a finish has a tab');
+  const only = await setupLb({ pb: null }, registry(goalless));
+  only.app.emit('screen', { id: 'lb' });
+  assert.deepEqual(only.lb.querySelectorAll('.lb-tab').map((t) => t.dataset.map), ['delta'], 'no map has a finish: all are listed');
+  const none = await setupLb({ pb: null }, registry());
+  none.app.emit('screen', { id: 'lb' });
+  await sleep(60);
+  assert.match(none.lb.querySelector('.lb-status').textContent, /Még nincs pálya/);
+  assert.equal(none.lb.querySelectorAll('.lb-tab').length, 0);
+});
+
+test('leaderboard: the board asks for the maps with a finish only, and the geometric floor of a map without an author time drops a record that is faster than the way allows', async () => {
+  setGlobal('localStorage', memStorage()); setGlobal('sessionStorage', memStorage());
+  const FAR = { id: 'far', hash: 'hash-far', authorTime: 0, cpCount: 0 };
+  const fast = (await forge(FAR, { ticks: 8 * TICK, name: 'Rakéta' })).ev;      // 300 m in 8 s: 37 m/s along the straight line, nobody runs that
+  const ok = (await forge(FAR, { ticks: 14 * TICK, name: 'Futó' })).ev;
+  const r = useRelays({ a: okRelay([fast, ok]), b: okRelay([fast, ok]) });
+  const { app, lb, LB } = await setupLb({ pb: null }, registry(mkMap('far', { far: 300 }), mkMap('delta', { finish: false, order: 2 })));
+  app.emit('screen', { id: 'lb' });
+  await waitFor(/Futó/, lb, '.lb-body');
+  const html = lb.querySelector('.lb-body').innerHTML;
+  assert.ok(html.includes('Futó') && !html.includes('Rakéta'), 'the 8 s record is under the floor (' + routeFloor(app.maps.get('far').build()).toFixed(2) + ' s), the 14 s one is on the board: ' + html.slice(0, 200));
+  assert.deepEqual([...new Set((r.st.filters || []).map((x) => x['#d'][0]))], ['pajzsugras-v1:far:hash-far'], 'the goalless map is not asked for');
+  assert.equal(await LB.top1('delta'), null, 'and a card of it shows no #1');
+});
+
+test('routeFloor: horizontal box-to-box way start -> checkpoints in order -> finish over 30 m/s (60 with pads or movers); 0 without a finish or with bad data, never throws', () => {
+  const start = { pos: [0, 0, 0], yaw: 0 };
+  const cp = { min: [100, 0, -1], max: [101, 2, 1] }, fin = { min: [100, 0, 200], max: [101, 2, 201] };
+  const way = 99.6 + 198.2;   // start -> cp (grown by the hull's half width 0.4: x from 99.6) -> finish (z from 199.6, the cp reaches 1.4)
+  const map = { start, checkpoints: [cp], finish: fin, pads: [], movers: [] };
+  assert.ok(Math.abs(routeFloor(map) - way / 30) < 1e-9, 'floor ' + routeFloor(map));
+  assert.ok(Math.abs(routeFloor({ ...map, pads: [{}] }) - way / 60) < 1e-9, 'a pad: the VMAX bound');
+  assert.ok(Math.abs(routeFloor({ ...map, movers: [{}] }) - way / 60) < 1e-9, 'a mover: the VMAX bound');
+  assert.ok(Math.abs(routeFloor({ ...map, checkpoints: [] }) - Math.hypot(99.6, 199.6) / 30) < 1e-9, 'no checkpoint: start -> finish (the straight line)');
+  assert.equal(routeFloor({ ...map, finish: null }), 0, 'no finish');
+  assert.equal(routeFloor({ ...map, start: null }), 0); assert.equal(routeFloor({ ...map, start: { pos: [NaN, 0, 0] } }), 0);
+  assert.equal(routeFloor({ ...map, checkpoints: [{ min: null }] }), 0, 'a broken checkpoint: no floor, no throw');
+  for (const junk of [null, undefined, 5, {}, []]) assert.equal(routeFloor(junk), 0);
+  // a box the start already stands in costs nothing; the vertical is not counted
+  assert.equal(routeFloor({ start, checkpoints: [], finish: { min: [-1, 50, -1], max: [1, 60, 1] }, pads: [], movers: [] }), 0);
+  assert.equal(N.minTicks(0, routeFloor(map)), Math.ceil(way / 30 * TICK), 'the board floor of this map');
 });

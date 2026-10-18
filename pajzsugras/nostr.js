@@ -12,6 +12,7 @@
 import * as secp from '@noble/secp256k1';
 import { SIM_VER, TICK } from './sim/const.js';
 import { decodeGhost, encodeGhost, toB64, fromB64 } from './sim/ghost.js';
+import { stripText } from './text.js';
 
 export const KIND = 30078;
 export const APP_TAG = 'pajzsugras';
@@ -28,18 +29,23 @@ const EARLY_MS = 700;                         // once two relays are done, wait 
 const MAX_VERIFY = 400;                       // signatures checked per map and query
 const PER_MAP_LIMIT = 300;                    // events asked for per map and relay (relays cap one REQ at about 500)
 const MIN_FRACTION = 0.5;                     // a time below half the author time is not credible (the bot's skip routes reach 0.86)
+const MIN_SECONDS = 3;                        // ... and the floor of a map that has no author time (an export of the editor)
 
 const { bytesToHex, hexToBytes } = secp.etc;
 const T = { WS: globalThis.WebSocket, relays: RELAYS, now: () => Date.now() };
 // test hook: inject a fake WebSocket / relay list / clock
 export function __setTransport(o = {}) { Object.assign(T, o); }
 
-// the fastest credible run of a map in sim ticks (checked for a board record here and for a `fin` in a room, race.js)
-export const minTicks = (authorTime) => Math.ceil(MIN_FRACTION * authorTime * TICK);
+// the fastest credible run of a map in sim ticks (checked for a board record here and for a `fin` in a room, race.js). A map without a proof
+// route (authorTime 0 / missing) has a floor of MIN_SECONDS or, when the caller knows the map's geometry, the geometric floor `floor` (seconds,
+// sim/world.js routeFloor: the shortest way start -> checkpoints -> finish at the fastest speed), whichever is larger. The board passes it
+// (leaderboard.js infoOf); a room's `fin` is checked with the fixed floor only.
+export const minTicks = (authorTime, floor = 0) => (authorTime > 0 ? Math.ceil(MIN_FRACTION * authorTime * TICK)
+  : Math.ceil(Math.max(MIN_SECONDS, Number.isFinite(floor) ? floor : 0) * TICK));
 export const dTag = (id, hash) => `pajzsugras-v1:${id}:${hash}`;
 export const hasCrypto = () => !!(globalThis.crypto && globalThis.crypto.subtle);
 export function sanitizeName(v) {
-  return String(v ?? '').replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, 16);
+  return stripText(String(v ?? '')).trim().slice(0, 16);
 }
 
 // ---------------------------------------------------------------- keys
@@ -186,7 +192,7 @@ function parseEvent(ev, byD) {
   const c = safeJson(ev.content);
   if (!c || typeof c !== 'object' || c.ver !== SIM_VER) return null;
   const { ticks, splits } = c;
-  if (!Number.isInteger(ticks) || ticks < minTicks(info.authorTime) || ticks > TICK * 3600) return null;
+  if (!Number.isInteger(ticks) || ticks < minTicks(info.authorTime, info.floor) || ticks > TICK * 3600) return null;
   if (!Array.isArray(splits) || splits.length !== info.cpCount) return null;
   let prev = 0;
   // (non-decreasing: overlapping checkpoint volumes can be reached in the same tick)
@@ -217,7 +223,7 @@ async function resolveBoard(cands, myPk) {
   return { top: all.slice(0, TOP_N), me: mi >= 0 ? all[mi] : null, total: ranked.length };
 }
 
-// maps = [{ id, hash, authorTime, cpCount }]
+// maps = [{ id, hash, authorTime, cpCount, floor? }]   (floor: seconds, see minTicks)
 // -> { ok, boards: { mapId: { top, me, total } }, at, relays (answered with EOSE), error? }
 export async function queryBoards(maps, { timeout = QUERY_MS } = {}) {
   if (!hasCrypto()) return { ok: false, error: 'crypto', boards: {}, at: T.now(), relays: 0 };

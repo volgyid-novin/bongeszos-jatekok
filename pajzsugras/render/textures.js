@@ -6,7 +6,8 @@
 //   surf.deco(kind)             neutral materials for decoration meshes tinted by vertex colour: 'metal' | 'concrete' | 'rock' | 'crate'
 //   surf.glow                   unlit vertex-colour material (HDR colours bloom); surf.halo additive vertex-colour material
 //   surf.dispose()
-// And canvas art helpers: glyphTexture, signTexture, labelTexture, checkerTexture, softTexture, screenTexture, ensureFonts.
+// And canvas art helpers: glyphTexture, signTexture, labelTexture, checkerTexture, softTexture, screenTexture, ensureFonts, and armourDetailCanvas (the fine
+// detail normal map of the hand-built armour, armour-mats.js).
 import * as THREE from 'three';
 import { mulberry32 } from '../sim/math.js';
 
@@ -514,6 +515,26 @@ export class Surfaces {
     for (const m of this.mats.values()) m.dispose();
     this.textures.length = 0; this.mats.clear();
   }
+}
+
+// A seamless fine detail normal map for the hand-built hard-surface models (armour-mats.js): a brushed grain, a pitted micro-surface and a few
+// scratches, made with the same height canvas -> normal map path as the map materials. null where there is no canvas (node).
+export function armourDetailCanvas(S = 256) {
+  if (typeof document === 'undefined') return null;
+  const g = new Surf(S, false);
+  const F = field(S, 'fine'), H = field(S, 'hstreak'), M = field(S, 'mid');   // (the fine grain carries it; the streaks are only a hint)
+  const id = g.h.getImageData(0, 0, S, S), d = id.data;
+  for (let i = 0; i < S * S; i++) {
+    const c = clamp((0.5 + (F[i] - 0.5) * 0.7 + (H[i] - 0.5) * 0.14 + (M[i] - 0.5) * 0.1) * 255, 0, 255);
+    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = c; d[i * 4 + 3] = 255;
+  }
+  g.h.putImageData(id, 0, 0);
+  const rng = mulberry32(777);
+  for (let i = 0; i < 14; i++) {
+    const x = rng() * S, y = rng() * S, a = rng() * Math.PI, l = (0.1 + rng() * 0.25) * S;
+    g.line(x, y, x + Math.cos(a) * l, y + Math.sin(a) * l, 0.8, null, 0.15 + rng() * 0.1);
+  }
+  return g.normalMap(1.6);
 }
 
 function hashKey(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; }

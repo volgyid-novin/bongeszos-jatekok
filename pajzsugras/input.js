@@ -1,11 +1,13 @@
 // Keyboard + mouse. Turns browser events into the sim's per-tick `cmd` (sim/pmove.js makeCmd).
 //
-//   const input = new Input(canvas, settings, hooks);   hooks = { onLockChange(locked), onEscape(), onTab(down) }
+//   const input = new Input(canvas, settings, hooks);   hooks = { onLockChange(locked), onEscape(), onTab(down), onView() }
+//   (onView: the V key while playing, not while typing in a field - main.js toggles the first / third person camera)
 //   input.enabled      game keys only work while true (the game is being played)
 //   input.yaw / pitch  look angles in radians, updated straight from the mouse (the camera reads them every frame)
 //   input.lock()       pointer lock (unadjustedMovement where available, plain lock as a fallback, soft lock if unsupported)
 //   input.fillCmd(cmd) fills a makeCmd() for ONE sim tick: held keys + latched presses shorter than a tick
-//                      (jump, shield, dodge, respawn, restart are seen by the sim for at least one tick)
+//                      (jump, shield, dodge, respawn, restart are seen by the sim for at least one tick). A Space (or the shield button) that was
+//                      released and pressed again before the next tick is seen as released for one tick in between, so the sim gets both presses
 //   input.keyState()   what is currently pressed (for the key overlay)
 //
 // Dodge: double-tap a direction within 0.25 s, as in UT2004. Shift does nothing: there is no sprint, you always run.
@@ -14,8 +16,9 @@ import { DODGE } from './sim/const.js';
 const DIR_KEYS = { KeyW: DODGE.F, ArrowUp: DODGE.F, KeyS: DODGE.B, ArrowDown: DODGE.B, KeyA: DODGE.L, ArrowLeft: DODGE.L, KeyD: DODGE.R, ArrowRight: DODGE.R };
 const GAME_KEYS = new Set([...Object.keys(DIR_KEYS), 'Space', 'KeyR', 'Enter', 'Tab']);
 const TAP_WINDOW = 250;            // ms between the two taps of a double-tap dodge
-const MAX_PITCH = (89 * Math.PI) / 180;
-const DEG_PER_PX = 0.05;           // at sensitivity 1.0 (about 23 cm per full turn at 800 dpi)
+export const MAX_PITCH = (89 * Math.PI) / 180;
+const isTyping = (t) => !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+export const DEG_PER_PX = 0.05;    // at sensitivity 1.0 (about 23 cm per full turn at 800 dpi); the editor's fly camera uses both
 
 export class Input {
   constructor(canvas, settings, hooks = {}) {
@@ -33,6 +36,10 @@ export class Input {
     this.lastTap = {};                                // dodge direction -> time of the last tap
     this.fireDown = false;
     this.latch = { jump: false, fire: false, dodge: 0, respawn: false, restart: false };
+    // The sim reacts to a fresh press only (a jump / a shield release), so a release and a new press between two ticks must not merge into one
+    // held stretch: xSent = the last cmd had it on, xGap = it went up since, so the next cmd shows it off for one tick (the latch keeps the new press)
+    this.jumpSent = false; this.jumpGap = false;
+    this.fireSent = false; this.fireGap = false;
     this.attached = false;
   }
 
@@ -91,6 +98,7 @@ export class Input {
     this.keys.clear();
     this.dirOrder.length = 0;
     this.fireDown = false;
+    this.jumpGap = false; this.fireGap = false;
   }
 
   // ---- events ----
@@ -109,6 +117,7 @@ export class Input {
     else if (code === 'KeyR') this.latch.respawn = true;
     else if (code === 'Enter') this.latch.restart = true;
     else if (code === 'Tab') { if (this.hooks.onTab) this.hooks.onTab(true); }
+    else if (code === 'KeyV') { if (this.hooks.onView && !isTyping(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey) this.hooks.onView(); }
     const dir = DIR_KEYS[code];
     if (dir) {
       this.dirOrder = this.dirOrder.filter((k) => k !== dir);
@@ -121,6 +130,7 @@ export class Input {
   onKeyUp(e) {
     const code = e.code;
     if (code === 'Tab' && this.keys.has('Tab') && this.hooks.onTab) this.hooks.onTab(false);
+    if (code === 'Space' && this.jumpSent) this.jumpGap = true;
     this.keys.delete(code);
     const dir = DIR_KEYS[code];
     if (dir && !this.heldDir(dir)) this.dirOrder = this.dirOrder.filter((k) => k !== dir);
@@ -138,7 +148,7 @@ export class Input {
     this.latch.fire = true;
   }
   onMouseUp(e) {
-    if (e.button === 0) this.fireDown = false;
+    if (e.button === 0) { if (this.fireSent) this.fireGap = true; this.fireDown = false; }
   }
   onMouseMove(e) {
     if (!this.locked || !this.enabled) return;
@@ -166,19 +176,21 @@ export class Input {
     cmd.side = (rt ? 1 : 0) - (lf ? 1 : 0);
     cmd.yaw = this.yaw;
     cmd.pitch = this.pitch;
-    cmd.jump = k.has('Space') || L.jump;
-    cmd.fire = this.fireDown || L.fire;
+    // a gap tick keeps the latch: a press that came after the release is sent on the tick after it
+    if (this.jumpGap) { cmd.jump = false; this.jumpGap = false; } else { cmd.jump = k.has('Space') || L.jump; L.jump = false; }
+    if (this.fireGap) { cmd.fire = false; this.fireGap = false; } else { cmd.fire = this.fireDown || L.fire; L.fire = false; }
+    this.jumpSent = cmd.jump; this.fireSent = cmd.fire;
     cmd.dodge = L.dodge;
     cmd.respawn = k.has('KeyR') || L.respawn;
     cmd.restart = k.has('Enter') || L.restart;
-    cmd.autoHop = !!this.s.autoHop;
-    L.jump = false; L.fire = false; L.dodge = 0; L.respawn = false; L.restart = false;
+    L.dodge = 0; L.respawn = false; L.restart = false;
     return cmd;
   }
   // discard pending presses (menus open, map change)
   clearLatches() {
     const L = this.latch;
     L.jump = false; L.fire = false; L.dodge = 0; L.respawn = false; L.restart = false;
+    this.jumpGap = false; this.fireGap = false;
   }
   keyState() {
     const k = this.keys;

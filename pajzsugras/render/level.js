@@ -1,18 +1,21 @@
 // The level renderer: builds everything from world.map (never from the map files).
 //
-//   const level = new Level(map, { quality, maxAniso });
+//   const level = new Level(map, { quality, maxAniso, surf, sync });   surf: reuse the Surfaces (canvas textures) of another level
+//                                                  (the editor's rebuilds; this level takes them over), sync: no yields to the UI
 //   await level.build(onProgress(0..1, text))     merged meshes per material and 36 m cell, mover groups, checkpoints (glowing
 //                                                  zones), finish gate, pads, lava / lasers, floor glyphs, hologram signs, markers,
 //                                                  the 4-light pool
 //   level.group                                    add to the scene
 //   level.update(world, alpha, t, dt, camPos)      movers, animations, checkpoint states, light pool
-//   level.flashPad(i)  level.dispose()
+//   level.flashPad(i)  level.dispose({ keepSurf })   keepSurf: the Surfaces now belong to the next level (editor rebuild)
+//   (map.finish may be null on a custom map: no gate is built)
 import * as THREE from 'three';
 import { Merger, lin } from './merge.js';
 import { addDeco, disposeDecoCache } from './deco.js';
 import { Surfaces, signTexture, labelTexture, glyphTexture, checkerTexture, beamTexture, padTexture } from './textures.js';
 
 const yieldUI = () => new Promise((r) => setTimeout(r, 0));
+const noYield = () => Promise.resolve();
 const DEG = Math.PI / 180;
 const CP_NEXT = 0xffd060, CP_FUTURE = 0xff8a2a, CP_TAKEN = 0x30e8b0;
 const POOL = 4;
@@ -77,12 +80,13 @@ void main() {
 }`;
 
 export class Level {
-  constructor(map, { quality = 'kozepes', maxAniso = 4 } = {}) {
+  constructor(map, { quality = 'kozepes', maxAniso = 4, surf = null, sync = false } = {}) {
     this.map = map;
     this.quality = quality;
+    this.yieldUI = sync ? noYield : yieldUI;
     this.group = new THREE.Group();
     this.group.name = 'level';
-    this.surf = new Surfaces(quality, maxAniso);
+    this.surf = surf || new Surfaces(quality, maxAniso);
     this.anim = [];
     this.movers = new Map();
     this.screens = new Map();
@@ -108,9 +112,9 @@ export class Level {
     for (const [, [name, top]] of need) {
       surf.material(map.materials[name], top);
       onProgress(0.05 + 0.45 * (++i / need.size), 'Textúrák');
-      await yieldUI();
+      await this.yieldUI();
     }
-    for (const k of ['metal', 'concrete', 'crate']) { surf.deco(k); await yieldUI(); }
+    for (const k of ['metal', 'concrete', 'crate']) { surf.deco(k); await this.yieldUI(); }
     if (map.deco.some((d) => d.kind === 'rock')) surf.deco('rock');
 
     // ---- 2. geometry ----
@@ -144,10 +148,10 @@ export class Level {
     };
     map.brushes.forEach((b, k) => addBrush(b, k, false));
     map.decoBrushes.forEach((b, k) => addBrush(b, k, true));
-    await yieldUI();
+    await this.yieldUI();
     onProgress(0.7, 'Díszletek');
     for (const d of map.deco) addDeco(ctxOf(d.mover), d);
-    await yieldUI();
+    await this.yieldUI();
 
     // ---- 3. gameplay visuals ----
     onProgress(0.8, 'Jelzések');
@@ -163,7 +167,7 @@ export class Level {
     mStatic.build(this.group);
     for (const { group, m } of this.movers.values()) m.build(group);
     onProgress(0.95, 'Fények');
-    await yieldUI();
+    await this.yieldUI();
   }
 
   // ---------------------------------------------------------------- kill volumes
@@ -231,6 +235,7 @@ export class Level {
   // ---------------------------------------------------------------- finish gate
   buildFinish(ctx) {
     const f = this.map.finish, surf = this.surf;
+    if (!f) return;
     const w = f.max[0] - f.min[0], d = f.max[2] - f.min[2], h = f.max[1] - f.min[1];
     const alongX = w >= d, width = alongX ? w : d, depth = alongX ? d : w;
     const cx = (f.min[0] + f.max[0]) / 2, cz = (f.min[2] + f.max[2]) / 2;
@@ -490,16 +495,16 @@ export class Level {
     }
   }
 
-  dispose() {
+  dispose({ keepSurf = false } = {}) {
+    const shared = keepSurf ? new Set(this.surf.mats.values()) : null;   // (the next level draws with these)
     this.group.traverse((o) => {
       if (o.geometry) o.geometry.dispose();
       const ms = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
-      for (const m of ms) { if (m.map) m.map.dispose(); m.dispose(); }
+      for (const m of ms) { if (shared && shared.has(m)) continue; if (m.map) m.map.dispose(); m.dispose(); }
     });
     for (const t of this.textures) t.dispose();
     for (const t of this.screens.values()) t.dispose();
-    this.surf.dispose();
-    disposeDecoCache();
+    if (!keepSurf) { this.surf.dispose(); disposeDecoCache(); }
     this.group.clear();
   }
 }

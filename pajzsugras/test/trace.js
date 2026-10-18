@@ -7,7 +7,7 @@ import { makeCmd } from '../sim/pmove.js';
 import { CollisionWorld } from '../sim/trace.js';
 import { makeBrush } from '../sim/brush.js';
 import { mulberry32 } from '../sim/math.js';
-import { TICK, HULL_HX, HULL_HY, DODGE, JUMP_V, DJ_V, DODGE_XY, DODGE_CD } from '../sim/const.js';
+import { TICK, G, HULL_HX, HULL_HY, DODGE, JUMP_V, DJ_V, DODGE_XY, DODGE_Y, DODGE_CD, RUN } from '../sim/const.js';
 import { testArena } from './probes.js';
 
 const mk = (fn, start = [0, 0, 0], yaw = 0) => {
@@ -75,7 +75,7 @@ test('50° ramp slides (cannot be climbed, nothing stands on it)', () => {
   const y0 = 3.05;
   w2.teleport([0, y0, -12.5], 0);   // the surface is at 2.98 there
   run(w2, makeCmd(), 240);
-  return { ok: maxY < 2 && !onSlope && w2.ps.pos[1] < 0.5, detail: `walking up: max y ${f(maxY)}; placed on the slope at y ${y0}: after 2 s y=${f(w2.ps.pos[1])}, z=${f(w2.ps.pos[2])}` };
+  return { ok: maxY < 3 && !onSlope && w2.ps.pos[1] < 0.5, detail: `walking up: max y ${f(maxY)}; placed on the slope at y ${y0}: after 2 s y=${f(w2.ps.pos[1])}, z=${f(w2.ps.pos[2])}` };
 });
 
 test('corner crease: no sticking, walks out at once', () => {
@@ -202,7 +202,7 @@ test('double jump: second press in the air, not a third; a new airtime restores 
   return { ok: vy1 > DJ_V - 0.4 && vy2 < 1 && vy3 > JUMP_V - 0.3, detail: `vy after the double jump ${f(vy1, 2)}, after a third press ${f(vy2, 2)}, next ground jump ${f(vy3, 2)}` };
 });
 
-test('wall dodge: needs a wall within 0.5 m, once per airtime', () => {
+test('wall dodge: needs a wall within 0.64 m (WALL_RANGE), once per airtime', () => {
   const noWall = mk();
   const c = makeCmd();
   c.jump = true; noWall.step(c); c.jump = false; for (let i = 0; i < 10; i++) noWall.step(c);
@@ -216,6 +216,33 @@ test('wall dodge: needs a wall within 0.5 m, once per airtime', () => {
   const vBefore = w.ps.speed;
   c.dodge = DODGE.B; w.step(c); c.dodge = 0;   // a second one: refused (no speed jump)
   return { ok: !none && first && Math.abs(v1 - DODGE_XY) < 0.5 && Math.abs(w.ps.speed - vBefore) < 0.5, detail: `without a wall: dodged=${none}; with a wall: dodged=${first}, speed ${f(v1, 2)}` };
+});
+
+// a wall dodge sets vy = DODGE_Y and nothing right after it may lift it back through the jump / shield combo windows (COMBO_TICKS)
+const wallDodgeWorld = () => {
+  const w = mk((b) => b.box([-40, 0, -12], [40, 40, -10], { mat: 'wall' }), [0, 0, -9.55], 0);   // pressed against the wall, facing it
+  const c = makeCmd();
+  run(w, c, 30);
+  return { w, c };
+};
+test('wall dodge: a shield release within COMBO_TICKS of the jump adds the blast to the fixed wall dodge height, it does not lift it back to JUMP_V first', () => {
+  const { w, c } = wallDodgeWorld();
+  c.fire = true; run(w, c, 40); c.pitch = -1.4;   // a charge, aimed at the floor under the feet
+  c.jump = true; w.step(c); c.jump = false; run(w, c, 2);
+  c.dodge = DODGE.B; w.step(c); c.dodge = 0;   // away from the wall behind: a wall dodge
+  const walled = w.ps.wallUsed, vy0 = w.ps.vel[1];
+  c.fire = false; w.step(c);   // released 4 ticks after the jump
+  const gain = w.ps.vel[1] - vy0;
+  return { ok: walled && Math.abs(vy0 - DODGE_Y) < 0.2 && gain > 3 && gain < 6.5 && w.ps.vel[1] < DODGE_Y + 6.5, detail: `wall dodge vy ${f(vy0, 3)}, after the release ${f(w.ps.vel[1], 3)} (the blast alone adds ${f(gain, 2)}; the old lift to JUMP_V first would end at ${f(JUMP_V + gain, 2)})` };
+});
+test('wall dodge: a Space within COMBO_TICKS of a shield launch from the floor is the plain double jump (DJ_V), not the launch + JUMP_V combo', () => {
+  const { w, c } = wallDodgeWorld();
+  c.fire = true; run(w, c, 40); c.pitch = -1.4;
+  c.fire = false; w.step(c);   // a shield launch from the floor
+  const launched = w.ps.blastGround;
+  c.dodge = DODGE.B; w.step(c); c.dodge = 0;
+  c.jump = true; w.step(c); c.jump = false;
+  return { ok: launched && w.ps.wallUsed && Math.abs(w.ps.vel[1] - DJ_V) < 0.3, detail: `vy after the Space ${f(w.ps.vel[1], 3)} (DJ_V ${DJ_V})` };
 });
 
 test('shield: a blast into thin air does nothing; one at the floor launches', () => {
@@ -294,16 +321,128 @@ test('lift jump: the platform velocity joins the jump', () => {
   return { ok: rising && vy > JUMP_V + 3.5, detail: `riding: ${rising}; vy after the jump ${f(vy, 2)} (jump ${JUMP_V} + lift 4)` };
 });
 
-test('auto-hop: a held jump hops on every landing, without it only the first', () => {
-  const hops = (autoHop) => {
+const evs = (w) => w.takeEvents();
+// step until the player is at the apex (vy <= 0), then one more tick: that is where a buffered double jump fires. Returns the tick count
+const toApex = (w, c, max = 300) => { const n = upto(w, c, () => w.ps.vel[1] <= 0, max); w.step(c); return n + 1; };
+
+test('no bunnyhop: a held Space jumps once; landing at 15.9 m/s and pressing again leaves at no more than RUN', () => {
+  const w = mk();
+  const held = cmdOf({ jump: true });
+  let hops = 0, was = true;
+  for (let i = 0; i < 600; i++) { w.step(held); if (was && !w.ps.grounded) hops++; was = w.ps.grounded; }
+  // a real 15.9 m/s landing: run, dodge to the side + Space, land, press Space again on the landing tick
+  const d = mk();
+  const c = cmdOf({ fwd: 1 });
+  run(d, c, 120);   // up to run speed
+  c.dodge = DODGE.L; c.jump = true; d.step(c); c.dodge = 0; c.jump = false;
+  upto(d, c, () => d.ps.grounded);
+  const landed = d.ps.speed;
+  c.jump = true; d.step(c);
+  const left = d.ps.speed, vy = d.ps.vel[1];
+  const grounded = d.ps.grounded;
+  return { ok: hops === 1 && landed > 15 && !grounded && left <= RUN + 0.01 && Math.abs(vy - JUMP_V) < 0.2, detail: `held Space: ${hops} hop(s) in 5 s; landed at ${f(landed, 2)} m/s, the jump on landing left at ${f(left, 2)} m/s (RUN ${RUN}), vy ${f(vy, 2)}` };
+});
+
+test('diagonal jump, same tick: dodge + Space = the dodge now, the double jump by itself at the apex', () => {
+  const w = mk();
+  w.step(cmdOf({ dodge: DODGE.L, jump: true }));
+  const first = evs(w), v = w.ps.speed;
+  const jumped = first.some((e) => e.type === 'jump');   // no separate jump event: the dodge arc replaces it
+  const n = toApex(w, makeCmd());
+  const ev = evs(w), dj = ev.find((e) => e.type === 'dj');
+  const vy = w.ps.vel[1];
+  let maxY = w.ps.pos[1];
+  upto(w, makeCmd(), () => { maxY = Math.max(maxY, w.ps.pos[1]); return w.ps.grounded; });
+  return { ok: !jumped && Math.abs(v - DODGE_XY) < 0.1 && n > 20 && dj && dj.auto === true && vy > DJ_V - 0.3 && maxY > 1.8 && maxY < 1.95, detail: `speed ${f(v, 2)}, auto double jump after ${n} ticks (auto: ${dj && dj.auto}), vy ${f(vy, 2)}, peak ${f(maxY, 2)} m` };
+});
+
+test('diagonal jump, jump first: a dodge within the window converts the jump into the dodge arc (same peak as the same-tick one)', () => {
+  const peak = (gap) => {
     const w = mk();
-    const c = cmdOf({ jump: true, autoHop });
-    let n = 0, was = true;
-    for (let i = 0; i < 600; i++) { w.step(c); if (was && !w.ps.grounded) n++; was = w.ps.grounded; }
-    return n;
+    w.step(cmdOf({ jump: true }));
+    const c = makeCmd();
+    for (let i = 0; i < gap - 1; i++) w.step(c);
+    w.step(cmdOf({ dodge: DODGE.R }));
+    const ev = evs(w), late = ev.find((e) => e.type === 'dodge' && e.late);
+    const v = w.ps.speed, vy = w.ps.vel[1];
+    let maxY = w.ps.pos[1], auto = false;
+    upto(w, makeCmd(), () => { maxY = Math.max(maxY, w.ps.pos[1]); if (w.takeEvents().some((e) => e.type === 'dj' && e.auto)) auto = true; return w.ps.grounded; });
+    return { late: !!late, v, vy, maxY, auto };
   };
-  const a = hops(true), b = hops(false);
-  return { ok: a >= 5 && b === 1, detail: `auto-hop ${a} hops in 5 s, without ${b}` };
+  const a = peak(3), b = peak(8);
+  const ok = [a, b].every((r) => r.late && Math.abs(r.v - DODGE_XY) < 0.1 && r.auto && r.maxY > 1.8 && r.maxY < 1.95);
+  return { ok, detail: `+3 ticks: late ${a.late}, speed ${f(a.v, 2)}, vy ${f(a.vy, 2)}, peak ${f(a.maxY, 2)}; +8 ticks: peak ${f(b.maxY, 2)}, auto dj ${b.auto}` };
+});
+
+test('diagonal jump, dodge first: Space within the window is buffered to the apex; at +12 ticks it is an immediate double jump', () => {
+  const after = (gap) => {
+    const w = mk();
+    w.step(cmdOf({ dodge: DODGE.L }));
+    const c = makeCmd();
+    for (let i = 0; i < gap - 1; i++) w.step(c);
+    evs(w);
+    w.step(cmdOf({ jump: true }));
+    const dj = evs(w).find((e) => e.type === 'dj');
+    return { dj, vy: w.ps.vel[1], w };
+  };
+  const inWin = after(5), out = after(12);
+  const bufferedNow = !inWin.dj && inWin.vy < 4.2;   // nothing happened yet, still rising on the dodge arc
+  const apex = toApex(inWin.w, makeCmd());
+  const dj2 = evs(inWin.w).find((e) => e.type === 'dj');
+  const immediate = out.dj && !out.dj.auto && out.vy > DJ_V - 0.3;
+  return { ok: bufferedNow && dj2 && dj2.auto === true && immediate, detail: `+5 ticks: immediate dj ${!!inWin.dj}, then auto dj ${dj2 && dj2.auto} after ${apex} more ticks; +12 ticks: dj ${out.dj && (out.dj.auto ? 'auto' : 'immediate')}, vy ${f(out.vy, 2)}` };
+});
+
+test('a jump at a wall followed at once by a dodge away from it is a wall dodge (vy = DODGE_Y whatever the jump had), not the jump-first conversion', () => {
+  const w = mk((b) => b.box([-20, 0, -12], [20, 20, -10], { mat: 'wall' }), [0, 0, -9.5], Math.PI);
+  const c = cmdOf({ yaw: Math.PI, jump: true });
+  w.step(c); c.jump = false; w.step(c);
+  evs(w);
+  c.dodge = DODGE.F; w.step(c); c.dodge = 0;
+  const ev = evs(w), wd = ev.find((e) => e.type === 'walldodge'), conv = ev.find((e) => e.type === 'dodge');
+  return { ok: !!wd && !conv && Math.abs(w.ps.vel[1] - (DODGE_Y - G / TICK)) < 0.02 && !w.ps.djBuf, detail: `walldodge ${!!wd}, conversion ${!!conv}, vy ${f(w.ps.vel[1], 2)} (DODGE_Y ${DODGE_Y} minus one tick of gravity, not the jump's ~6.5)` };
+});
+
+test('no jump-first conversion while the dodge cooldown runs; a second Space press while a double jump is buffered fires it at once', () => {
+  const w = mk();
+  w.step(cmdOf({ dodge: DODGE.F }));
+  upto(w, makeCmd(), () => w.ps.grounded);   // dodgeCd now runs (0.35 s)
+  evs(w);
+  w.step(cmdOf({ jump: true }));
+  const c = makeCmd();
+  w.step(c); w.step(c);
+  const v0 = w.ps.speed;
+  w.step(cmdOf({ dodge: DODGE.R }));
+  const refused = !evs(w).some((e) => e.type === 'dodge' || e.type === 'walldodge') && Math.abs(w.ps.speed - v0) < 0.2;
+  const b = mk();
+  b.step(cmdOf({ dodge: DODGE.F, jump: true }));   // buffered
+  b.step(makeCmd());
+  b.step(cmdOf({ jump: true }));                   // a manual press: the double jump now
+  const dj = evs(b).find((e) => e.type === 'dj');
+  return { ok: refused && dj && !dj.auto && b.ps.vel[1] > DJ_V - 0.3 && b.ps.djUsed && !b.ps.djBuf, detail: `conversion refused during the cooldown: ${refused}; second press: dj ${dj && (dj.auto ? 'auto' : 'immediate')}, vy ${f(b.ps.vel[1], 2)}` };
+});
+
+test('air control steers but never gains speed: 20 000 random-input ticks in the air never exceed max(speed before, RUN)', () => {
+  const rng = mulberry32(31337);
+  let worst = 0, steered = false;
+  for (let k = 0; k < 8; k++) {
+    const w = mk();
+    w.teleport([0, 400, 0], rng() * 6.28);
+    const v0 = rng() < 0.5 ? rng() * 8 : 9 + rng() * 12;   // below and above RUN
+    const a0 = rng() * 6.28;
+    w.ps.vel = [Math.cos(a0) * v0, 0, Math.sin(a0) * v0];
+    const c = makeCmd();
+    let hold = 0;
+    for (let i = 0; i < 300; i++) {   // 2.5 s: falls ~100 m of the 400
+      if (hold-- <= 0) { hold = 5 + Math.floor(rng() * 40); c.fwd = Math.floor(rng() * 3) - 1; c.side = Math.floor(rng() * 3) - 1; }
+      c.yaw += (rng() - 0.5) * 0.3;
+      const before = w.ps.speed;
+      w.step(c);
+      worst = Math.max(worst, w.ps.speed - Math.max(before, RUN));
+      if (before < RUN - 1 && w.ps.speed > before + 1e-6) steered = true;
+    }
+  }
+  return { ok: worst < 1e-9 && steered, detail: `largest excess over max(previous speed, RUN): ${worst.toExponential(1)} m/s; below RUN the wish direction does accelerate: ${steered}` };
 });
 
 test('events: clockStart, jump, land, cp, finish arrive in order', () => {

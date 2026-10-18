@@ -8,7 +8,9 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit",
-    "test:pj": "node pajzsugras/test/run.mjs"
+    "test:pj": "node pajzsugras/test/run.mjs",
+    "add-map": "node pajzsugras/tools/add-map.mjs",
+    "gen:pj-sounds": "node pajzsugras/tools/gen-sounds.mjs"
   },
   "dependencies": {
     "@noble/secp256k1": "^3.2.0",

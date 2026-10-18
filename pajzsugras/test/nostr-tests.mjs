@@ -3,7 +3,7 @@
 import * as secp from '@noble/secp256k1';
 import { test, assert, setGlobal } from './harness.mjs';
 import { guardWebSocket, memStorage, brokenStorage, makeRelays, forge, sha256Hex, eventIdOf, bytesToHex, hexToBytes } from './support.mjs';
-import MAPS from '../maps/index.js';
+import { course } from './synth.mjs';
 import { World } from '../sim/world.js';
 import { RouteRunner } from '../sim/bot.js';
 import { encodeGhost, toB64 } from '../sim/ghost.js';
@@ -229,26 +229,58 @@ test('nostr cache: 5 minutes in memory + sessionStorage, concurrent callers shar
   assert.ok(d.st.connects > c1, 'tries again after 30 s');
 });
 
-test('nostr + sim: every proof route and skip route, published as a PB, passes the plausibility filter; the packed ghost unpacks', async () => {
+test('nostr + sim: the proof route of a synthetic course, published as a PB, passes the plausibility filter; the packed ghost unpacks', async () => {
   setGlobal('localStorage', memStorage()); setGlobal('sessionStorage', memStorage());
-  let runs = 0;
-  for (const def of MAPS.list) {
-    const map = def.build();
-    const info = { id: def.meta.id, hash: map.mapHash, authorTime: def.meta.authorTime, cpCount: map.checkpoints.length };
-    const variants = [['route', map.route], ...map.skips.map((s) => ['skip "' + s.name + '"', s.steps])];
-    for (const [label, steps] of variants) {
-      const w = new World(map), res = new RouteRunner(w, steps).run();
-      assert.ok(res.ok, `${info.id} ${label} finishes`);
-      useRelays({ a: okRelay(), b: okRelay() });
-      const pub = await N.publishPB(info, { ticks: res.ticks, splits: w.splits.slice(), name: 'Bot', ghost: toB64(encodeGhost(w.ghostData())) });
-      assert.ok(pub.ok, `${info.id} ${label} published`);
-      const top = (await N.queryBoards([info], { timeout: 300 })).boards[info.id].top;
-      assert.equal(top.length, 1, `${info.id} ${label}: the record is listed (ticks ${res.ticks}, author ${(info.authorTime * TICK).toFixed(0)}, splits ${w.splits.join(',')})`);
-      assert.ok(top[0].mine && top[0].ticks === res.ticks && top[0].splits.join() === w.splits.join());
-      const g = await N.unpackGhost(top[0].ghost);
-      assert.ok(g && g.n > 10 && g.every === 12, `${info.id} ${label}: ghost unpacks`);
-      runs++;
-    }
+  const map = course();
+  const info = { id: map.meta.id, hash: map.mapHash, authorTime: map.meta.authorTime, cpCount: map.checkpoints.length };
+  const w = new World(map), res = new RouteRunner(w, map.route).run();
+  assert.ok(res.ok, 'the route finishes');
+  assert.ok(Math.abs(res.ticks - info.authorTime * TICK) < 1, 'the author time is the route\'s');
+  useRelays({ a: okRelay(), b: okRelay() });
+  const pub = await N.publishPB(info, { ticks: res.ticks, splits: w.splits.slice(), name: 'Bot', ghost: toB64(encodeGhost(w.ghostData())) });
+  assert.ok(pub.ok, 'published');
+  const top = (await N.queryBoards([info], { timeout: 300 })).boards[info.id].top;
+  assert.equal(top.length, 1, `the record is listed (ticks ${res.ticks}, author ${(info.authorTime * TICK).toFixed(0)}, splits ${w.splits.join(',')})`);
+  assert.ok(top[0].mine && top[0].ticks === res.ticks && top[0].splits.join() === w.splits.join());
+  const g = await N.unpackGhost(top[0].ghost);
+  assert.ok(g && g.n > 10 && g.every === 12, 'ghost unpacks');
+  // a time under half the author time is not credible
+  useRelays({ a: okRelay(), b: okRelay() });
+  await N.publishPB({ ...info, id: 'fast' }, { ticks: Math.floor(res.ticks / 2) - 1, splits: w.splits.map((t) => Math.floor(t / 4)), name: 'Bot' });
+  assert.equal((await N.queryBoards([{ ...info, id: 'fast', authorTime: info.authorTime }], { timeout: 300 })).boards.fast.top.length, 0, 'below half the author time: not credible');
+});
+
+test('nostr: a map without an author time (an export of the editor) has a fixed plausibility floor of 3 s: minTicks, the board filter', async () => {
+  assert.equal(N.minTicks(0), 3 * TICK); assert.equal(N.minTicks(undefined), 3 * TICK); assert.equal(N.minTicks(NaN), 3 * TICK);
+  assert.equal(N.minTicks(100), 6000, 'maps with an author time are unchanged');
+  setGlobal('localStorage', memStorage()); setGlobal('sessionStorage', memStorage());
+  const info = { id: 'exported', hash: 'hash-exported', authorTime: 0, cpCount: 0 };
+  for (const [ticks, listed] of [[2 * TICK, false], [3 * TICK - 1, false], [3 * TICK, true], [40 * TICK, true]]) {
+    useRelays({ a: okRelay(), b: okRelay() });
+    await N.publishPB(info, { ticks, splits: [], name: 'Bot' });
+    const top = (await N.queryBoards([info], { timeout: 300 })).boards[info.id].top;
+    assert.equal(top.length, listed ? 1 : 0, `${ticks} ticks (${(ticks / TICK).toFixed(2)} s): ${listed ? 'credible' : 'under the floor'}`);
   }
-  assert.equal(runs, MAPS.list.length + MAPS.list.reduce((s, d) => s + d.build().skips.length, 0));
+});
+
+test('nostr: the geometric floor of a map without an author time - minTicks(0, floor) is max(3 s, floor), an author time ignores it, junk is no floor; the board drops a record under it', async () => {
+  assert.equal(N.minTicks(0, 10), 10 * TICK); assert.equal(N.minTicks(undefined, 10.5), Math.ceil(10.5 * TICK));
+  assert.equal(N.minTicks(0, 1), 3 * TICK, 'a short way: the 3 s floor stays');
+  for (const junk of [NaN, Infinity, -5, undefined, null, 'x']) assert.equal(N.minTicks(0, junk), 3 * TICK, String(junk));
+  assert.equal(N.minTicks(100, 999), 6000, 'a proof route decides alone');
+  setGlobal('localStorage', memStorage()); setGlobal('sessionStorage', memStorage());
+  const info = { id: 'far', hash: 'hash-far', authorTime: 0, cpCount: 0, floor: 10 };   // a finish about 300 m away
+  for (const [ticks, listed] of [[3 * TICK, false], [10 * TICK - 1, false], [10 * TICK, true], [40 * TICK, true]]) {
+    useRelays({ a: okRelay(), b: okRelay() });
+    await N.publishPB(info, { ticks, splits: [], name: 'Bot' });
+    const top = (await N.queryBoards([info], { timeout: 300 })).boards[info.id].top;
+    assert.equal(top.length, listed ? 1 : 0, `${ticks} ticks: ${listed ? 'credible' : 'under the geometric floor'}`);
+  }
+});
+
+test('nostr: sanitizeName strips controls, DEL / C1, line separators and bidi overrides as well as markup', async () => {
+  const bad = [0x1, 0x7f, 0x85, 0x9f, 0x2028, 0x2029, 0x202a, 0x202e, 0x2066, 0x2069].map((c) => String.fromCharCode(c)).join('');
+  assert.equal(N.sanitizeName('A' + bad + 'B<i>C'), 'ABiC');
+  assert.equal(N.sanitizeName(bad + '  '), '', 'nothing left: the entry is dropped');
+  assert.equal(N.sanitizeName('Ünicode név ő'), 'Ünicode név ő', 'ordinary text is untouched');
 });

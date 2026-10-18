@@ -1,16 +1,31 @@
 // The player: state + one fixed tick of movement (steps 2-8 of the tick order; World does movers before and
 // triggers/clock after). Quake 3 slide/step move on exact swept-box traces, UT dodge / double jump / shield gun,
-// Quake air acceleration for strafe jumping.
+// UT air control (steering, never speed gain).
+//
+// Fixed rules, no timing windows: the double jump always fires on a Space press in the air (once per airtime) and always sets
+// vy = DJ_V; a successful wall dodge gives the double jump back (djUsed / djBuf cleared: jump -> double jump -> wall dodge -> Space
+// jumps again). Only a press while vy is already above DJ_V is ignored (it would cut a shield / pad / lift launch short), and it does not
+// spend the double jump. A wall dodge (once per airtime, also after a ground dodge / diagonal jump) needs a near-vertical wall within
+// WALL_RANGE of the hull (its full height) behind the dodge direction or beside it; it always sets vy = DODGE_Y, and every dodge SETS
+// the speed along its direction to DODGE_XY (UT PerformDodge; the sideways part is kept).
 //
 // Tick order inside stepPlayer:
-//   dodge (ground, or wall dodge in the air) -> jump / double jump / shield combo -> shield charge & release
-//   -> ground move (friction, UT acceleration; skipped on a jump tick = bunnyhop) or air move (Q3 air accel + steering)
+//   dodge (ground, a jump-first conversion in the air, or a wall dodge) -> jump (a fresh press only) / double jump /
+//   buffered double jump / shield combo -> shield charge & release
+//   -> ground move (friction, UT acceleration) or air move (UT air control: the wish direction steers, speed above RUN is kept)
 //   -> half gravity, step/slide move, half gravity -> ground categorisation (landing resets)
+//
+// No bunnyhop, no strafe gain: only a fresh Space press jumps, and every deliberate ground takeoff (jump, dodge, shield
+// launch) first clamps the ground speed to RUN. The diagonal jump: a jump and a dodge within DODGE_JUMP_TICKS of each other
+// (either order, or the same tick) give the 13.2 m/s dodge on the dodge's arc, and the double jump fires by itself at the apex.
+// (Next to a wall a quick dodge after the jump is a wall dodge instead. A wall dodge is not part of the diagonal jump and buffers
+// nothing: it clears the buffer and gives the double jump back, so a Space press on the wall-dodge tick or after it is an ordinary,
+// immediate double jump.)
 //
 // Velocity while grounded on a mover is RELATIVE to the mover (World carries the position); leaving the ground adds
 // the mover's velocity, landing subtracts it, so a lift jump inherits the lift's speed.
 import {
-  DT, G, RUN, ACCEL, FRICTION, STOP, AIR_K, AIR_TURN, JUMP_V, DJ_V, DODGE_XY, DODGE_Y, WALL_RANGE, WALL_NY, DODGE_CD,
+  DT, G, RUN, ACCEL, FRICTION, STOP, AIR_CONTROL, DODGE_JUMP_TICKS, JUMP_V, DJ_V, DODGE_XY, DODGE_Y, WALL_RANGE, WALL_NY, DODGE_CD,
   STEP, STEP_SLACK, MIN_WALK_NY, GROUND_D, NOSNAP, VMAX, OVERCLIP, CHARGE_T, SH_IMIN, SH_IMAX, SH_RANGE, SH_LOCK,
   COMBO_TICKS, HULL_HX, HULL_HY, EYE, PAD_CD, DODGE, FLAG, ticks,
 } from './const.js';
@@ -22,7 +37,7 @@ const MAX_PITCH = (89 * Math.PI) / 180;
 const ZERO = [0, 0, 0];
 
 export function makeCmd() {
-  return { fwd: 0, side: 0, yaw: 0, pitch: 0, jump: false, fire: false, dodge: 0, respawn: false, restart: false, autoHop: false };
+  return { fwd: 0, side: 0, yaw: 0, pitch: 0, jump: false, fire: false, dodge: 0, respawn: false, restart: false };
 }
 
 export class PlayerState {
@@ -34,7 +49,8 @@ export class PlayerState {
     this.grounded = false; this.gnormal = [0, 1, 0]; this.groundMover = -1; this.groundVel = [0, 0, 0];
     this.charge = 0; this.charging = false; this.shieldLock = 0;
     this.djUsed = false; this.wallUsed = false; this.dodging = false; this.dodgeCd = 0; this.noSnap = 0; this.padCd = 0;
-    this.prevJump = false; this.lastJumpT = -999;
+    this.prevJump = false; this.lastJumpT = -999; this.jumpY = 0; this.jumpGV = [0, 0, 0];   // tick, feet height, ground velocity of the last ground jump
+    this.djBuf = false; this.dodgeT = -999;   // a double jump waiting for the apex; tick of the last ground dodge or jump-first conversion (a wall dodge clears it)
     this.blastGround = false; this.blastT = -999; this.blastVy = 0; this.blastFlash = -999;
     this.t = 0; this.lastGood = pos.slice(); this.stuck = false; this.fallV = 0;
   }
@@ -152,25 +168,36 @@ function launch(ps) {
 
 export const dodgeVec = (d, f, r) => (d === DODGE.F ? f : d === DODGE.B ? [-f[0], 0, -f[2]] : d === DODGE.L ? [-r[0], 0, -r[2]] : r);
 
-// wall within WALL_RANGE behind the dodge direction, or to its sides, facing us roughly along the dodge: its normal or null
+// a near-vertical wall within WALL_RANGE of the hull (swept over its full height) behind the dodge direction or beside it, whatever way it
+// faces: its normal or null
 export function findWall(ps, cw, dir) {
   const perp = [-dir[2], 0, dir[0]];
   for (const d of [[-dir[0], 0, -dir[2]], perp, [-perp[0], 0, -perp[2]]]) {
     const tr = ptrace(cw, ps.pos, [ps.pos[0] + d[0] * WALL_RANGE, ps.pos[1], ps.pos[2] + d[2] * WALL_RANGE]);
-    if (tr.fraction < 1 && !tr.startsolid && Math.abs(tr.normal[1]) < WALL_NY && dot3(dir, tr.normal) >= -0.1) return tr.normal;
+    if (tr.fraction < 1 && !tr.startsolid && Math.abs(tr.normal[1]) < WALL_NY) return tr.normal;
   }
   return null;
 }
 
-function doDodge(ps, dir, ground) {
+// Every deliberate ground takeoff (jump, dodge, shield launch) leaves at no more than RUN: speed carried over a landing
+// (a dodge, a blast, a pad) is bled by friction, so a chain of hops can never build speed. Walking off an edge is not clamped.
+function takeoffClamp(ps) {
+  if (!ps.grounded) return;
+  const v = ps.vel, h = Math.hypot(v[0], v[2]);
+  if (h <= RUN) return;
+  const k = RUN / h;
+  v[0] *= k; v[1] *= k; v[2] *= k;
+}
+
+// the dodge velocity (UT PerformDodge: 1.5 · GroundSpeed · Dir + (V · Cross) · Cross): the speed along dir is SET to DODGE_XY (faster or
+// slower than before), the sideways part is kept, vertical speed vy
+function doDodge(ps, dir, vy) {
   const v = ps.vel;
   const along = v[0] * dir[0] + v[2] * dir[2];
-  const a = Math.max(DODGE_XY, along);   // never slower than we already were along the dodge
-  v[0] += dir[0] * (a - along); v[2] += dir[2] * (a - along);
-  v[1] = ground ? DODGE_Y : Math.max(v[1], DODGE_Y);
+  v[0] += dir[0] * (DODGE_XY - along); v[2] += dir[2] * (DODGE_XY - along);
+  v[1] = vy;
   launch(ps);
-  ps.dodging = true;
-  if (ground) ps.noSnap = NOSNAP_T;   // (an air dodge may touch down at once)
+  ps.dodging = true; ps.dodgeT = ps.t;
 }
 
 function blast(ps, cw, emit) {
@@ -189,7 +216,7 @@ function blast(ps, cw, emit) {
   // jump and release within the same window stack in either order: a jump a few ticks ago is topped up to full
   if (J[1] > 0 && ps.t - ps.lastJumpT <= COMBO_TICKS) v[1] = Math.max(v[1], JUMP_V);
   const fromGround = ps.grounded && J[1] > 0;
-  if (fromGround) { launch(ps); ps.noSnap = NOSNAP_T; }
+  if (fromGround) { takeoffClamp(ps); launch(ps); ps.noSnap = NOSNAP_T; }
   v[0] += J[0]; v[1] += J[1]; v[2] += J[2];
   if (fromGround) { ps.blastGround = true; ps.blastT = ps.t; ps.blastVy = v[1]; } else ps.blastGround = false;
   emit('blast', { pos: tr.endpos.slice(), normal: tr.normal.slice(), dir: aim, charge: c, hit: true });
@@ -203,7 +230,8 @@ export function padLaunch(ps, pad) {
   launch(ps);
   ps.vel = [(pad.target[0] - ps.pos[0]) / t, vy, (pad.target[2] - ps.pos[2]) / t];
   ps.noSnap = NOSNAP_T; ps.padCd = PAD_CD_T;
-  ps.djUsed = false; ps.wallUsed = false; ps.dodging = false; ps.blastGround = false;
+  ps.djUsed = false; ps.wallUsed = false; ps.dodging = false; ps.blastGround = false; ps.djBuf = false;
+  ps.lastJumpT = -999; ps.dodgeT = -999;   // a jump or dodge a moment ago must not turn the pad's flight into a dodge arc
 }
 
 function groundMove(ps, wx, wz, wl) {
@@ -231,25 +259,15 @@ function groundMove(ps, wx, wz, wl) {
   v[0] = vx; v[2] = vz; v[1] = n[1] > 0.01 ? -(n[0] * vx + n[2] * vz) / n[1] : 0;   // follow the slope
 }
 
-function airMove(ps, cmd, wx, wz, wl, fwdH) {
+// UT air control: the wish direction adds AIR_CONTROL · ACCEL · DT, then the horizontal speed is capped at max(what it was,
+// RUN): you can steer a dodge / blast / pad speed above RUN, never gain it, and below RUN you can reach RUN at most.
+function airMove(ps, wx, wz, wl) {
   const v = ps.vel;
   if (wl > 0) {
-    const ws = RUN * Math.min(1, wl);
-    const add = ws - (v[0] * wx + v[2] * wz);
-    if (add > 0) { const a = Math.min(AIR_K * ws * DT, add); v[0] += wx * a; v[2] += wz * a; }
-    // forward only (no strafe key): the horizontal velocity swings toward the view, speed kept
-    if (cmd.side === 0 && cmd.fwd > 0) {
-      const sp = Math.hypot(v[0], v[2]);
-      if (sp > 0.5) {
-        const dv = (v[0] * fwdH[0] + v[2] * fwdH[2]) / sp;
-        if (dv > 0) {
-          const err = Math.atan2(v[0] * fwdH[2] - v[2] * fwdH[0], v[0] * fwdH[0] + v[2] * fwdH[2]);
-          const r = clamp(err, -AIR_TURN * dv * dv * DT, AIR_TURN * dv * dv * DT);
-          const c = Math.cos(r), s = Math.sin(r), x = v[0];
-          v[0] = x * c - v[2] * s; v[2] = x * s + v[2] * c;
-        }
-      }
-    }
+    const old = Math.hypot(v[0], v[2]), a = AIR_CONTROL * ACCEL * DT;
+    v[0] += wx * a; v[2] += wz * a;
+    const lim = Math.max(old, RUN), now = Math.hypot(v[0], v[2]);
+    if (now > lim) { const k = lim / now; v[0] *= k; v[2] *= k; }
   }
   v[1] -= G * DT * 0.5;
 }
@@ -271,7 +289,7 @@ export function categorize(ps, cw, emit) {
   if (ok) {
     if (!was) {
       emit('land', { speed: Math.max(0, -ps.fallV), pos: ps.pos.slice() });
-      ps.djUsed = false; ps.wallUsed = false; ps.blastGround = false;
+      ps.djUsed = false; ps.wallUsed = false; ps.blastGround = false; ps.djBuf = false;
       if (ps.dodging) { ps.dodging = false; ps.dodgeCd = DODGE_CD_T; }
     }
     ps.grounded = true; ps.gnormal = tr.normal; ps.groundMover = tr.mover; ps.groundVel = gv === ZERO ? [0, 0, 0] : gv.slice();
@@ -299,38 +317,61 @@ export function stepPlayer(ps, cmd, cw, emit) {
   const wl = Math.hypot(wx, wz);
   if (wl > 0) { wx /= wl; wz /= wl; }
 
-  // dodge
+  const press = cmd.jump && !ps.prevJump;   // only a fresh press jumps: holding Space never re-jumps
+  ps.prevJump = cmd.jump;
+
+  // dodge: on the ground; in the air either the jump-first conversion (a jump a moment ago turns into a ground dodge on
+  // the same arc, with the double jump buffered) or a wall dodge (no diagonal jump: dodged / dodgeT stay clear of it, so the
+  // double jump after a wall dodge is always an immediate press)
   let dodged = false;
   if (cmd.dodge) {
     const dir = dodgeVec(cmd.dodge, fwdH, rightH);
     if (ps.grounded) {
-      if (ps.dodgeCd === 0) { doDodge(ps, dir, true); emit('dodge', { dir }); dodged = true; }
-    } else if (!ps.wallUsed) {
-      const n = findWall(ps, cw, dir);
-      if (n) { doDodge(ps, dir, false); ps.wallUsed = true; emit('walldodge', { dir, normal: n }); dodged = true; }
+      if (ps.dodgeCd === 0) { takeoffClamp(ps); doDodge(ps, dir, DODGE_Y); ps.noSnap = NOSNAP_T; emit('dodge', { dir }); dodged = true; }
+    } else {
+      const n = ps.wallUsed ? null : findWall(ps, cw, dir);   // a wall in reach: a wall dodge (once per airtime), never the conversion
+      if (n) {   // it gives the double jump back and drops a waiting diagonal-jump buffer: the next Space is an immediate double jump
+        // (and it closes the jump / shield combo windows: a shield release or a Space within COMBO_TICKS of the takeoff must not lift the fixed vy back up)
+        doDodge(ps, dir, DODGE_Y); ps.dodgeT = -999; ps.wallUsed = true; ps.djUsed = false; ps.djBuf = false; ps.lastJumpT = -999; ps.blastGround = false;
+        emit('walldodge', { dir, normal: n });
+      }
+      else if (ps.t - ps.lastJumpT <= DODGE_JUMP_TICKS && ps.blastFlash < ps.lastJumpT && !ps.dodging && !ps.wallUsed && !ps.djUsed && ps.dodgeCd === 0) {
+        // the dodge arc as if it had started at the jump's takeoff: same arc whichever key came first, and relative to the ground we jumped
+        // from (a moving platform, a lift) like the same-tick and dodge-first orders: take its velocity out, convert, put it back
+        const gv = ps.jumpGV, rise = ps.pos[1] - ps.jumpY - gv[1] * (ps.t - ps.lastJumpT) * DT;
+        ps.vel[0] -= gv[0]; ps.vel[2] -= gv[2];
+        doDodge(ps, dir, Math.sqrt(Math.max(0, DODGE_Y * DODGE_Y - 2 * G * rise)) + gv[1]);
+        ps.vel[0] += gv[0]; ps.vel[2] += gv[2];
+        ps.djBuf = true; ps.lastJumpT = -999;
+        emit('dodge', { dir, late: true }); dodged = true;
+      }
     }
   }
 
   // jump / double jump
-  const press = cmd.jump && !ps.prevJump;
-  ps.prevJump = cmd.jump;
-  if (!dodged) {
-    if (ps.grounded) {
-      if (press || (cmd.autoHop && cmd.jump)) {
-        ps.vel[1] = JUMP_V; launch(ps);
-        ps.noSnap = NOSNAP_T; ps.lastJumpT = ps.t;
-        emit('jump', { combo: false });
-      }
-    } else if (press) {
-      if (ps.blastGround && ps.t - ps.blastT <= COMBO_TICKS) {   // jump right after a shield launch from the floor
-        ps.vel[1] = Math.max(ps.vel[1], ps.blastVy + JUMP_V);
-        ps.blastGround = false;
-        emit('jump', { combo: true });
-      } else if (!ps.djUsed && ps.vel[1] < DJ_V) {
-        ps.vel[1] = DJ_V; ps.djUsed = true;
-        emit('dj', {});
-      }
+  if (press) {
+    if (dodged) ps.djBuf = !ps.djUsed;   // jump and a ground dodge / conversion together (the diagonal jump): the double jump waits for the apex
+    else if (ps.grounded) {
+      takeoffClamp(ps);
+      ps.jumpY = ps.pos[1]; ps.jumpGV = ps.groundVel.slice();
+      ps.vel[1] = JUMP_V; launch(ps);
+      ps.noSnap = NOSNAP_T; ps.lastJumpT = ps.t;
+      emit('jump', { combo: false });
+    } else if (ps.t - ps.dodgeT <= DODGE_JUMP_TICKS && !ps.djUsed && !ps.djBuf) {   // a ground dodge / conversion just happened: same buffer (never after a wall dodge)
+      ps.djBuf = true;
+    } else if (ps.blastGround && ps.t - ps.blastT <= COMBO_TICKS) {   // jump right after a shield launch from the floor
+      ps.vel[1] = Math.max(ps.vel[1], ps.blastVy + JUMP_V);
+      ps.blastGround = false;
+      emit('jump', { combo: true });
+    } else if (!ps.djUsed && ps.vel[1] < DJ_V) {   // always (vy is SET to DJ_V); rising faster than that the press is ignored and not spent
+      ps.vel[1] = DJ_V; ps.djUsed = true; ps.djBuf = false;
+      emit('dj', {});
     }
+  }
+  // the buffered double jump fires by itself at the apex (a wall dodge / blast before it only postpones it)
+  if (ps.djBuf && !ps.grounded && ps.vel[1] <= 0) {
+    ps.djBuf = false;
+    if (!ps.djUsed) { ps.vel[1] = DJ_V; ps.djUsed = true; emit('dj', { auto: true }); }
   }
 
   // shield gun
@@ -353,7 +394,7 @@ export function stepPlayer(ps, cmd, cw, emit) {
       if (tr.fraction < 1 && tr.normal[1] >= MIN_WALK_NY) ps.pos = tr.endpos;
     }
   } else {
-    airMove(ps, cmd, wx, wz, wl, fwdH);
+    airMove(ps, wx, wz, wl);
     ps.fallV = ps.vel[1];
     stepSlideMove(ps, cw);
     ps.vel[1] -= G * DT * 0.5;

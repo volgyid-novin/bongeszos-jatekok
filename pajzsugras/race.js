@@ -3,7 +3,7 @@
 // Everyone runs the room's map on their own sim: free warm-up runs while the lobby waits, then the host starts a race: countdown (frozen at the start), GO, every peer times itself in sim ticks and reports checkpoints (`cp`) and
 // the finish (`fin`). The host ends the race (all finished / 60 s after the first finisher / cap max(180 s, 3 x author time)),
 // hands out the points 10-8-6-5-4-3-2-1 (`end`), the results stay up for ~8 s, then everyone is back at the start (warm-up).
-// Others are shown as translucent figures from 20 Hz `st` packets, rendered 120 ms behind with linear interpolation.
+// Others are shown as translucent figures (an opaque Gorge when the local model exists: solid) from 20 Hz `st` packets, rendered 120 ms behind with linear interpolation.
 // The host is sticky (net.js): the creator keeps it, joiners never take it over; they wait as spectators while a race is on and are
 // admitted to the roster at the next lobby. When the host leaves, the lowest connected id of the race's entrants (of the roster in the
 // lobby) continues from its own copy of the room / race record. A room that formed twice (two joiners that each timed out alone) has
@@ -17,7 +17,7 @@ import { minTicks } from './nostr.js';
 
 const POINTS = [10, 8, 6, 5, 4, 3, 2, 1];
 const COLORS = [0xff8a2a, 0x2ee6d4, 0xffd24a, 0xff5c8a, 0x7a8bff, 0x5af0a0, 0xc07bff, 0xff5c4a];
-const DIFF_COLOR = { kikepzes: '#4cc9f0', konnyu: '#5af0a0', kozepes: '#ffd24a', nehez: '#ff8a2a', mester: '#ff4fa3' };
+const DIFF_COLOR = { kikepzes: '#4cc9f0', konnyu: '#5af0a0', kozepes: '#ffd24a', nehez: '#ff8a2a', mester: '#ff4fa3', nincs: '#2ee6d4' };
 const COUNT_MS = 3500;            // from the `start` message to GO
 const RESULT_MS = 8000;
 const AFTER_FIRST_MS = 60000;     // the race ends this long after the first finisher
@@ -59,6 +59,15 @@ export function initRace(app) {
 
   const myName = () => cleanName(app.settings ? app.settings.name : app.local.name);
   const localHash = () => (mapId && app.maps.has(mapId) ? app.mapHashOf(mapId) : null);
+  // a map without a finish (an export of the editor that has no goal yet) cannot be raced: it plays as a free run, a room does not offer it
+  const noGoal = (e) => { try { return !e.build().finish; } catch { return false; } };
+  const NO_GOAL = 'Ennek a pályának még nincs célja.';
+  // the map a new room starts on: the loaded one, then the last played, then the first (a map of the editor is none of them: not in the
+  // registry, the others could not load it); the first of these that has a finish, else (no map has one) the first of them
+  const defaultMap = () => {
+    const c = [app.mapId, app.settings && app.settings.lastMap, ...app.maps.ids].filter((id) => app.maps.has(id));
+    return c.find((id) => !noGoal(app.maps.get(id))) || c[0];
+  };
   const mismatch = () => !!(mapHash && localHash() && mapHash !== localHash());
   const isHost = () => !!room && synced && room.isHost;
   const connected = (id) => id === selfId || (room && room.peers.has(id));
@@ -81,7 +90,7 @@ export function initRace(app) {
     try { room = new RaceRoom(c); } catch (e) { console.error('[pajzsugras] room failed', e); room = null; formNote('A szobához nem sikerült csatlakozni (WebRTC nem elérhető?).', true); return false; }
     code = c; synced = !!created;
     roster = []; totals = {}; info.clear(); bufs.clear(); waited.clear(); race = null; lastResults = null; raceNo = 0; phase = 'lobby'; hostPhase = 'lobby'; helloPending = false;
-    mapId = created ? app.mapId : null; mapHash = created ? app.mapHash : null;
+    mapId = created ? defaultMap() : null; mapHash = created ? (mapId === app.mapId ? app.mapHash : app.mapHashOf(mapId)) : null;
     room.on('hello', onHello); room.on('lobby', onLobby); room.on('st', onSt); room.on('start', onStart);
     room.on('cp', onCp); room.on('fin', onFin); room.on('end', onEnd);
     room.onJoin = onJoin; room.onLeave = onLeave;
@@ -103,7 +112,7 @@ export function initRace(app) {
     const alone = !room.peers.size, hostOf = (id) => (info.get(id) ? info.get(id).host : '');
     const hint = [...room.peers].map(hostOf).find((h) => h && h !== selfId && !waited.has(h));
     const pick = hint || room.elect([selfId, ...room.peers].filter((id) => !waited.has(id) && !hostOf(id)));
-    if (pick === selfId) { synced = true; if (!mapId) mapId = app.mapId; mapHash = localHash(); sendHello(); hostRefresh(); toast(alone ? 'Üres szoba: te vagy a házigazda.' : 'Nincs házigazda: te vagy a házigazda.'); return; }
+    if (pick === selfId) { synced = true; if (!mapId) mapId = defaultMap(); mapHash = localHash(); sendHello(); hostRefresh(); toast(alone ? 'Üres szoba: te vagy a házigazda.' : 'Nincs házigazda: te vagy a házigazda.'); return; }
     waited.add(pick);
     sendHello();   // the others are there, the lobby just has not reached us
     joinTimer = setTimeout(joinTimeout, JOIN_WAIT_MS);
@@ -185,7 +194,7 @@ export function initRace(app) {
       if (i) { p.name = i.name; p.mh = i.mh; }
     }
     roster.sort((a, b) => a.slot - b.slot);
-    if (!mapId) { mapId = app.mapId; }
+    if (!mapId) { mapId = defaultMap(); }
     mapHash = app.mapHashOf(mapId);
     lastBeat = performance.now(); helloPending = false;
     room.send('lobby', lobbyMsg());
@@ -256,6 +265,7 @@ export function initRace(app) {
 
   function hostPickMap(id) {
     if (!isHost() || phase !== 'lobby' || !app.maps.has(id) || id === mapId) return;
+    if (noGoal(app.maps.get(id))) { toast(NO_GOAL); return; }
     mapId = id; mapHash = app.mapHashOf(id);
     hostRefresh();
     setRoomMap();
@@ -299,7 +309,7 @@ export function initRace(app) {
         if (!b || !b.length) continue;
         const s = sample(b, now - INTERP_MS);
         live.add(p.id);
-        app.figures.upsert('p:' + p.id, { name: p.name, color: colorOf(p.slot), pos: [s.x, s.y, s.z], yaw: s.yaw, pitch: s.pitch, flags: s.fl, ghost: true });
+        app.figures.upsert('p:' + p.id, { name: p.name, color: colorOf(p.slot), pos: [s.x, s.y, s.z], yaw: s.yaw, pitch: s.pitch, flags: s.fl, ghost: true, solid: true });
       }
     }
     for (const id of [...shown]) if (!live.has(id)) { app.figures.remove('p:' + id); shown.delete(id); }
@@ -415,7 +425,7 @@ export function initRace(app) {
     const alive = race.entrants.filter((p) => connected(p.id));
     if (!alive.length || alive.every((p) => race.fin.has(p.id))) return true;
     if (race.firstFinAt && now - race.firstFinAt >= AFTER_FIRST_MS) return true;
-    const meta = mapMeta(race.mapId), cap = Math.max(180, 3 * (meta ? meta.authorTime : 60)) * 1000;
+    const meta = mapMeta(race.mapId), cap = Math.max(180, 3 * (meta && meta.authorTime > 0 ? meta.authorTime : 60)) * 1000;   // (180 s without a proof route)
     return race.goAt != null && now - race.goAt >= cap;
   }
 
@@ -585,8 +595,8 @@ export function initRace(app) {
   function buildJoined() {
     formBuilt = false; joinedFor = code;
     const maps = app.maps.list.map((e) => {
-      const m = e.meta;
-      return `<button class="mp-map" data-map="${esc(m.id)}" style="--dc:${DIFF_COLOR[m.diff] || '#fff'}"><b>${String(m.order).padStart(2, '0')}</b><span>${esc(m.name)}</span><small>${esc(app.DIFF_LABEL[m.diff] || m.diff)}</small></button>`;
+      const m = e.meta, ng = noGoal(e);
+      return `<button class="mp-map" data-map="${esc(m.id)}"${ng ? ` title="${NO_GOAL}"` : ''} style="--dc:${DIFF_COLOR[m.diff] || '#fff'}"><b>${String(m.order).padStart(2, '0')}</b><span>${esc(m.name)}</span><small>${ng ? 'még nincs célja' : esc(app.DIFF_LABEL[m.diff] ?? m.diff)}</small></button>`;
     }).join('');
     root.innerHTML = `
       <div class="top"><button class="btn ghost" data-act="back">‹ Vissza</button><h2 class="h1">Szoba</h2><p class="sub" id="mp-sub"></p></div>
@@ -661,7 +671,7 @@ export function initRace(app) {
     const canPick = host && phase === 'lobby';
     for (const b of root.querySelectorAll('.mp-map')) {
       b.classList.toggle('on', b.dataset.map === mapId);
-      b.disabled = !canPick;
+      b.disabled = !canPick || noGoal(app.maps.get(b.dataset.map));   // (a map without a finish: listed, not pickable)
     }
     q('#mp-maphint').textContent = host ? (canPick ? 'te választasz' : '') : 'a házigazda választ';
     const lobby = phase === 'lobby';

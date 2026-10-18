@@ -2,10 +2,19 @@ node_modules
 dist
 *.log
 .claude/
-homokfutam/models/pod/build/
-homokfutam/models/fx/build/
 __pycache__/
 waveletNoiseTile.bin
-homokfutam/models/world/build/
 
-homokfutam/tools/out/
+
+# local-only sounds the player owns (e.g. from their own UT install): never committed or deployed
+pajzsugras/local-sounds/
+# The six game model sources are deployed; local backups and other extracts stay ignored.
+pajzsugras/local-models/*
+!pajzsugras/local-models/gorge.glb
+!pajzsugras/local-models/gorge-body.png
+!pajzsugras/local-models/gorge-head.png
+!pajzsugras/local-models/shieldgun-1st.glb
+!pajzsugras/local-models/shieldgun-3rd.glb
+!pajzsugras/local-models/shieldgun.png
+# maps ported from a third party's UT2004 map (pajzsugras/tools/ut2004_map.py): the owner's own copy, never committed or deployed
+pajzsugras/local-maps/

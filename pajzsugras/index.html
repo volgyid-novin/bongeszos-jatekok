@@ -114,7 +114,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .vers { position: fixed; right: 18px; bottom: 12px; color: var(--mute); font-size: 12px; letter-spacing: .1em; z-index: 21; }
 
 /* ---------- map select ---------- */
-#scr-play, #scr-settings, #scr-controls { flex-direction: column; align-items: stretch; justify-content: flex-start; }
+#scr-play, #scr-edhome, #scr-settings, #scr-controls { flex-direction: column; align-items: stretch; justify-content: flex-start; }
 .top { display: flex; align-items: center; gap: 22px; margin: 0 auto 18px; width: min(1280px, 100%); }
 .top .h1 { margin: 0; }
 .top .sub { margin: 0; }
@@ -140,6 +140,24 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .targets { display: flex; gap: 10px; flex-wrap: wrap; padding-top: 7px; border-top: 1px solid var(--line); font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .targets span { display: inline-flex; align-items: center; gap: 5px; }
 .targets .coin { width: 11px; height: 11px; border-width: 1px; vertical-align: 0; }
+
+/* ---------- the player's own maps: "Saját pályák" in the map select, the editor's home screen ---------- */
+.custom-h { margin: 34px 0 12px; }
+.crows { display: flex; flex-direction: column; gap: 8px; }
+.crow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 12px 18px; background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line); border-left: 3px solid var(--teal); border-radius: 3px; animation: rise .3s ease-out backwards; transition: border-color .15s; }
+.crow:hover { border-color: var(--line-2); border-left-color: var(--orange); }
+.crow.flash { animation: rise .3s ease-out backwards, flashrow 1.6s ease-out; }
+@keyframes flashrow { from { background: rgba(46,230,212,.3); } }
+.crow .cn { font-family: var(--font-head); font-size: 20px; letter-spacing: .05em; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crow .cn input { text-transform: none; padding: 5px 10px; font-size: 16px; letter-spacing: 0; }
+.crow .cm { margin-top: 3px; color: var(--dim); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.crow .cm .warn { color: var(--orange-l); font-weight: 700; } .crow .cm .pbt { color: var(--gold); font-weight: 700; }
+.crow .cact { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.btn.sm { font-size: 12.5px; padding: 9px 18px; }
+.btn.armed { background: linear-gradient(90deg, var(--bad), #ff7a5a); color: #1b0502; }
+.edhome .row { margin-bottom: 6px; }
+.edmsg { min-height: 24px; margin: 8px 0 12px; font-size: 14.5px; color: var(--dim); } .edmsg.bad { color: var(--bad); } .edmsg.good { color: var(--good); }
 
 /* ---------- settings / controls ---------- */
 .form { width: min(760px, 100%); margin: 0 auto; }
@@ -265,6 +283,7 @@ body.playing { cursor: none; }
   <div id="h-hint"></div>
 </div>
 <div id="race-hud"></div>
+<div id="editor" hidden></div>
 <div id="fade"></div>
 
 <div id="scr-loading" class="screen">
@@ -280,6 +299,7 @@ body.playing { cursor: none; }
 
 <div id="scr-menu" class="screen" hidden></div>
 <div id="scr-play" class="screen dim" hidden></div>
+<div id="scr-edhome" class="screen dim" hidden></div>
 <div id="scr-room" class="screen dim" hidden></div>
 <div id="scr-lb" class="screen dim" hidden></div>
 <div id="scr-settings" class="screen dim" hidden></div>

@@ -8,7 +8,7 @@ import { DODGE } from '../sim/const.js';
 
 // ================================================================ input
 const mk = (settings = {}) => {
-  const inp = new Input({}, { sens: 1, doubleTap: true, autoHop: true, ...settings });   // ({} has no requestPointerLock: the soft lock, no DOM needed)
+  const inp = new Input({}, { sens: 1, doubleTap: true, ...settings });   // ({} has no requestPointerLock: the soft lock, no DOM needed)
   inp.enabled = true;
   return inp;
 };
@@ -66,7 +66,7 @@ test('input: Shift does nothing (no sprint, no dodge), in either order with a di
   assert.deepEqual(dodges(b, 1), [DODGE.R], 'a double-tap of D with Shift held is the normal dodge');
 });
 
-test('input: presses shorter than a tick are latched; held keys stay on; axes, autoHop, blur and disable behave', () => {
+test('input: presses shorter than a tick are latched; held keys stay on; axes, blur and disable behave; there is no auto-hop', () => {
   const inp = mk();
   // Space pressed and released between two ticks: the sim still sees the jump, once
   down(inp, 'Space', 1000); up(inp, 'Space', 1010);
@@ -95,8 +95,7 @@ test('input: presses shorter than a tick are latched; held keys stay on; axes, a
   assert.equal(tick(inp).side, -1);
   inp.releaseAll();                                    // window blur
   c = tick(inp); assert.deepEqual([c.fwd, c.side, c.jump, c.fire], [0, 0, false, false], 'blur releases everything');
-  assert.equal(tick(mk({ autoHop: false })).autoHop, false);
-  assert.equal(tick(mk({ autoHop: true })).autoHop, true);
+  assert.equal('autoHop' in tick(mk({ autoHop: true })), false, 'the old autoHop setting has no effect any more: no bunnyhop');
   const off = mk(); off.enabled = false; down(off, 'Space', 1000);
   assert.equal(tick(off).jump, false, 'a disabled input ignores keys');
 });
@@ -149,4 +148,13 @@ test('store: corrupt JSON / wrong shapes fall back to defaults, a changed map ha
   assert.ok(s.name.length === 16 && !/[<>\u0001]/.test(s.name), 'name cleaned and cut to 16: ' + s.name);
   assert.deepEqual([s.sens, s.fov, s.volume, s.quality, s.doubleTap, s.lastMap.length], [3, 80, DEFAULTS.volume, DEFAULTS.quality, DEFAULTS.doubleTap, 40]);
   assert.equal(cleanName('  <>  '), DEFAULTS.name, 'a name that is empty after cleaning falls back');
+  assert.equal('autoHop' in sanitizeSettings({ autoHop: true }) || 'autoHop' in DEFAULTS, false, 'an old stored autoHop key is dropped (no bunnyhop any more)');
+});
+
+test('store: cleanName (settings, room hello / lobby names) strips controls, DEL / C1, line separators and bidi overrides as well as markup, and falls back when nothing is left', async () => {
+  const { cleanName, DEFAULTS } = await freshStore();
+  const bad = [0x1, 0x7f, 0x85, 0x9f, 0x2028, 0x2029, 0x202a, 0x202e, 0x2066, 0x2069].map((c) => String.fromCharCode(c)).join('');
+  assert.equal(cleanName('A' + bad + 'B<i>C'), 'ABiC');
+  assert.equal(cleanName(bad + ' <> '), DEFAULTS.name);
+  assert.equal(cleanName('Ünicode név ő'), 'Ünicode név ő', 'ordinary text is untouched');
 });

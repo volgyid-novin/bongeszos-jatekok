@@ -121,6 +121,7 @@ export function installClock() {
 
 // ---------------------------------------------------------------- a map registry with two tiny maps (the real ones are covered by the route tests)
 //   alpha: author 40 s (the 180 s floor of the race cap applies), 2 checkpoints     beta: author 100 s (cap 300 s), 3 checkpoints
+//   (both have a finish: a map without one is not on the board and not pickable in a room)
 export function fakeMaps() {
   const defs = [
     { id: 'alpha', name: 'ALFA', order: 1, diff: 'konnyu', authorTime: 40, cps: 2 },
@@ -129,7 +130,7 @@ export function fakeMaps() {
   const stats = { builds: 0 };
   const list = defs.map((d) => ({
     meta: { id: d.id, name: d.name, order: d.order, diff: d.diff, authorTime: d.authorTime },
-    build: () => { stats.builds++; return { mapHash: 'hash-' + d.id, checkpoints: Array.from({ length: d.cps }, (_, i) => ({ i, label: 'CP' + (i + 1) })) }; },
+    build: () => { stats.builds++; return { mapHash: 'hash-' + d.id, checkpoints: Array.from({ length: d.cps }, (_, i) => ({ i, label: 'CP' + (i + 1) })), finish: { min: [0, 0, 0], max: [1, 1, 1] } }; },
   }));
   const byId = new Map(list.map((e) => [e.meta.id, e]));
   return { list, ids: list.map((e) => e.meta.id), get: (id) => byId.get(id) || null, has: (id) => byId.has(id), stats };

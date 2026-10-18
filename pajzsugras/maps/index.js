@@ -1,24 +1,33 @@
-// The map registry. Static imports (the bundler needs them), in ladder order. meta is read eagerly, build() runs when a
-// map is loaded.
-import kikepzes from './kikepzes.js';
-import ontode from './ontode.js';
-import egikikoto from './egikikoto.js';
-import kristalyakna from './kristalyakna.js';
-import neontorony from './neontorony.js';
-import lavatemplom from './lavatemplom.js';
-import vihargat from './vihargat.js';
-import orbitalis from './orbitalis.js';
+// The map registry. Every built-in map is a map document exported from the in-game editor (maps/<id>.js: `export default { "v": 1, ... }`,
+// plain JSON), turned into a map by editor/convert.js builtinDef when the registry loads (it cleans the document with sanitizeDoc first, so a
+// hand-edited file gets the importer's limits, and throws for one that is no map file). The list may be empty. Add one with
+//
+//     npm run add-map -- <export.json> [id]
+//
+// (tools/add-map.mjs writes maps/<id>.js and registers it between the markers below; the same command with the same id updates it).
+// The position in SOURCES is the order of the maps (1, 2, ...). Static imports (the bundler needs them); meta is read eagerly, build()
+// runs when a map is loaded.
+import { builtinDef } from '../editor/convert.js';
+// <add-map imports>
+import map_uj_palya from './uj-palya.js';
+// </add-map imports>
 
-const list = [kikepzes, ontode, egikikoto, kristalyakna, neontorony, lavatemplom, vihargat, orbitalis].sort((a, b) => a.meta.order - b.meta.order);
+const SOURCES = [
+  // <add-map entries>
+  ['uj-palya', map_uj_palya],
+  // </add-map entries>
+];
+
+const list = SOURCES.map(([id, doc], i) => builtinDef(doc, id, i + 1));
 const byId = new Map(list.map((m) => [m.meta.id, m]));
 
 export const MAPS = {
-  list,                                   // [{ meta, build() }] in ladder order
+  list,                                   // [{ meta, build() }] in order
   ids: list.map((m) => m.meta.id),
   get: (id) => byId.get(id) || null,
   has: (id) => byId.has(id),
 };
 export default MAPS;
 
-// difficulty labels for the UI
-export const DIFF_LABEL = { kikepzes: 'Kiképzés', konnyu: 'Könnyű', kozepes: 'Közepes', nehez: 'Nehéz', mester: 'Mester' };
+// difficulty labels for the UI ('nincs': an exported map has no difficulty, no chip)
+export const DIFF_LABEL = { kikepzes: 'Kiképzés', konnyu: 'Könnyű', kozepes: 'Közepes', nehez: 'Nehéz', mester: 'Mester', nincs: '' };

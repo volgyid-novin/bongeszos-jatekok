@@ -3,7 +3,7 @@
 // live standings list (for races) and the respawn fade.
 //
 //   const hud = new Hud();
-//   hud.show(bool)  hud.setRun({ medals, pb, cpCount })  hud.reset()  hud.update(st)  hud.split(label, ticks, deltaTicks | null)
+//   hud.show(bool)  hud.setRun({ medals (null: none), pb, cpCount })  hud.reset()  hud.update(st)  hud.split(label, ticks, deltaTicks | null)
 //   hud.center(msg, { ms = 1800, kind: 'info' | 'good' | 'bad' | 'gold' | 'big' })
 //   hud.standings([{ id, name, color (hex number | css), cp, cpCount, time (s | null), finished, me }])  (null / [] hides)
 //   hud.fade(ms)   hud.hint(text)   hud.setKeys(bool)
@@ -53,6 +53,7 @@ export class Hud {
     this.medals = medals; this.pb = pb; this.cpCount = cpCount;
     this.last = {};
     this.el.pb.innerHTML = pb ? `PB <b>${fmtTime(pb.ticks / TICK)}</b>` : '';
+    if (!medals) this.el.medal.innerHTML = '';   // (a custom map has none: no stale "CÉL" target from the map before)
     this.reset();
   }
   reset() {

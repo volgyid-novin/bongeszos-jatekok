@@ -4,7 +4,7 @@
 // mover's current offset, which World keeps up to date in mover.offset).
 import { DIST_EPS } from './const.js';
 
-const CELL = 8;
+export const CELL = 8;
 let STAMP = 0;   // global, so that several CollisionWorlds can share brush objects
 const key = (cx, cy, cz) => ((cx + 512) * 1024 + (cy + 512)) * 1024 + (cz + 512);
 

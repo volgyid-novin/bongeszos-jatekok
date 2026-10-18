@@ -523,7 +523,7 @@ test('race: own state goes out at 20 Hz; a peer\'s packets become a translucent 
     await clock.advance(50); z.say('st', [140, 50, 200, 157, 0, 1, 1]);   // t0 + 50 ms
     await clock.advance(80); app.emit('tick');                  // t0 + 130 ms: drawn at t0 + 10 ms = 20 % of the way
     const f = app.figs.get('p:zzzz');
-    assert.ok(f && f.ghost === true && f.name === 'Zed' && f.color === 0x2ee6d4 && f.flags === 1, 'a translucent, named, coloured figure');
+    assert.ok(f && f.ghost === true && f.solid === true && f.name === 'Zed' && f.color === 0x2ee6d4 && f.flags === 1, 'a named, coloured figure: a translucent robot, an opaque Gorge (solid)');
     assert.ok(Math.abs(f.pos[0] - 1.08) < 0.02 && Math.abs(f.yaw - 1.57) < 0.01, 'interpolated: x ' + f.pos[0]);
     z.say('st', [1000, 50, 200, 157, 0, 1, 1]);                 // a respawn 8.6 m away
     await clock.advance(60); app.emit('tick');                  // drawn at t0 + 70 ms: a quarter of the way to the new spot ...
@@ -533,4 +533,44 @@ test('race: own state goes out at 20 Hz; a peer\'s packets become a translucent 
     z.say('st', [NaN, 0, 0, 0, 0, 0, 0]); z.say('st', [1, 2, 3]); z.say('st', 'x');   // junk packets change nothing
     assert.ok(Math.abs(app.figs.get('p:zzzz').pos[0] - 10) < 0.02);
   });
+});
+
+// a map without a finish (an export of the editor that has no goal yet) is listed in the picker but cannot be picked
+const goalless = { meta: { id: 'gamma', name: 'GAMMA', order: 3, diff: 'konnyu', authorTime: 0 }, build: () => ({ mapHash: 'hash-gamma', checkpoints: [], finish: null }) };
+function withGoalless(app, { only = false } = {}) {
+  const list = only ? [goalless] : [...app.maps.list, goalless];
+  app.maps = { list, ids: list.map((e) => e.meta.id), get: (id) => list.find((e) => e.meta.id === id) || null, has: (id) => list.some((e) => e.meta.id === id) };
+}
+
+test('race: a map without a finish is listed in the picker, disabled with a note, and a host cannot pick it; a new room starts on a map that has a finish', async () => {
+  await scenario(async ({ app, R, dom, out, mark, joined }) => {
+    withGoalless(app);
+    app.mapId = 'gamma';   // the map loaded in the game is the goalless one
+    const m0 = mark();
+    R.enter('ABCD', true);
+    joined('zzzz', 'Zed');
+    assert.equal(out('lobby', m0).at(-1).data.mapId, 'alpha', 'the room did not start on the goalless map');
+    const btn = (id) => dom.els.get('scr-room').querySelectorAll('.mp-map').find((b) => b.dataset.map === id);
+    assert.equal(btn('gamma').disabled, true, 'disabled');
+    assert.match(dom.els.get('scr-room').innerHTML, /title="Ennek a pályának még nincs célja."/, 'with the note');
+    assert.match(dom.els.get('scr-room').innerHTML, /még nincs célja<\/small>/, 'and a short label on the button');
+    assert.equal(btn('beta').disabled, false, 'a map with a finish stays pickable');
+    const m1 = mark();
+    btn('gamma').onclick();   // (a disabled button cannot be clicked; the guard is for a direct call)
+    assert.equal(out('lobby', m1).length, 0, 'the host did not move to it');
+    assert.ok(app.toasts.some((t) => /nincs célja/.test(t)), 'told why: ' + JSON.stringify(app.toasts));
+    btn('beta').onclick();
+    assert.equal(out('lobby', m1).at(-1).data.mapId, 'beta', 'a normal pick works');
+  }, { ui: 'room' });
+});
+
+test('race: when no map has a finish a new room still starts on a map (the first of loaded / last played / first), the way a one-map registry is used', async () => {
+  await scenario(async ({ app, R, out, mark, joined }) => {
+    withGoalless(app, { only: true });
+    app.mapId = 'old-deleted-map';
+    const m0 = mark();
+    R.enter('ABCD', true);
+    joined('zzzz', 'Zed');
+    assert.equal(out('lobby', m0).at(-1).data.mapId, 'gamma');
+  }, { ui: 'room' });
 });

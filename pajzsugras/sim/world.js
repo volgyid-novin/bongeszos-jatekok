@@ -2,15 +2,15 @@
 //
 // ============================ RUNTIME API (for the renderer / UI / net code) ============================
 //
-//   import { createWorld, medalTimes, medalFor } from './sim/world.js';
+//   import { createWorld, medalTimes, medalFor, routeFloor } from './sim/world.js';
 //   import { makeCmd } from './sim/pmove.js';
 //   import { TICK, DT, EYE, DODGE, FLAG } from './sim/const.js';   // 120 Hz, dodge enum, player flag bits
-//   import MAPS from './maps/index.js';              // MAPS.list = [{ meta, build }] in ladder order, MAPS.get(id), MAPS.ids
-//   const world = createWorld(MAPS.get('kikepzes'));  // builds the map (memoised) and makes a World; world.map is shared & read-only
-//   (the proof bot for the debug hook: import { RouteRunner } from './sim/bot.js'; new RouteRunner(world, world.map.route).advance(n))
+//   import MAPS from './maps/index.js';              // MAPS.list = [{ meta, build }] in order, MAPS.get(id), MAPS.ids
+//   const world = createWorld(MAPS.get('uj-palya'));  // builds the map (memoised) and makes a World; world.map is shared & read-only
+//   (the proof bot: import { RouteRunner } from './sim/bot.js'; new RouteRunner(world, steps).advance(n); the built-in maps have no proof route)
 //
 // STATIC MAP DATA  world.map  (everything the renderer needs; never read the map files)
-//   .meta { id, name, diff, order, blurb, authorTime }     .theme (normalised, every field present, see builder.js)
+//   .meta { id, name, diff, order, blurb, authorTime, custom? }     .theme (normalised, every field present, see builder.js)
 //   .mapHash        hex string, changes when the geometry/triggers/physics version change (not for cosmetics)
 //   .materials      { name: { base, color, trim, emissive } }
 //   .brushes[]      every solid brush (static AND mover) { id, mat, mover (mover id | null), min, max,
@@ -21,17 +21,21 @@
 //                     world.moverOffset(id, alpha); mover deco / decoBrushes move with it too)
 //   .decoBrushes[]  non-colliding brushes, same shape as .brushes ({ mat, mover, faces, ... })
 //   .deco[]         { kind, pos, size?, yaw (deg), color?, to?, mover (id | null), ...extra }   see builder.js for the kinds
-//   .checkpoints[]  { i, min, max, spawn: [x,y,z], yaw (deg), label }       .finish { min, max }
+//   .checkpoints[]  { i, min, max, spawn: [x,y,z], yaw (deg), label }       .finish { min, max } (null: custom maps only)
 //   .kills[]        { min, max, kind: 'void' | 'lava' | 'laser', auto? }     .pads[] { pos, target, apex, min, max }
 //   .start { pos, yaw (deg) }       .signs[] { pos, yaw (deg), title, keys, text }     .glyphs[] { pos, kind, yaw (deg) }
 //   .markers[] { pos, text }        .lights[] { pos, color, intensity, range }         .bounds { min, max }
-//   world.medals    { author, gold, silver, bronze } in seconds (medalTimes(meta.authorTime)); medalFor(seconds, medals)
+//   .gates[] { name, start, goal, solve, deny, spread, margin, combo }   combo gates: TEST DATA for test/gates.mjs (see b.gate in
+//                   builder.js), never needed by the renderer or the UI
+//   world.medals    { author, gold, silver, bronze } in seconds (medalTimes(meta.authorTime)); medalFor(seconds, medals); null when the map has none
+//                   (no authorTime = no proof route, or an editor map of the player's: hasMedals(meta))
 //   Angles in map data are DEGREES, yaw 0 faces -Z (three.js camera.rotation.y; sim yaw/pitch are RADIANS and use the
 //   same convention: camera.rotation.set(pitch, yaw, 0, 'YXZ')).
 //
 // STEPPING   world.step(cmd)   advances exactly one tick (1/120 s). cmd = makeCmd():
 //   { fwd: -1|0|1, side: -1|0|1 (+1 = right), yaw, pitch (radians), jump (HELD), fire (HELD), dodge: DODGE.NONE|F|B|L|R
-//     (one tick when the double tap / shift+dir happens), respawn, restart (edges, true for one step), autoHop (setting) }
+//     (one tick when the double tap happens), respawn, restart (edges, true for one step) }
+//     (jump is HELD but only a fresh press jumps: there is no auto-hop / bunnyhop; see pmove.js for the diagonal-jump timing)
 //   The input layer must latch presses shorter than one tick (jump / fire / dodge) so the sim sees them for >= 1 tick.
 //   The run clock starts on the first step with any input (fwd/side/jump/fire/dodge) unless restart({autoStart:false});
 //   then call world.startClock() yourself (race GO). world.setFrozen(true) makes step() a no-op except looking around.
@@ -41,7 +45,7 @@
 // PLAYER  world.ps (PlayerState): pos, prevPos (feet, interpolate between them with alpha = accumulator / DT), vel,
 //   yaw, prevYaw, pitch, prevPitch, grounded, charge (0..1), charging, shieldLock, djUsed, wallUsed, dodging, speed
 //   (horizontal, getter), flags (getter: FLAG bits GROUND | CHARGE | BLAST | DODGING | DJ_USED).
-//   world.playerFlags() = ps.flags | FLAG.FINISHED when finished.  Eye = pos + [0, EYE, 0].
+//   world.playerFlags() = ps.flags | FLAG.FINISHED when finished | FLAG.WALL after a wall dodge (a render / net hint only).  Eye = pos + [0, EYE, 0].
 //   world.lerp(alpha, out?) -> { pos, yaw, pitch } interpolated; world.moverOffset(id, alpha = 1) -> [x, y, z] (mover
 //   translation relative to its authored position; also world.movers[i].offset / prevOffset / vel).
 //   After a 'respawn' / 'restart' event copy ps.yaw / ps.pitch into the camera look state (prev* are reset: no smear) and treat
@@ -53,14 +57,14 @@
 //   world.stateHash() deterministic digest of the run state (tests, net sanity).
 //
 // EVENTS  world.takeEvents() returns and clears the queue (array of { type, tick, ...data }); world.events is the live array.
-//   jump { combo }  dj  dodge { dir }  walldodge { dir, normal }  land { speed, pos }  shieldCharge { on }
+//   jump { combo }  dj { auto? }  dodge { dir, late? }  walldodge { dir, normal }  land { speed, pos }  shieldCharge { on }
 //   blast { pos, normal | null, dir, charge, hit }   cp { index, count, time, label }   finish { time, splits }
 //   respawn { cause: 'kill' | 'manual' | 'stuck', kind? }   restart {}   pad { index }   moverStart { id }   clockStart {}
 //
 // GHOST  world.ghost (GhostRecorder, 20 Hz from the clock start); world.ghostData() = { every, n, data } of the run so far;
 //   encodeGhost / decodeGhost / ghostAt / toB64 / fromB64 in ghost.js.
 // =========================================================================================================
-import { TICK, HULL_HX, HULL_H, FLAG, MEDAL_GOLD, MEDAL_SILVER, MEDAL_BRONZE } from './const.js';
+import { TICK, HULL_HX, HULL_H, FLAG, MEDAL_GOLD, MEDAL_SILVER, MEDAL_BRONZE, VMAX, FASTEST_XZ } from './const.js';
 import { CollisionWorld } from './trace.js';
 import { PlayerState, stepPlayer, padLaunch, ptrace, hullSolid, categorize } from './pmove.js';
 import { GhostRecorder } from './ghost.js';
@@ -70,8 +74,32 @@ export function medalTimes(a) {
   const c = (k) => Math.ceil(a * k * 10 - 1e-9) / 10;
   return { author: a, gold: c(MEDAL_GOLD), silver: c(MEDAL_SILVER), bronze: c(MEDAL_BRONZE) };
 }
+// medals need a proof route (authorTime); maps without one (the exports of the editor, the player's own maps) have none
+export const hasMedals = (meta) => !meta.custom && meta.authorTime > 0;
 // 'author' | 'gold' | 'silver' | 'bronze' | null for a time in seconds
 export function medalFor(t, m) { return t <= m.author ? 'author' : t <= m.gold ? 'gold' : t <= m.silver ? 'silver' : t <= m.bronze ? 'bronze' : null; }
+
+// The geometric floor of a run in seconds: the least time any run of the map can take, the plausibility floor of the leaderboard for a map
+// without a proof route (nostr.js minTicks: max(3 s, this)). It is the horizontal way from the start through the checkpoints in order to
+// the finish (a fall can beat any run, so the vertical is left out), taken box to box (each trigger box grown by the hull's half width,
+// the start a point), so that it is never longer than a real path; divided by FASTEST_XZ, or by VMAX on a map with pads or movers, which
+// throw or carry the player faster. 0 when the map has no finish or the data is missing; never throws.
+export function routeFloor(map) {
+  try {
+    const f = map && map.finish, s = map && map.start && map.start.pos;
+    if (!f || !s || !s.every(Number.isFinite)) return 0;
+    const grow = (b) => ({ min: [b.min[0] - HULL_HX, b.min[2] - HULL_HX], max: [b.max[0] + HULL_HX, b.max[2] + HULL_HX] });
+    const boxes = [{ min: [s[0], s[2]], max: [s[0], s[2]] }, ...(map.checkpoints || []).map(grow), grow(f)];
+    let len = 0;
+    for (let i = 1; i < boxes.length; i++) {
+      const a = boxes[i - 1], b = boxes[i];
+      len += Math.hypot(Math.max(0, a.min[0] - b.max[0], b.min[0] - a.max[0]), Math.max(0, a.min[1] - b.max[1], b.min[1] - a.max[1]));
+    }
+    const fast = (map.pads && map.pads.length) || (map.movers && map.movers.length);
+    const t = len / (fast ? VMAX : FASTEST_XZ);
+    return Number.isFinite(t) ? t : 0;
+  } catch { return 0; }
+}
 
 // ---- movers: closed-form position from the integer tick ----
 // cycle: legs of (wait at the start point, move to the next), pingpong = p0..pn..p1 back to p0, loop = p0..pn back to p0
@@ -123,12 +151,13 @@ export class World {
     this.cw = new CollisionWorld(map.brushes.filter((b) => b.mover === null), this.movers);
     this.ps = new PlayerState();
     this.ghost = new GhostRecorder();
-    this.medals = medalTimes(map.meta.authorTime);
+    this.medals = hasMedals(map.meta) ? medalTimes(map.meta.authorTime) : null;
     this.cpCount = map.checkpoints.length;
     this.events = [];
     this.emit = (type, data) => this.events.push({ type, tick: this.t, ...data });
     this.frozen = false; this.autoStart = true;
     this.prevRespawn = false; this.prevRestart = false;
+    this.spawns = 0;   // how often the player was put somewhere (restart, respawn, teleport): the renderer snaps the own figure to the new spot (not in stateHash)
     this.restart({ silent: true });
   }
 
@@ -160,6 +189,7 @@ export class World {
 
   spawnPlayer(pos, yaw) {
     const ps = this.ps;
+    this.spawns++;
     ps.reset(pos, yaw);
     const tr = ptrace(this.cw, [pos[0], pos[1] + 0.02, pos[2]], [pos[0], pos[1] - 1.5, pos[2]]);
     if (tr.fraction < 1 && !tr.startsolid) { ps.pos = tr.endpos; ps.prevPos = tr.endpos.slice(); ps.lastGood = tr.endpos.slice(); }
@@ -228,8 +258,8 @@ export class World {
       this.spawn = { pos: cp.spawn.slice(), yaw: cp.yaw * DEG };
       this.emit('cp', { index: cp.i, count: cps.length, time: this.clock, label: cp.label });
     }
-    const fin = this.map.finish;
-    if (!this.finished && this.cpIndex === cps.length && hit(fin)) {
+    const fin = this.map.finish;   // (null on a custom map that has no finish yet)
+    if (fin && !this.finished && this.cpIndex === cps.length && hit(fin)) {
       this.finished = true; this.finishTicks = this.clock; this.clockState = 'finished';
       this.ghost.sample(this.clock, ps, true);
       this.emit('finish', { time: this.clock, splits: this.splits.slice() });
@@ -243,7 +273,7 @@ export class World {
 
   // ---- reading ----
   takeEvents() { const e = this.events; this.events = []; return e; }
-  playerFlags() { return this.ps.flags | (this.finished ? FLAG.FINISHED : 0); }
+  playerFlags() { return this.ps.flags | (this.finished ? FLAG.FINISHED : 0) | (this.ps.wallUsed ? FLAG.WALL : 0); }   // (render / net only: not in ps.flags, so not in stateHash)
   get nextCp() { return this.map.checkpoints[this.cpIndex] || null; }
   runTime() { return this.clock / TICK; }
   ghostData() { return this.ghost.get(); }

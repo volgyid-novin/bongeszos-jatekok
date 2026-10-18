@@ -8,8 +8,11 @@
 // (three.js camera.rotation.y). Colours are 0xRRGGBB numbers.
 //
 // meta = {
-//   id, name (Hungarian), diff: 'kikepzes'|'konnyu'|'kozepes'|'nehez'|'mester', order (1..8), blurb,
-//   authorTime,   // seconds, = ticks of the nominal route / 120 (the test runner prints the right value)
+//   id, name (Hungarian), diff: 'kikepzes'|'konnyu'|'kozepes'|'nehez'|'mester'|'nincs' (none: no difficulty chip), order (1..n), blurb,
+//   authorTime,   // seconds, = ticks of the nominal route / 120 (the test runner prints the right value); 0 / missing: no proof route, no medals
+//   custom,       // true for the player's own editor maps (editor/convert.js): no finish / checkpoint / brush / route required
+//   exported,     // true for a built-in map that was exported from the editor (maps/*.js, npm run add-map): same relaxations, but it is a normal
+//                 // map in JÁTÉK / rooms / the global leaderboard (without a proof route there are no medals)
 //   theme: {
 //     sky: { type: 'gradient'|'nebula'|'clouds'|'stars', top, horizon, bottom, sunDir: [x,y,z], sunColor, stars: 0..1, clouds: 0..1 },
 //     fog: { color, near, far }, hemi: { sky, ground, intensity }, sun: { color, intensity },
@@ -46,11 +49,76 @@
 //   b.light(pos, color, intensity, range)   point light hint
 //   b.route(steps)                          the proof route (R.* steps from bot.js), the author time comes from it
 //   b.skip(name, steps)                     an alternative complete route (a shortcut), must also finish
+//   b.gate(name, { start, goal, solve, deny, spread, margin, combo })   a COMBO GATE: a gap that only a combination of techniques crosses
+//        (test data like b.route: never hashed, never rendered; positions are transformed by the current group like checkpoints).
+//        The test runner (test/gates.mjs) proves it twice: (1) `solve` (R.* steps, from the start) reaches the goal, nominal and with
+//        the sloppy jitter (Kiképzés/Könnyű/Közepes 5/5 seeds, Nehéz 4/5, Mester 2/5); (2) a DENY SEARCH of ~1100-2200 single-technique runs
+//        (below) must not reach it. A gate whose goal a single technique can reach fails the suite.
+//          start   { pos: [x, y, z], yaw } (feet, yaw degrees) or { cp: i } = that checkpoint's spawn and yaw (put a checkpoint
+//                  before every gate: the player respawns there, and the solve begins there)
+//          goal    [min, max] box the feet must stand in (grounded, end of a tick) before dying. Make it cover the WHOLE far ledge
+//                  (a landing on the ledge outside the box is reported as a survivable landing), from the floor top - 0.1 up to
+//                  about + 2.5 m, so a fly-through counts as reaching it
+//          solve   the steps of the intended combo, e.g. [R.run(x, z), R.diagJump('L', { to, approach, air: [R.wallDodge('F')] })];
+//                  the checker stops as soon as the feet stand in the goal, so the steps may go on (the proof route reuses them)
+//          deny    'all' (default) | an array of families that must NOT cross: 'jump' 'dj' 'dodge' 'dodgeJump' 'diag' 'wallDodge'
+//                  'shield' 'wallBoost' (a combo of two of them is what the gate is for, so name the single ones you deny)
+//          spread  lateral spread (m) of the deny takeoffs around the start line (default 1.0; a wide start platform wants 3)
+//          margin  m; a denied run that ever gets this close (3D, feet to the goal box, in the air or on landing) fails the gate
+//                  (default 0.6: a gate must be 0.6 m beyond the closest single technique, so a slightly better single would not do)
+//          combo   the human name of the combo, printed in the report ('átlós ugrás + falról kiugrás')
+//        The deny search (what to design against): from the start area, 9 run-up headings toward the goal +-{0,10,20,35,56} degrees (the
+//        shield family 13: also +-46 / +-66) x 3 lateral offsets (-spread, 0, +spread), launching at the last moment: the first edge (a few
+//        ticks before the hull has no ground left; the run-up is played ahead to find that tick, so a lane that ends in a wall counts), where a
+//        wall stops the run, or where a kill volume (a laser curtain) is about to touch the hull (with one near the lane also 2 m before it). Steering = the bot's air steering toward the
+//        goal centre (it aims the landing point at it and never brakes), starting `steer` s after takeoff; or plain "W looking at the goal".
+//        Families (a double jump after the main technique belongs to it: shield + dj is one technique, so is jump + wall dodge + dj):
+//        jump (+ a standing one) | dj: double jump at 0.15 s / apex / 0.6 s / 0.9 s / 1.25 s, steering from 0 or 0.4 s, also released a few
+//        ticks before the lip | dodge F, L, R | dodgeJump: forward dodge + double jump at the apex or 0.45 s | diag: side dodge + Space (same
+//        tick or 12 ticks later) from lanes 46 / 56 / 66 degrees off the goal heading | wallDodge: jump + wall dodge F, L, R at the wall /
+//        0.3 s / 0.6 s, each also followed by a double jump (at the apex, 0.3 s after the wall dodge, 0.9 s into the flight) | shield: the run-up
+//        along the heading with the gun charging a fixed run-up distance before the release, the view flicking to the aim at the release
+//        (charge 0 .. 1, pitch -89 / -65 / -45 / -25, aimed away from the goal or along the run heading, double jump none / apex / 0.9 s /
+//        1.25 s, the release at the lip of the centre column or a few ticks before the hull's lip), a coarse set on every lane and a dense
+//        charge x pitch x double jump x aim grid on the straight lanes and the three lanes that came closest, standing: the full product |
+//        wallBoost: full charge, jump, release at a wall aimed back / left / right, pitch -20 / -50, 0.15 s or 0.45 s into the flight, or on
+//        the takeoff tick itself, or followed by a double jump (apex / 0.9 s). The wall families only continue where the first variant found
+//        a wall. Refinement: the closest runs (a few per family) are nudged one parameter at a time (heading, offset, times, charge, pitch,
+//        lead, double jump time, steering mode), for up to three rounds; they must stay out of the margin as well.
+//        A run ends on landing, death, 6 s in the air, or when it is hopeless (> 6 m under the goal and falling). A search is only valid
+//        if the technique really happened (classified by the events: jump, dodge, walldodge, dj, blast that hit): a denied family that
+//        happened in fewer than 25 % of its runs fails the gate (the wall families: at least the takeoff must have happened).
+//        Gates must sit over lava / void: a survivable landing elsewhere is only a warning, but then the search proves nothing about chains.
+//        Geometry denies better than distance: a ceiling, a wall that blocks the line of sight, a narrow lane, a kill curtain.
+//        Output (npm run test:pj, section (c); --gate=<text> selects gates, with -v every family's closest run; --nodeny skips (2)):
+//          kapu "name" (combo): megoldás ok, sloppy 5/5, tiltás 1700 + 240 finomító futás 3.1 s [jump 28/28, dj 200/214, ... wallDodge 76/153
+//          (felszállt 153), shield 599/690], legközelebb: diag R +56° 2.1 m
+//        [family executed / placed runs; "nem indítható" = start points off the ground or inside a kill volume] "legközelebb" = the closest
+//        executed denied run (family, variant, lane heading degrees relative to the goal heading, lateral offset, its 3D distance to the goal
+//        box): the gap must be >= margin beyond it. A failing gate prints the run that crossed (or came too close) with its landing point (or
+//        the closest point), and the family whose search was not valid. Section (d) has the column kapuk: gates ok / gates, and the smallest
+//        closest distance.
+//        Measured reaches on flat ground (horizontal takeoff -> landing / peak height above the takeoff; run-up speed 8.8 m/s; the numbers
+//        of the probe table in test/probes.js): jump 6.2 / 1.22; jump + double jump 11.15 / 2.62; dodge 5.7; dodge + double jump 13.9 / 1.87;
+//        DIAGONAL JUMP 16.65 / 1.87 (15.9 m/s; Space 3 ticks before the dodge 16.1, 12 ticks after it 14.4 = no diagonal jump); wall dodge
+//        after a jump 8.3 / 1.44; wall boost 7.1; standing full shield jump 6.57 high (+ double jump 7.97); RUNNING shield jump 21.0 / 4.94
+//        (+ double jump 28.1 / 6.34); diagonal jump + wall dodge forward along a wall 20.5 / 2.25 (the wall dodge sets 13.2 m/s along its direction); diagonal jump + wall boost (wall 0.9 m
+//        beside the flight, full shield held, aimed at the wall, pitch -40, released 0.62 s into the flight) 23.8 / 2.70; dodge jump into a
+//        wall 10.5 m ahead + wall dodge sideways 9.2 m sideways; running shield jump + double jump into a wall 24 m ahead + wall dodge
+//        sideways 13.7 m sideways (6.35 high); full vertical shield jump at a wall + wall dodge away at the apex + double jump 20.6 / 8.43.
+//        Design notes (learned the hard way): (a) a dodge keeps the sideways part of the run velocity, so a run-up lane that is angled to the
+//        goal makes even a plain dodge jump toward the goal fast (15 m/s): the diag and dodgeJump families both find it, size lanes with
+//        the checker, not with the table; (b) measure a gap from the corner of the lane's end face that is nearest the goal; (c) a straight
+//        wall can be slid along into an opening beside it (jump + wall dodge at the opening: the wallDodge family), so put openings far
+//        down the wall; (d) a wall dodge needs a wall within 0.64 m of the hull (behind the dodge or beside it): for a close `to`, give R.wallDodge a world yaw (a number) as its
+//        direction, 'L' / 'R' flip when `to` is under you; (e) the bot's steering stops pulling when the flight moves away from `to`,
+//        but a `to` that is behind the wall dodge still looks odd: pass [x, y, z] when the landing floor is not the first one below.
 import { SIM_VER } from './const.js';
 import { makeBrush } from './brush.js';
 import { rotY, cyrb53 } from './math.js';
 
-const DIFFS = ['kikepzes', 'konnyu', 'kozepes', 'nehez', 'mester'];
+const DIFFS = ['kikepzes', 'konnyu', 'kozepes', 'nehez', 'mester', 'nincs'];
+export const GATE_FAMILIES = ['jump', 'dj', 'dodge', 'dodgeJump', 'diag', 'wallDodge', 'shield', 'wallBoost'];
 const BASES = ['panel', 'grate', 'concrete', 'metal', 'rust', 'rock', 'crystal', 'neon', 'glass', 'hazard', 'stripe'];
 const DECO_KINDS = ['pipe', 'beam', 'cable', 'crate', 'pillar', 'fan', 'rock', 'crystal', 'screen', 'arch', 'ring', 'beacon'];
 const GLYPHS = ['shield', 'walldodge', 'arrow', 'dj'];
@@ -87,7 +155,7 @@ class Builder {
     this.tf = [{ at: [0, 0, 0], yaw: 0 }];
     this.map = {
       meta, theme: meta.theme, mapHash: '', materials: {}, brushes: [], movers: [], decoBrushes: [], deco: [], checkpoints: [], finish: null,
-      kills: [], pads: [], start: null, signs: [], glyphs: [], markers: [], lights: [], route: null, skips: [], bounds: null,
+      kills: [], pads: [], start: null, signs: [], glyphs: [], markers: [], lights: [], route: null, skips: [], gates: [], bounds: null,
     };
     this.cur = null;     // the mover being built
     this.hash = [];      // canonical hash inputs
@@ -239,6 +307,22 @@ class Builder {
 
   route(steps) { this.map.route = steps; return this; }
   skip(name, steps) { this.map.skips.push({ name, steps }); return this; }
+
+  // a combo gate (test data, see the header): { start: { pos, yaw } | { cp }, goal: [min, max], solve, deny, spread, margin, combo }
+  gate(name, o = {}) {
+    this.check(typeof name === 'string' && name, 'gate needs a name');
+    const what = `gate "${name}"`;
+    this.check(Array.isArray(o.goal) && o.goal.length === 2, `${what}: goal must be [min, max]`);
+    const goal = this.box3(this.vec(o.goal[0], `${what} goal min`), this.vec(o.goal[1], `${what} goal max`));
+    this.check(goal.min.every((v, i) => v < goal.max[i]), `${what}: the goal box is empty`);
+    this.check(o.start && (Number.isInteger(o.start.cp) || Array.isArray(o.start.pos)), `${what}: start must be { pos, yaw } or { cp: index }`);
+    const start = Number.isInteger(o.start.cp) ? { cp: o.start.cp } : { pos: this.P(this.vec(o.start.pos, `${what} start`)), yaw: (o.start.yaw || 0) + this.T.yaw };
+    this.check(Array.isArray(o.solve) && o.solve.length > 0, `${what}: solve must be a non-empty list of route steps`);
+    const deny = o.deny === undefined || o.deny === 'all' ? 'all' : o.deny;
+    this.check(deny === 'all' || (Array.isArray(deny) && deny.length > 0 && deny.every((f) => GATE_FAMILIES.includes(f))), `${what}: deny must be 'all' or a list of ${GATE_FAMILIES.join(' ')}`);
+    this.map.gates.push({ name, start, goal, solve: o.solve, deny, spread: o.spread ?? 1.0, margin: o.margin ?? 0.6, combo: o.combo || '' });
+    return this;
+  }
 }
 
 function shapeKey(s) {
@@ -255,14 +339,26 @@ function buildMap(meta, fn) {
   fn(b);
   const m = b.map;
   b.check(m.start, 'no b.start()');
-  b.check(m.finish, 'no b.finish()');
-  b.check(m.checkpoints.length >= 1, 'needs at least one checkpoint');
-  b.check(m.brushes.length > 0, 'no brushes');
-  b.check(Array.isArray(m.route) && m.route.length > 0, 'no b.route()');
+  // meta.custom (the in-game editor's maps) and meta.exported (built-in maps made in the editor): half-built maps are fine while they
+  // are being drawn, so no finish, no checkpoint, no brush and no proof route are required. Everything else is checked as for the others.
+  if (!meta.custom && !meta.exported) {
+    b.check(m.finish, 'no b.finish()');
+    b.check(m.checkpoints.length >= 1, 'needs at least one checkpoint');
+    b.check(m.brushes.length > 0, 'no brushes');
+    b.check(Array.isArray(m.route) && m.route.length > 0, 'no b.route()');
+  }
+  for (const g of m.gates) {   // { cp: i } starts become the checkpoint's spawn and yaw
+    if (g.start.cp !== undefined) {
+      const cp = m.checkpoints[g.start.cp];
+      b.check(cp, `gate "${g.name}": checkpoint ${g.start.cp} does not exist`);
+      g.start = { cp: g.start.cp, pos: cp.spawn.slice(), yaw: cp.yaw };
+    }
+  }
   for (const br of m.brushes.concat(m.decoBrushes)) b.check(m.materials[br.mat], `unknown material ${br.mat}`);
   // bounds + the automatic void plane
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   for (const br of m.brushes) for (let a = 0; a < 3; a++) { min[a] = Math.min(min[a], br.min[a]); max[a] = Math.max(max[a], br.max[a]); }
+  if (!m.brushes.length) for (let a = 0; a < 3; a++) { min[a] = m.start.pos[a] - 8; max[a] = m.start.pos[a] + 8; }   // custom, no brushes: the area round the start
   m.bounds = { min, max };
   m.kills.push({ min: [min[0] - 300, min[1] - 400, min[2] - 300], max: [max[0] + 300, min[1] - 15, max[2] + 300], kind: 'void', auto: true });
   m.mapHash = cyrb53(JSON.stringify([SIM_VER, [m.start.pos.map(r3), r2(m.start.yaw)], b.hash]));

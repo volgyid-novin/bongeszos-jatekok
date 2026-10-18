@@ -10,7 +10,7 @@ import { joinRoom, selfId } from 'trystero';
 //                                                           host = the host this peer follows, '' while it has none)
 //   lobby  { host, mapId, mapHash, phase, raceNo, players, totals }   host -> everyone (state of the room; `host` is the sender, required)
 //          { host, full: true }                                       host -> a peer that does not fit (it leaves)
-//   st     [x, y, z (cm), yaw, pitch (rad*100), cp, flags]  every peer -> everyone, 20 Hz (position while free-running / racing)
+//   st     [x, y, z (cm), yaw, pitch (rad*100), cp, flags]  every peer -> everyone, 20 Hz (position while free-running / racing; flags = the FLAG bits, an int, WALL = 64 included)
 //   start  { raceNo, mapId, mapHash, delayMs }              host -> everyone (countdown)
 //   cp     { no, n, ticks }                                 a peer reached a checkpoint (n = checkpoints reached)
 //   fin    { no, ticks, splits }                            a peer finished
