@@ -200,6 +200,11 @@ A főmenü **Szerkesztő** pontja a saját pályáid listáját nyitja (új pál
 | W A S D, Szóköz / E, Q / C | repülés, fel, le (Shift: 3× gyorsabb, görgő: sebesség) |
 | Shift + görgő | lerakás előtt a szellem emelése / süllyesztése (így a levegőbe is rakhatsz); kijelölő eszközzel a kijelölt elem fel / le |
 | Bal gomb | lerak (az eszközzel) vagy kijelöl; a kijelölt elemet húzva mozgatod |
+| Shift + kattintás | az elemet hozzáadja a kijelöléshez vagy elveszi belőle |
+| Húzás üres helyen | kijelölő keret: azok az elemek jelölődnek ki, amelyek egészükben a keretben vannak (a rajtpont, a párna és a fény a pontjukkal), így az alattuk lévő nagy padlót nem viszi; Shift-tel a meglévő kijelölést bővíti |
+| Ctrl+A | mindent kijelöl (a rajtpontot is) |
+| Csoport (több kijelölt elem) | húzva együtt mozog (egy lépés a visszavonásban), R forgatja a csoport közepe körül, Ctrl+D másolja, Del törli (a rajtpontot nem), a nyilak mozgatják; átméretezni nem lehet |
+| Méretező nyilak | egy kijelölt elem lapjain színes nyilak: húzva a lap mozog, a szemközti marad; rácshoz és a szomszédos elemek széleihez igazodik |
 | 1 – 0 | eszköz: padló, fal, kiugrófal, rámpa, oszlop, láva, lézer, ugrópárna, ellenőrzőpont, cél (a többi a palettán) |
 | V / Esc | kijelölő eszköz (Esc: előbb a függő párna-cél, aztán a kijelölés szűnik) |
 | K | a rajtpont oda, ahová célzol, a kamera irányával |
@@ -212,7 +217,7 @@ A főmenü **Szerkesztő** pontja a saját pályáid listáját nyitja (új pál
 | F2 / Esc próba közben | vissza a szerkesztőbe, pontosan ugyanoda |
 | H, Tab | súgó (Esc bezárja), panelek elrejtése |
 
-Az ugrópárnánál az első kattintás a párna, a második a cél. A díszek (láda, oszlop, szikla, kristály, jelzőfény, boltív) a paletta alsó csoportjában vannak. A jobb oldali panel alján mindig látszanak az ellenőrzések: hiányzó cél, a rajtpont alatt nincs padló, a rajtpont halálzónában vagy falban van, egy ellenőrzőpont visszaszületési pontja halálzónában vagy falban van. Az ég, a köd és a színek a szerkesztő egyetlen témájából (KIKÉPZÉS) jönnek; téma választó nincs. Próba közben nincs rekord, eredményképernyő és ranglista, csak a „CÉLBAN!” felirat.
+Az új és a húzott elem a kurzor alatti elem és a szomszédai széleihez tapad: ha valamelyik éle elég közel van, oda ugrik (egy új elem a méretének kb. harmadáig, legalább egy rácslépésről és legfeljebb 2 m-ről; húzásnál és a méretező nyilaknál gyengébben, legfeljebb 1 m-ről), különben a rácshoz igazodik, amely az alatta lévő elem sarkából indul. Falra téve az elem a talajon áll (nem süllyed az alatta lévő padlóba), kivéve ha a Shift + görgővel szándékosan emelted. Az ugrópárnánál az első kattintás a párna, a második a cél. A díszek (láda, oszlop, szikla, kristály, jelzőfény, boltív) a paletta alsó csoportjában vannak. A jobb oldali panel alján mindig látszanak az ellenőrzések: hiányzó cél, a rajtpont alatt nincs padló, a rajtpont halálzónában vagy falban van, egy ellenőrzőpont visszaszületési pontja halálzónában vagy falban van. Az ég, a köd és a színek a szerkesztő egyetlen témájából (KIKÉPZÉS) jönnek; téma választó nincs. Próba közben nincs rekord, eredményképernyő és ranglista, csak a „CÉLBAN!” felirat.
 
 ### Mentés, export, import
 
@@ -242,7 +247,7 @@ python -I pajzsugras/tools/ut2004_map.py "<pálya.ut2>" --out "<mappa>" --no-git
 
 Az átalakítás után érdemes végigjátszani a pályát, és a szerkesztő ellenőrzéseit (a jobb oldali panel alja) átnézni: az ecsetek egész UU-ra kerekítése és a tömbökbe vonása miatt apró eltérések lehetnek az eredetihez képest.
 
-Hibakereséshez: `await __pj.editor.open()`, `__pj.editor.setCam([0, 8, 12], 0, -30)`, `__pj.editor.aim(0, 0)` + `await __pj.editor.click()`, `await __pj.editor.exec('add', 'cp', { c: [0, 2, -10] })`, `await __pj.editor.test({ from: 'cam' })`, majd `__pj.advance(...)` mint bármely pályán; `__pj.editor.state()` és `.doc()` adja az állapotot. Mentés és fájlok: `__pj.editor.save()`, `.list()`, `.exportText()`, `.importText(szöveg)`, `.open(azonosító)`, `.remove(azonosító)`; egy mentett pályát játszani: `await __pj.loadCustom(azonosító)`, utána `__pj.advance(...)`. A részletes lista a `main.js` hibakereső szakaszában van.
+Hibakereséshez: `await __pj.editor.open()`, `__pj.editor.setCam([0, 8, 12], 0, -30)`, `__pj.editor.aim(0, 0)` + `await __pj.editor.click()` (`click({ shift: true })` több elemet jelöl ki, `boxSelect(a, b)` kijelölő keretet húz, `handles()` a méretező nyilak helyét adja, `drag(from, to)` húz), `await __pj.editor.exec('add', 'cp', { c: [0, 2, -10] })`, `await __pj.editor.test({ from: 'cam' })`, majd `__pj.advance(...)` mint bármely pályán; `__pj.editor.state()` és `.doc()` adja az állapotot. Mentés és fájlok: `__pj.editor.save()`, `.list()`, `.exportText()`, `.importText(szöveg)`, `.open(azonosító)`, `.remove(azonosító)`; egy mentett pályát játszani: `await __pj.loadCustom(azonosító)`, utána `__pj.advance(...)`. A részletes lista a `main.js` hibakereső szakaszában van.
 
 ## Fejlesztőknek
 

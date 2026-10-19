@@ -3,6 +3,7 @@
 //
 //   const panel = new EditorPanel(rootEl, ed)   ed = the Editor (model, tool, sel, patch(), deleteSel() ... see editor.js)
 //   panel.setTool(id)  panel.setSelection()  panel.refresh()  panel.status(text, kind, ms)  panel.clearStatus()  panel.setHidden(b)  panel.toggleHelp()
+//   panel.setMarquee({ x, y, w, h } | null)   the selection rectangle, in CSS pixels of the window (a div of the page, outside the zoomed #editor)
 //   panel.setSaveState('saved' | 'dirty' | 'fail' | 'new')   the small "Mentve" label next to the map name
 import { PALETTE, MATS, MAT_LABEL, KILL_KINDS, KILL_LABEL, DECO_KINDS, DECO_LABEL, TYPE_LABEL, validate } from './model.js';
 import { EDITOR_HELP } from './help.js';
@@ -66,6 +67,8 @@ export class EditorPanel {
         .map((half) => h('table', {}, half.map((r) => h('tr', {}, h('td', {}, h('kbd', {}, r[0])), h('td', {}, r[1])))))),
       h('p', {}, 'Kattints ide a bezáráshoz (H vagy Esc is jó).'));
     this.root.replaceChildren(this.top, this.pal, this.props, this.statusBar, this.help);
+    this.marquee = h('div', { class: 'ed-marquee', hidden: true });   // (not inside #editor: its zoom would scale the pixel coordinates)
+    document.body.append(this.marquee);
     this.root.addEventListener('contextmenu', (e) => e.preventDefault());
     this.setTool(this.ed.tool);
   }
@@ -74,6 +77,11 @@ export class EditorPanel {
   toggleHelp() { this.help.hidden = !this.help.hidden; }
   setTool(id) { for (const [k, b] of this.palBtns) b.classList.toggle('on', k === id); }
   setName(name) { if (document.activeElement !== this.name) this.name.value = name; }
+  setMarquee(r) {
+    if (!r) { this.marquee.hidden = true; return; }
+    Object.assign(this.marquee.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
+    this.marquee.hidden = false;
+  }
   setHint(text) { if (this.hint.textContent !== text) this.hint.textContent = text; }
   setInfo(text) { if (this.info.textContent !== text) this.info.textContent = text; }
   setSaveState(kind) {
@@ -95,9 +103,11 @@ export class EditorPanel {
     const ed = this.ed, it = ed.sel ? ed.model.find(ed.sel) : null;
     this.propsFor = it ? it.id : null;
     this.fields = [];
+    this.cpLabel = null;
     const p = this.props;
     p.replaceChildren();
     if (!it) { this.buildMapInfo(); this.refresh(); return; }
+    if (ed.selIds.length > 1) { this.buildGroup(); return; }
     p.append(h('h3', {}, TYPE_LABEL[it.t] || it.t, it.id !== 'start' ? h('small', {}, ' #' + it.id) : null));
     const patch = (prop) => (v) => ed.patch({ [prop]: v }, `f:${it.id}:${prop}`);
     switch (it.t) {
@@ -140,6 +150,20 @@ export class EditorPanel {
       p.append(h('p', { class: 'ed-note' }, 'A rajtpont: ide érkezel a „Próba a rajttól” és az újrakezdés (Enter) után. K: ahová célzol.'));
     }
     p.append(this.checks);
+    this.refresh();
+  }
+
+  // several items selected: the count and the buttons that work on all of them (and the material, when they all have one)
+  buildGroup() {
+    const ed = this.ed, p = this.props, noFocus = (e) => e.preventDefault(), items = ed.selItems();
+    const btn = (act, label, key, cls = '') => h('button', { type: 'button', class: 'ed-btn ' + cls, 'data-act': act, tabindex: '-1', onmousedown: noFocus, onclick: () => ed.action(act) }, [label + ' ', h('kbd', {}, key)]);
+    p.append(h('h3', {}, `${items.length} elem kijelölve`, ed.isSel('start') ? h('small', {}, ' · rajtpont') : null));
+    if (items.every((it) => it.mat)) {   // (mixed materials show "Vegyes")
+      p.append(this.sel('Anyag', 'mat', [['', 'Vegyes'], ...MATS.map((m) => [m, MAT_LABEL[m]])], (v) => { if (v) ed.patchGroup({ mat: v }, 'f:group:mat'); }));
+      this.fields[0].read = () => { const ms = new Set(ed.selItems().map((it) => it.mat)); return ms.size === 1 ? [...ms][0] : ''; };
+    }
+    p.append(h('div', { class: 'ed-actions' }, btn('rotate', 'Forgatás', 'R'), btn('duplicate', 'Másolás', 'Ctrl+D'), btn('delete', 'Törlés', 'Del', 'bad')),
+      h('p', { class: 'ed-note' }, 'Együtt mozognak: húzd bármelyiket. Shift + kattintás: hozzáad / elvesz. A rajtpont és a cél nem másolódik, a rajtpont nem törlődik.'), this.checks);
     this.refresh();
   }
 

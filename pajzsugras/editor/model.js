@@ -17,6 +17,8 @@
 //
 //   const m = new DocModel(newDoc());   m.add(item) m.update(id, patch, { mergeKey }) m.remove(id) m.duplicate(id, offset) m.rotate(id)
 //   m.reorderCp(id, dir) m.setStart(pos, yaw) m.setTheme(id) m.setName(name) m.undo() m.redo()   (m.rev counts every change)
+//   m.batch(label, fn, { mergeKey, mergeMs, sel }) -> bool   every change fn makes is ONE History entry; fn returning false (or a refused cells
+//   limit) undoes them all; sel (or a thunk) = [ids selected before, after], handed back by undo() / redo() as `sel`
 //   'start' (the start point) and 'meta' ({ name, theme }) are pseudo ids of update(). Every op is one History entry; a drag or typing
 //   in one field passes a mergeKey and collapses into one entry (typing: within 600 ms).
 //   validate(doc, world?) -> { errors[], warnings[] } Hungarian texts (given the built world it also finds a start / checkpoint spawn inside a
@@ -236,15 +238,19 @@ export const docCells = (doc) => doc.items.reduce((n, it) => n + solidCells(it),
 // ---------------------------------------------------------------- history
 export class History {
   constructor(cap = LIM.history) { this.cap = cap; this.undoStack = []; this.redoStack = []; }
-  // entry = { label, ch: [change] }; a `set` entry with the same mergeKey within mergeMs of the last one is folded into it
+  // entry = { label, ch: [change], sel? }; an entry of `set` changes only, with the same mergeKey within mergeMs of the last one (also of set changes
+  // only) and touching nothing the last one did not, is folded into it: each change keeps its `before`, takes the new `after`
   push(entry, { mergeKey = null, mergeMs = 600, now = 0 } = {}) {
     this.redoStack.length = 0;
-    const last = this.undoStack[this.undoStack.length - 1];
-    if (mergeKey && last && last.key === mergeKey && now - last.t <= mergeMs && last.ch.length === 1 && entry.ch.length === 1
-      && last.ch[0].k === 'set' && entry.ch[0].k === 'set' && last.ch[0].id === entry.ch[0].id) {
-      last.ch[0].after = entry.ch[0].after;
-      last.t = now;
-      return;
+    const last = this.undoStack[this.undoStack.length - 1], sets = (e) => e.ch.length > 0 && e.ch.every((c) => c.k === 'set');
+    if (mergeKey && last && last.key === mergeKey && now - last.t <= mergeMs && sets(last) && sets(entry)) {
+      const byId = new Map(last.ch.map((c) => [c.id, c]));
+      if (entry.ch.every((c) => byId.has(c.id))) {
+        for (const c of entry.ch) byId.get(c.id).after = c.after;
+        if (entry.sel && last.sel) last.sel[1] = entry.sel[1];
+        last.t = now;
+        return;
+      }
     }
     this.undoStack.push({ ...entry, key: mergeKey, t: now });
     if (this.undoStack.length > this.cap) this.undoStack.shift();
@@ -264,6 +270,7 @@ export class DocModel {
     this.now = now;
     this.rev = 0;
     this.onRefuse = null;   // (message): an add / update was refused because the map would need too big a collision grid
+    this.pending = null;    // inside batch(): { ch: the changes so far, refused }
   }
   get items() { return this.doc.items; }
   indexOf(id) { return this.doc.items.findIndex((i) => i.id === id); }
@@ -271,9 +278,29 @@ export class DocModel {
   get finish() { return this.doc.items.find((i) => i.t === 'finish') || null; }
   cpItems() { return this.doc.items.filter((i) => i.t === 'cp'); }
 
-  record(label, ch, opts) { this.history.push({ label, ch }, { ...opts, now: this.now() }); this.rev++; }
+  record(label, ch, opts) {
+    if (this.pending) { this.pending.ch.push(...ch); return; }   // (inside a batch: it makes the entry)
+    this.history.push({ label, ch }, { ...opts, now: this.now() });
+    this.rev++;
+  }
 
-  refuseCells(ret) { if (this.onRefuse) this.onRefuse(CELLS_MSG); return ret; }
+  refuseCells(ret) { if (this.pending) this.pending.refused = true; if (this.onRefuse) this.onRefuse(CELLS_MSG); return ret; }
+
+  // Every change fn makes is ONE history entry (a group move, a group delete ...). All or nothing: fn returning false, a refused cells limit
+  // or a throw puts everything back and records nothing. -> whether an entry was made. A batch inside a batch joins the outer one.
+  batch(label, fn, { sel = null, ...opts } = {}) {
+    if (this.pending) return fn() !== false;
+    const p = this.pending = { ch: [], refused: false };
+    let ok;
+    try { ok = fn() !== false && !p.refused; } catch (err) { this.pending = null; this.revert(p.ch); throw err; }
+    this.pending = null;
+    if (!ok) { this.revert(p.ch); return false; }
+    if (!p.ch.length) return false;
+    this.history.push({ label, ch: p.ch, sel: typeof sel === 'function' ? sel() : sel || undefined }, { ...opts, now: this.now() });
+    this.rev++;
+    return true;
+  }
+  revert(ch) { for (let i = ch.length - 1; i >= 0; i--) this.invert(ch[i]); }
 
   // an item (without id); returns its id, or null when the doc is full / the type is unknown. A second finish moves the first.
   add(item, { index = -1, label = 'Elem hozzáadása', ...opts } = {}) {
@@ -395,14 +422,14 @@ export class DocModel {
   }
   touched(e) { return e.ch.map((c) => (c.item ? c.item.id : c.id)).filter((x) => x !== undefined && x !== 'meta'); }
 
-  // -> { label, ids } of what was undone / redone, or null when there is nothing to do
+  // -> { label, ids, sel } of what was undone / redone, or null when there is nothing to do (sel: the selection the entry recorded, if any)
   undo() {
     const e = this.history.undoStack.pop();
     if (!e) return null;
-    for (let i = e.ch.length - 1; i >= 0; i--) this.invert(e.ch[i]);
+    this.revert(e.ch);
     this.history.redoStack.push(e);
     this.rev++;
-    return { label: e.label, ids: this.touched(e) };
+    return { label: e.label, ids: this.touched(e), sel: e.sel?.[0] };
   }
   redo() {
     const e = this.history.redoStack.pop();
@@ -410,7 +437,7 @@ export class DocModel {
     for (const c of e.ch) this.redoChange(c);
     this.history.undoStack.push(e);
     this.rev++;
-    return { label: e.label, ids: this.touched(e) };
+    return { label: e.label, ids: this.touched(e), sel: e.sel?.[1] };
   }
 }
 

@@ -711,7 +711,7 @@ async function boot() {
 //   __pj.loadCustom(id)       a saved editor map, like loadMap (full rules, local PB under ed:pb:<id>; { error } when it has no finish ...)
 //   __pj.shot()               data URL of the canvas after rendering a frame        __pj.live()  back to the real keyboard
 //   __pj.editor               the map editor (editor/editor.js, makeDebug): await open(doc?) · doc() · await exec(op, ...) · setCam(pos, yawDeg, pitchDeg) ·
-//                             aim(ndcX, ndcY) · await click() · await drag(from, to) · await key(code, mods) · hold(code, sec) · await test({ from: 'cam' | 'start' })
+//                             aim(ndcX, ndcY) · await click({ shift }) · await drag(from, to, { shift }) · await boxSelect(a, b, { shift }) · handles() · await key(code, mods) · hold(code, sec) · await test({ from: 'cam' | 'start' })
 //                             then __pj.advance / __pj.setInput as for any map · back() · await flush() · rebuildMs · state(). Saving: save() · list() ·
 //                             exportText() · importText(text) · remove(id) · open(id). loadMap / loadDef / loadCustom / runRoute / screen leave the editor first.
 function leaveEditor() {

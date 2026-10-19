@@ -1,7 +1,9 @@
 // PAJZSUGRÁS map editor, picking and placement. Pure math against the editor document (no three, no DOM): node-testable.
 //
 //   rayFromCamera(cam { pos, yaw, pitch (radians) }, ndc [x, y], vfovDeg, aspect) -> { o, d }
-//   pickRay(doc, o, d, { skip, tMax }) -> { id, t, point, item } | null    the nearest item (incl. 'start') the ray enters; the smaller one wins a tie
+//   worldToNdc(cam, p, vfovDeg, aspect) -> [x, y, depth] | null            the exact inverse of rayFromCamera (null: behind the camera)
+//   pickRay(doc, o, d, { skip, tMax, filter }) -> { id, t, point, item } | null    the nearest item (incl. 'start', not with a filter) the ray enters; the smaller one wins a tie
+//   faceNormal(aabb, point) -> the axis normal of the box face nearest to the point
 //   surfaceHit(world, o, d, maxDist) -> { point, normal, t } | null        the sim's own trace (exact on ramps); falls back to the y = 0 plane
 //   rayPlaneY(o, d, y) -> point | null
 //   snap(v, g)  snapMin(c, size, g)                                         the grid (0.5 m / 0.1 m); snapMin puts the MIN corner on the grid
@@ -23,6 +25,17 @@ export function rayFromCamera(cam, ndc, vfovDeg, aspect) {
   const x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;   // yaw about y (three's rotation order YXZ)
   const l = Math.hypot(x2, y1, z2);
   return { o: cam.pos.slice(), d: [x2 / l, y1 / l, z2 / l] };
+}
+
+// a world point on the screen, the exact inverse of rayFromCamera: [ndc x, ndc y, depth in front of the camera], or null when it is (nearly) behind
+export function worldToNdc(cam, p, vfovDeg, aspect) {
+  const tv = Math.tan((vfovDeg * DEG) / 2), th = tv * aspect;
+  const vx = p[0] - cam.pos[0], vy = p[1] - cam.pos[1], vz = p[2] - cam.pos[2];
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch), cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+  const x = vx * cy - vz * sy, z1 = vx * sy + vz * cy;   // un-yaw
+  const y = vy * cp + z1 * sp, z = -vy * sp + z1 * cp;   // un-pitch
+  if (-z < 0.05) return null;
+  return [x / (-z * th), y / (-z * tv), -z];
 }
 
 export function rayPlaneY(o, d, y) {
@@ -84,8 +97,9 @@ function rayItem(o, d, it) {
 
 const volume = (b) => (b.max[0] - b.min[0]) * (b.max[1] - b.min[1]) * (b.max[2] - b.min[2]);
 
-// the nearest item the ray enters (the origin inside an item counts as distance 0); ties go to the smaller one (a pad on a floor)
-export function pickRay(doc, o, d, { skip = null, tMax = 1000 } = {}) {
+// the nearest item the ray enters (the origin inside an item counts as distance 0); ties go to the smaller one (a pad on a floor).
+// filter(item) -> bool narrows the candidates (the start point is not one then)
+export function pickRay(doc, o, d, { skip = null, tMax = 1000, filter = null } = {}) {
   let best = null, bestVol = null;
   const test = (it) => {
     const t = rayItem(o, d, it);
@@ -97,11 +111,24 @@ export function pickRay(doc, o, d, { skip = null, tMax = 1000 } = {}) {
       if (v < bestVol) { best = { id: it.id, t, item: it }; bestVol = v; }
     }
   };
-  for (const it of doc.items) if (it.id !== skip) test(it);
-  if (skip !== 'start') test({ t: 'start', id: 'start', pos: doc.start.pos, yaw: doc.start.yaw });
+  for (const it of doc.items) if (it.id !== skip && (!filter || filter(it))) test(it);
+  if (skip !== 'start' && !filter) test({ t: 'start', id: 'start', pos: doc.start.pos, yaw: doc.start.yaw });
   if (!best) return null;
   best.point = [o[0] + d[0] * best.t, o[1] + d[1] * best.t, o[2] + d[2] * best.t];
   return best;
+}
+
+// the axis normal of the face of a box { min, max } that a point on its surface is nearest to (the top face wins a tie)
+export function faceNormal(b, p) {
+  let ax = 1, sg = 1, best = Infinity;
+  for (const a of [1, 0, 2]) {
+    const lo = Math.abs(p[a] - b.min[a]), hi = Math.abs(p[a] - b.max[a]);
+    if (hi < best) { best = hi; ax = a; sg = 1; }
+    if (lo < best) { best = lo; ax = a; sg = -1; }
+  }
+  const n = [0, 0, 0];
+  n[ax] = sg;
+  return n;
 }
 
 // where the ray meets the solid level: the sim's own ray trace (so ramps are exact), else the y = 0 plane
@@ -122,7 +149,7 @@ export const snap = (v, g) => Math.round(v / g) * g;
 // the centre that puts the MIN corner of a box of `size` on the grid (near c)
 export const snapMin = (c, size, g) => snap(c - size / 2, g) + size / 2;
 
-const dominant = (n) => { const a = n.map(Math.abs); return a[1] >= a[0] && a[1] >= a[2] ? 1 : a[0] >= a[2] ? 0 : 2; };
+export const dominant = (n) => { const a = n.map(Math.abs); return a[1] >= a[0] && a[1] >= a[2] ? 1 : a[0] >= a[2] ? 0 : 2; };
 
 // The position fields of a new item of palette entry `entry` placed on `hit` ({ point, normal }): boxes stand flush on the surface
 // they were aimed at (`sink` ones hang below an upward surface) with their MIN corner on the grid; round things snap their centre.
@@ -138,7 +165,11 @@ export function placement(entry, hit, { grid = 0.5, size = null, yaw = 0, camYaw
     case 'start': return { pos: [sn(p[0]), r2(p[1]), sn(p[2])], yaw: r2(((camYaw / DEG) % 360 + 360) % 360) };
     case 'prism': {
       const h = size ? size[1] : e.h;
-      return { c: [sn(p[0]), r2(ax === 1 ? p[1] + (sg * h) / 2 : p[1]), sn(p[2])] };
+      if (ax === 1) return { c: [sn(p[0]), r2(p[1] + (sg * h) / 2), sn(p[2])] };
+      // a side face: the pillar stands against it (its own footprint outside the wall), the foot on the grid
+      const ws = size || worldSize({ t: 'prism', c: [0, 0, 0], r: e.r, h: e.h, sides: e.sides, yaw }), c = [sn(p[0]), r2(snapMin(p[1], h, grid)), sn(p[2])];
+      c[ax] = r2(p[ax] + (sg * ws[ax]) / 2);
+      return { c };
     }
     default: {
       const ws = size || (e.size ? worldSize({ t: e.t, size: e.size, yaw }) : [1, 1, 1]), h = ws.map((v) => v / 2);

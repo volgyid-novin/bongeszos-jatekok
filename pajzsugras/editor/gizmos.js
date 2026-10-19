@@ -3,6 +3,8 @@
 //   const g = new Gizmos(gfx);
 //   g.syncDoc(doc)            trigger boxes (kill / checkpoint / finish, the void too), checkpoint numbers, light bulbs, pad arcs, the start figure
 //   g.setSelection(item|null) outline + faint fill of the selected item (a selected light also shows its range ring)
+//   g.setMulti(items, key)    the bounds of the other items of a group selection, one set of lines (rebuilt only when key changes)
+//   g.setHandles(segs|null, hover)   the resize arrows of a single selected item: segs = [{ base, tip, len, axis, dir }] (at most 6), hover = the index to highlight
 //   g.setGhost(item|null)     the placement preview;   g.setPadPreview(points|null)  the arc of a pad whose target is still to be clicked
 //   g.setGrid(step, centre|null)   a grid plane under the ghost (centre = [x, y, z]; null hides it)
 //   g.update(camPos)          keeps the number sprites a readable size;   g.setVisible(bool)   g.dispose()
@@ -15,6 +17,7 @@ import { FLAG } from '../sim/const.js';
 
 const DEG = Math.PI / 180;
 const COL = { lava: 0xff6a1a, laser: 0xff2a2a, void: 0xb060ff, cp: 0xff9a30, finish: 0xffd24a, pad: 0x40e0ff, ghost: 0x2ee6d4, sel: 0xffd24a, start: 0x2ee6d4 };
+const AXIS_COL = [0xff5a4a, 0x6ee07a, 0x5aa0ff];   // the resize arrows: x red, y green, z blue (hovered: COL.sel)
 const START_ID = '__edstart';
 
 // ---------------------------------------------------------------- unit shapes: a fill and the sharp edges, cached per kind
@@ -104,6 +107,19 @@ export class Gizmos {
     this.sel = new ShapeView(COL.sel, 0.1, 30);
     this.ghost = new ShapeView(COL.ghost, 0.26, 28);
     this.group.add(this.sel.group, this.ghost.group);
+    // the other items of a group selection: their bounds
+    this.multi = null; this.multiKey = null;
+    this.multiMat = new THREE.LineBasicMaterial({ color: COL.sel, fog: false, depthTest: false, transparent: true, opacity: 0.75 });
+    // the resize arrows (a shaft and a head along +y, turned and scaled per use), drawn over everything
+    const shaft = new THREE.CylinderGeometry(0.035, 0.035, 0.7, 6).translate(0, 0.35, 0), head = new THREE.ConeGeometry(0.11, 0.3, 10).translate(0, 0.85, 0);
+    this.arrowGeo = [shaft, head];
+    this.handles = Array.from({ length: 6 }, () => {
+      const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, fog: false, depthTest: false, depthWrite: false, transparent: true }), g = new THREE.Group();
+      for (const geo of this.arrowGeo) { const m = new THREE.Mesh(geo, mat); m.renderOrder = 32; m.frustumCulled = false; g.add(m); }
+      g.visible = false;
+      this.group.add(g);
+      return { group: g, mat };
+    });
     // the range ring of a selected light
     this.ring = new THREE.LineLoop(circleGeo(64), new THREE.LineBasicMaterial({ color: 0xffe0a0, fog: false, depthTest: false, transparent: true, opacity: 0.8 }));
     this.ring.visible = false; this.ring.renderOrder = 31;
@@ -235,6 +251,40 @@ export class Gizmos {
   }
   setGhost(item) { this.ghost.set(item); }
 
+  // the bounds of the non-primary items of a group selection (rebuilt only when `key` differs from the last call)
+  setMulti(items, key) {
+    if (key === this.multiKey) return;
+    this.multiKey = key;
+    if (this.multi) { this.group.remove(this.multi); this.multi.geometry.dispose(); this.multi = null; }
+    if (!items.length) return;
+    const pos = [];
+    for (const it of items) {
+      const b = itemAabb(it), cs = [];
+      for (let i = 0; i < 8; i++) cs.push([i & 1 ? b.max[0] : b.min[0], i & 2 ? b.max[1] : b.min[1], i & 4 ? b.max[2] : b.min[2]]);
+      for (const e of BOX_EDGES) for (const v of e) pos.push(...cs[v]);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    this.multi = new THREE.LineSegments(g, this.multiMat);
+    this.multi.frustumCulled = false; this.multi.renderOrder = 30;
+    this.group.add(this.multi);
+  }
+
+  // the resize arrows: segs[i] = { base, tip, len, axis, dir } (null: hidden); hover = the index drawn in the highlight colour
+  setHandles(segs, hover = -1) {
+    const up = _UP;
+    this.handles.forEach((h, i) => {
+      const s = segs && segs[i];
+      h.group.visible = !!s;
+      if (!s) return;
+      h.group.position.set(s.base[0], s.base[1], s.base[2]);
+      _DIR.set(0, 0, 0).setComponent(s.axis, s.dir);
+      h.group.quaternion.setFromUnitVectors(up, _DIR);
+      h.group.scale.setScalar(s.len);
+      h.mat.color.setHex(i === hover ? COL.sel : AXIS_COL[s.axis]);
+    });
+  }
+
   setPadPreview(points) {
     if (!points) { this.padLine.visible = false; return; }
     const P = this.padLine.geometry.attributes.position;
@@ -272,6 +322,10 @@ export class Gizmos {
     this.gfx.figures.remove(START_ID);
     this.clearDyn();
     for (const v of [this.sel, this.ghost]) v.dispose();
+    if (this.multi) this.multi.geometry.dispose();
+    this.multiMat.dispose();
+    for (const g of this.arrowGeo) g.dispose();
+    for (const h of this.handles) h.mat.dispose();
     for (const l of this.labels.values()) { l.texture.dispose(); l.mat.dispose(); }
     this.labels.clear();
     if (this.grid) { this.grid.geometry.dispose(); this.grid.material.dispose(); }
@@ -283,6 +337,7 @@ export class Gizmos {
 }
 
 const BULB = new THREE.SphereGeometry(0.25, 12, 8);
+const _UP = new THREE.Vector3(0, 1, 0), _DIR = new THREE.Vector3();
 function circleGeo(n) {
   const p = [];
   for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; p.push(Math.cos(a), 0, Math.sin(a)); }

@@ -3,7 +3,12 @@
 export const EDITOR_HELP = [
   ['Jobb gomb nyomva', 'körbenézés (az egér befogódik; ha a böngésző nem engedi, húzással is megy)'],
   ['W A S D', 'repülés'], ['Szóköz / E', 'fel'], ['Q / C', 'le'], ['Shift', '3× gyorsabb repülés'], ['Görgő', 'repülési sebesség'], ['Shift + görgő', 'lerakás előtt: emelés / süllyesztés (a levegőbe is rakhatsz); kijelölésnél: a kijelölt elem fel / le'],
-  ['Bal gomb', 'lerak (eszközzel) vagy kijelöl; a kijelölt elemet húzva mozgatod'],
+  ['Bal gomb', 'lerak (eszközzel) vagy kijelöl; a kijelölt elemet húzva mozgatod; a lerakott és a húzott elem a kurzor alatti elem és a szomszédai széleihez tapad (nagyobb elem messzebbről), falra téve a talajon áll'],
+  ['Shift + kattintás', 'az elemet hozzáadja a kijelöléshez / elveszi belőle'],
+  ['Húzás üres helyen', 'kijelölő keret (Shift: hozzáad a kijelöléshez); azok az elemek jelölődnek ki, amelyek egészükben a keretben vannak (a rajtpont, a párna, a fény a pontjukkal); az alattuk lévő nagy padlót a keret nem viszi'],
+  ['Ctrl + A', 'mindent kijelöl (a rajtpontot is)'],
+  ['Csoport (több elem)', 'húzva együtt mozog, R forgat (a csoport közepe körül), Ctrl + D másol, Del töröl (a rajtpontot nem); átméretezni nem lehet'],
+  ['Méretező nyilak', 'egy kijelölt elem lapjain húzható nyilak: a lap mozog, a szemközti marad; rácshoz és a szomszédok széleihez igazodik'],
   ['1 – 0', 'eszközök: padló, fal, kiugrófal, rámpa, oszlop, láva, lézer, ugrópárna, ellenőrzőpont, cél'],
   ['Palettán kattintva', 'a gyorsbillentyű nélküli eszközök: „semmi” zóna, rajtpont, fény, díszek (láda, oszlop, szikla, kristály, jelzőfény, boltív)'],
   ['V / Esc', 'kijelölő eszköz (Esc: előbb a súgó, a függő párna-cél, az eszköz, aztán a kijelölés szűnik)'],

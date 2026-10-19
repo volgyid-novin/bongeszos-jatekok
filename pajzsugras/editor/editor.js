@@ -4,11 +4,14 @@
 // Every edit goes: doc (editor/model.js) -> toDef (editor/convert.js, the real map builder) -> createWorld -> a quick level rebuild that
 // keeps the Surfaces (the canvas textures) of the current level (gfx.rebuildLevel), 100 ms after the last edit. The ghost, the selection
 // outline and everything else in editor/gizmos.js follow the document at once, so dragging and typing never wait for a rebuild.
-// Picking and placing are pure maths against the document / the last built world (editor/pick.js).
+// Picking and placing are pure maths against the document / the last built world (editor/pick.js); a new item or a drag then sticks to the
+// edges of the item under the cursor and of its neighbours (editor/snap.js).
 //
 // CONTROLS (editor only; the game keys are off here)
 //   hold right button: look (pointer lock while held, drag-look if the lock is refused) · WASD fly · Space / E up · Q / C down · Shift 3x ·
-//   wheel: fly speed · left click: place (tool) or select · left drag on the selection: move it on its plane · 1 2 3 .. 9 0 palette tools ·
+//   wheel: fly speed · left click: place (tool) or select · Shift + click: add to / remove from the selection · drag on empty space: a selection
+//   rectangle (Shift: adds) · Ctrl+A everything · left drag on the selection (also a group): move it on its plane · the arrows on the faces of one
+//   selected item resize it · 1 2 3 .. 9 0 palette tools ·
 //   V / Esc select tool (Esc first cancels a pending pad target, then the tool, then the selection) · arrows move 0.5 m in the camera frame ·
 //   PgUp / PgDn move up / down · Shift + wheel lifts the ghost before placing (select tool: moves the selection up / down) · Shift + arrows / PgUp / PgDn resize · R rotate 90 · Ctrl+D duplicate · Del / Backspace delete ·
 //   Ctrl+Z undo · Ctrl+Y / Ctrl+Shift+Z redo · Ctrl+S save · F focus the selection · G grid 0.5 / 0.1 m · K start point at the aimed point ·
@@ -37,10 +40,12 @@
 //   editor.testing  editor.startTest({from})  editor.backFromTest()  editor.applyTestStart()  editor.testHint(locked)
 //   editor.debug                                         __pj.editor (see main.js)
 import './editor.css';
-import { DocModel, newItem, sanitizeDoc, serialise, paletteOf, paletteIdOf, itemAabb, worldSize, validate, wrap360, r2, LIM, PALETTE } from './model.js';
+import { DocModel, newItem, sanitizeDoc, serialise, paletteOf, paletteIdOf, itemAabb, worldSize, isSolid, validate, wrap360, r2, LIM, PALETTE } from './model.js';
 import { toDef, docIdOf } from './convert.js';
 import { loadDoc, newMapDoc, exportFile, downloadText, importMapText, deleteMap, mapInfo } from './library.js';
-import { rayFromCamera, pickRay, surfaceHit, rayPlaneY, placement, snap, snapMin, padArc, findTestSpawn } from './pick.js';
+import { rayFromCamera, worldToNdc, pickRay, surfaceHit, rayPlaneY, placement, faceNormal, snap, padArc, findTestSpawn } from './pick.js';
+import { aabbCache, stickPlacement, stickMove, moveReach } from './snap.js';
+import { handlesFor, handleSeg, hitHandle, axisParam, extentOf, resizePatch } from './handles.js';
 import { Gizmos } from './gizmos.js';
 import { EditorPanel } from './panel.js';
 import { createWorld } from '../sim/world.js';
@@ -51,7 +56,9 @@ import { DEG_PER_PX, MAX_PITCH } from '../input.js';
 const DEG = Math.PI / 180;
 const REBUILD_MS = 100;       // rebuild this long after the last edit
 const SAVE_MS = 1500;         // save this long after the last edit
-const BOXY = new Set(['block', 'ramp', 'kill', 'cp', 'finish']);   // their MIN corner snaps to the grid, everything else snaps its centre
+const SYNC_MS = 60;           // while dragging: the helper meshes and the panel follow the document at most this often
+const EDIT_KEYS = new Set(['KeyR', 'KeyK', 'Delete', 'Backspace', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown']);   // keys that change items (not while a drag is on: they would fight its patches)
+const BODIES = new Set(['block', 'ramp', 'prism', 'kill', 'cp', 'finish', 'deco']);   // the items with a real footprint (a pad, a light and the start point are points)
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const now = () => performance.now();
 const toolName = (e) => (e.t === 'deco' ? 'Dísz: ' + e.label : e.label);
@@ -71,7 +78,11 @@ export class Editor {
     this.testing = false;
     this.starting = false;
     this.tool = 'select';
-    this.sel = null;
+    this.sel = null;            // the primary selected id (the last one added), 'start' for the start point
+    this.selIds = []; this.selVer = 0;   // everything selected, in the order it was added (sel is the last); selVer counts the changes
+    this.hoverHandle = null; this.handleList = []; this.multiKey = null;   // the resize arrow under the pointer / the arrows of the selected item / what the group outline was built for
+    this.syncAt = 0;
+    this.turnMemo = null;       // the pivot of the last group rotation { selVer, rev, pivot }: the next R about the same selection and document turns about it again
     this.grid = 0.5;
     this.cam = { pos: [0, 6, 14], yaw: 0, pitch: -0.35 };   // radians
     this.flySpeed = 12;
@@ -160,11 +171,13 @@ export class Editor {
   handleKey(e) {
     const code = e.code, ctrl = e.ctrlKey || e.metaKey, shift = e.shiftKey;
     const pd = () => { if (e.preventDefault) e.preventDefault(); return true; };
+    if (this.drag && (ctrl ? ['KeyZ', 'KeyY', 'KeyD'].includes(code) : EDIT_KEYS.has(code))) return pd();   // (the camera keys, Esc, the tools ... still work)
     if (ctrl) {
       switch (code) {
         case 'KeyZ': pd(); if (shift) this.redo(); else this.undo(); return true;
         case 'KeyY': pd(); this.redo(); return true;
         case 'KeyD': pd(); this.action('duplicate'); return true;
+        case 'KeyA': pd(); this.selectAll(); return true;
         case 'KeyS': pd(); this.save(); return true;
         default: return false;   // Ctrl+W, Ctrl+R ... stay with the browser
       }
@@ -209,7 +222,7 @@ export class Editor {
     if (a && isTyping(a)) a.blur();
     this.mouseFrom(e);
     if (e.button === 2) { e.preventDefault(); this.startLook(); }
-    else if (e.button === 0) { e.preventDefault(); this.primaryDown(); }
+    else if (e.button === 0) { e.preventDefault(); this.primaryDown({ shift: e.shiftKey }); }
   }
   onMouseUp(e) {
     if (e.button === 2) this.stopLook();
@@ -237,7 +250,7 @@ export class Editor {
       if (this.tool !== 'select') {
         this.lift = clamp(r2(this.lift + d * this.grid), -50, 200);
         this.panel.status(`Emelés: ${this.lift > 0 ? '+' : ''}${fmt(this.lift)} m`, 'info', 1200);
-      } else if (this.sel) this.nudge([0, d * this.grid, 0]);
+      } else if (this.sel && !this.drag) this.nudge([0, d * this.grid, 0]);
       return;
     }
     this.flySpeed = clamp(this.flySpeed * Math.exp(-Math.sign(e.deltaY) * 0.14), 1, 200);
@@ -278,11 +291,14 @@ export class Editor {
     }
     if (d) { this.model = new DocModel(d); this.savedRev = 0; this.unsaved = false; }
     d = this.model.doc;
-    this.model.onRefuse = (msg) => this.panel.status(msg, 'bad', 5000);
+    this.model.onRefuse = (msg) => {   // (a drag that keeps hitting the limit says it once)
+      if (this.drag) { if (this.drag.refused) return; this.drag.refused = true; }
+      this.panel.status(msg, 'bad', 5000);
+    };
     this.saveAt = 0;
     if (store.hasCustom(d.id)) store.setLastCustom(d.id);
     this.cam = { pos: d.cam.pos.slice(), yaw: d.cam.yaw * DEG, pitch: d.cam.pitch * DEG };
-    this.sel = null; this.tool = 'select'; this.padPending = null; this.drag = null; this.keys.clear(); this.lift = 0;
+    this.sel = null; this.selIds = []; this.selVer++; this.multiKey = null; this.tool = 'select'; this.padPending = null; this.drag = null; this.keys.clear(); this.lift = 0;
     const { def, brushItem } = toDef(d);
     const w = createWorld(def);
     const session = this.session;
@@ -312,7 +328,8 @@ export class Editor {
     this.stopLook(); this.drag = null; this.keys.clear();
     this.ready = false;
     this.root.hidden = true;
-    document.body.classList.remove('editing', 'ed-look', 'ed-drag');
+    this.panel.setMarquee(null);
+    document.body.classList.remove('editing', 'ed-look', 'ed-drag', 'ed-handle');
     if (this.gizmos) this.gizmos.setVisible(false);
   }
 
@@ -327,7 +344,7 @@ export class Editor {
     if (!this.ready || this.testing) return;
     this.flyStep(dt);
     const m = this.model;
-    if (m.rev !== this.syncedRev) { this.syncDoc(); this.rebuildAt = now() + REBUILD_MS; }
+    if (m.rev !== this.syncedRev && (!this.drag || now() - this.syncAt >= SYNC_MS)) { this.syncDoc(); this.rebuildAt = now() + REBUILD_MS; }   // (a drag redraws the helper meshes at most every 60 ms)
     if (m.rev !== this.builtRev && !this.building && !this.drag && now() >= this.rebuildAt) this.rebuild();
     if (this.saveAt && !this.drag && now() >= this.saveAt) this.save({ quiet: true });
     this.computeAim();
@@ -337,6 +354,8 @@ export class Editor {
 
   syncDoc() {
     const rev = this.model.rev;
+    this.syncAt = now();
+    this.pruneSel();
     if (rev !== this.syncedRev && rev !== this.savedRev) { this.saveAt = now() + SAVE_MS; this.panel.setSaveState(this.unsaved ? 'fail' : 'dirty'); }   // (every edit restarts the timer)
     this.syncedRev = rev;
     this.gizmos.syncDoc(this.model.doc);
@@ -362,12 +381,32 @@ export class Editor {
     const ndc = ndcOverride || (this.looking ? [0, 0] : this.mouse.inside ? this.mouse.ndc : null);
     if (!ndc) { this.aim = null; return null; }
     const g = this.app.gfx, ray = rayFromCamera(this.cam, ndc, g.camera.fov, g.aspect);
-    let hit = surfaceHit(this.world, ray.o, ray.d);
+    let hit = surfaceHit(this.world, ray.o, ray.d), target = null;
+    if (!this.drag) {
+      // the solid item the placement sticks to: the first one on the live document. The built world can lag behind it by 100 ms: a solid
+      // in front of the trace is a new one, so the surface is that one's; one at the trace's distance is the surface's item
+      // (a solid the ray starts inside is no surface: the camera in a wall does not put the ghost at the camera)
+      const pk = pickRay(this.model.doc, ray.o, ray.d, { filter: isSolid });
+      if (pk && pk.t > 0.01) {
+        if (!hit || pk.t < hit.t - 0.02) { hit = { point: pk.point, normal: faceNormal(itemAabb(pk.item), pk.point), t: pk.t }; target = pk.item; }
+        else if (Math.abs(pk.t - hit.t) <= 0.05) target = pk.item;
+      }
+    }
     if (hit && this.lift && this.tool !== 'select') hit = { ...hit, point: [hit.point[0], hit.point[1] + this.lift, hit.point[2]] };   // Shift + wheel lift
-    const aim = { ndc, ray, hit, pick: null };
+    const aim = { ndc, ray, hit, target, pick: null };
     if (this.tool === 'select' && !this.drag) aim.pick = pickRay(this.model.doc, ray.o, ray.d);
     this.aim = aim;
     return aim;
+  }
+
+  // The position fields a click would give palette entry e (base: its item with the remembered size / yaw): placement() on the aimed surface,
+  // then stuck to the target and its neighbours. The ghost and the click both come from here, so they never differ.
+  placeOn(e, aim, base = null) {
+    const pl = placement(e, aim.hit, { grid: this.grid, size: base ? worldSize(base) : null, yaw: base ? base.yaw || 0 : 0, camYaw: this.cam.yaw });
+    if (!aim.target) return pl;
+    const k = pl.c ? 'c' : 'pos', m = this.model;
+    const to = stickPlacement({ ...(base || { t: e.t }), ...pl }, aim.hit, aim.target, { cache: aabbCache(m.doc, m.rev), grid: this.grid, lifted: !!this.lift });
+    return { ...pl, [k]: to.map(r2) };
   }
 
   // what a click would place right now (null: nothing to place)
@@ -378,8 +417,7 @@ export class Editor {
     if (rem) { if (rem.size) over.size = rem.size; if (rem.r) { over.r = rem.r; over.h = rem.h; } }
     if (['block', 'ramp', 'prism', 'deco'].includes(e.t)) over.yaw = this.toolYaw;
     const base = newItem(e, over);
-    const pl = placement(e, aim.hit, { grid: this.grid, size: worldSize(base), yaw: base.yaw || 0, camYaw: this.cam.yaw });
-    return newItem(e, { ...over, ...pl });
+    return newItem(e, { ...over, ...this.placeOn(e, aim, base) });
   }
 
   defaultApex(pos, target) {
@@ -390,18 +428,21 @@ export class Editor {
   updateGizmos() {
     const g = this.gizmos, aim = this.aim, e = paletteOf(this.tool);
     g.setSelection(this.sel ? this.model.find(this.sel) : null);
+    const mk = this.selVer + ':' + this.model.rev;
+    if (mk !== this.multiKey) { this.multiKey = mk; g.setMulti(this.selIds.length > 1 ? this.selItems().slice(0, -1) : [], mk); }   // (the other items of a group: rebuilt only when it or the document changed)
+    this.updateHandles();
     let ghost = null, arc = null, centre = null;
     if (e && !this.drag && aim && aim.hit) {
       const p = aim.hit.point, sn = (v) => snap(v, this.grid);
       if (e.t === 'start') {
-        const pl = placement(e, aim.hit, { grid: this.grid, camYaw: this.cam.yaw });
+        const pl = this.placeOn(e, aim);
         ghost = { t: 'start', pos: pl.pos, yaw: pl.yaw };
       } else if (e.t === 'pad') {
-        const target = [sn(p[0]), r2(p[1]), sn(p[2])];
+        const pl = this.placeOn(e, aim);
         if (this.padPending) {
-          const pos = this.padPending.pos, it = newItem('pad', { pos, target, apex: this.defaultApex(pos, target) });
+          const pos = this.padPending.pos, target = pl.pos, it = newItem('pad', { pos, target, apex: this.defaultApex(pos, target) });
           ghost = it; arc = padArc(it, 24);
-        } else ghost = newItem('pad', { pos: placement(e, aim.hit, { grid: this.grid }).pos });
+        } else ghost = newItem('pad', { pos: pl.pos });
       } else ghost = this.ghostItem(aim);
       centre = [sn(p[0]), p[1], sn(p[2])];
     }
@@ -418,7 +459,11 @@ export class Editor {
 
   hintText() {
     if (this.padPending) return 'Ugrópárna: kattints a cél helyére (Esc: mégse)';
-    if (this.tool === 'select') return this.sel ? 'Húzással mozgatod · R forgat · Del töröl · nyilak: finom mozgatás · Shift+nyilak: méret' : 'Bal gomb: kijelöl · jobb gomb nyomva: körbenézés · 1–0: eszköz · H: súgó';
+    if (this.tool === 'select') {
+      if (this.drag && this.drag.kind === 'box') return 'Kijelölő keret · Shift: a meglévő kijelöléshez adja';
+      if (this.selIds.length > 1) return 'Húzással együtt mozognak · R forgat · Ctrl+D másol · Del töröl · Shift+kattintás: hozzáad / elvesz';
+      return this.sel ? `Húzással mozgatod · ${this.handleList.length ? 'a nyilakat húzva átméretezed · ' : ''}R forgat · Del töröl · nyilak: finom mozgatás · Shift+kattintás: több elem` : 'Bal gomb: kijelöl · húzás üres helyen: kijelölő keret · jobb gomb nyomva: körbenézés · 1–0: eszköz · H: súgó';
+    }
     const e = paletteOf(this.tool);
     return e.t === 'pad' ? 'Ugrópárna: kattints a párna helyére' : `${toolName(e)}: kattints a lerakáshoz · R forgat · Esc: kijelölés`;
   }
@@ -460,12 +505,35 @@ export class Editor {
     if (this.padPending) { this.padPending = null; this.panel.clearStatus(); }   // (no stale "click the target" prompt)
     if (id === this.tool) return;
     this.tool = id;
+    this.lift = 0;   // (the lift belongs to the tool it was set with)
     this.panel.setTool(id);
   }
-  select(id) {
-    if (id === this.sel) return;
-    this.sel = id;
+  // The selection: selIds in the order the items were added, sel (the primary one: the panel shows it, a handle drag and Shift+arrow resize
+  // work on it) is the last of them. Ids that do not exist (any more) never stay in it.
+  setSel(ids, primary = null) {
+    const have = new Set(this.model.doc.items.map((i) => i.id)), list = [];
+    for (const id of ids) if (!list.includes(id) && (id === 'start' || have.has(id))) list.push(id);
+    if (primary != null && list.includes(primary)) list.push(list.splice(list.indexOf(primary), 1)[0]);
+    if (list.length === this.selIds.length && list.every((id, i) => id === this.selIds[i])) return;
+    this.selIds = list; this.sel = list.length ? list[list.length - 1] : null; this.selVer++;
     this.panel.setSelection();
+  }
+  select(id) { this.setSel(id == null ? [] : [id]); }
+  toggleSel(id) { this.setSel(this.isSel(id) ? this.selIds.filter((x) => x !== id) : [...this.selIds, id]); }
+  isSel(id) { return this.selIds.includes(id); }
+  selItems() {
+    const by = new Map(this.model.doc.items.map((i) => [i.id, i]));
+    return this.selIds.map((id) => by.get(id) || (id === 'start' ? this.model.find('start') : null)).filter(Boolean);
+  }
+  selectAll() {
+    this.setTool('select');
+    this.setSel(['start', ...this.model.doc.items.map((i) => i.id)]);
+  }
+  // an undo, a delete or a debug op took items away: drop them from the selection
+  pruneSel() {
+    if (!this.selIds.length) return;
+    const have = new Set(this.model.doc.items.map((i) => i.id));
+    if (!this.selIds.every((id) => id === 'start' || have.has(id))) this.setSel(this.selIds);
   }
   escape() {
     if (!this.panel.help.hidden) this.panel.toggleHelp();
@@ -474,21 +542,28 @@ export class Editor {
     else this.select(null);
   }
 
-  primaryDown() {
+  // mods = { shift }. Select tool: a resize arrow of the one selected item, else the item under the pointer (Shift: add / remove it, no drag;
+  // one of a group: the whole group moves, a click without moving then keeps just that item), else a selection rectangle.
+  primaryDown(mods = {}) {
     const aim = this.computeAim();
-    if (this.tool === 'select') {
-      const pk = aim && aim.pick;
-      if (!pk) { this.select(null); return null; }
-      this.select(pk.id);
-      this.beginDrag(pk);
-      return pk.id;
-    }
-    return this.placeAtAim(aim);
+    if (this.tool !== 'select') return this.placeAtAim(aim);
+    const hh = !this.looking && aim ? this.handleHit(aim.ndc) : null;
+    if (hh) { this.beginHandle(hh, aim); return this.sel; }
+    const pk = aim && aim.pick;
+    if (!pk) { this.beginBox(!!mods.shift); return null; }
+    if (mods.shift) { this.toggleSel(pk.id); return pk.id; }
+    const grouped = this.selIds.length > 1 && this.isSel(pk.id);
+    if (grouped) this.setSel(this.selIds, pk.id); else this.select(pk.id);
+    this.beginDrag(pk, grouped);
+    return pk.id;
   }
   primaryUp() {
-    if (!this.drag) return;
+    const d = this.drag;
+    if (!d) return;
     this.drag = null;
     document.body.classList.remove('ed-drag');
+    if (d.kind === 'box') this.endBox(d);
+    else if (d.kind === 'move' && d.collapse && !d.moved) this.select(d.id);
   }
 
   // the click of a placement tool; returns the id of the new item (or 'start')
@@ -497,7 +572,7 @@ export class Editor {
     if (!aim || !aim.hit) { this.panel.status('Nincs hová lerakni: célozz a padlóra vagy egy felületre.', 'warn'); return null; }
     if (e.t === 'start') return this.setStartAt(aim);
     if (e.t === 'pad') {
-      const pl = placement(e, aim.hit, { grid: this.grid });
+      const pl = this.placeOn(e, aim);
       if (!this.padPending) { this.padPending = { pos: pl.pos }; this.panel.status('Most kattints a párna céljára.'); return null; }
       const pos = this.padPending.pos, target = pl.pos;
       if (Math.hypot(target[0] - pos[0], target[2] - pos[2]) < 1) { this.panel.status('A cél túl közel van a párnához.', 'warn'); return null; }
@@ -522,7 +597,7 @@ export class Editor {
   limitNote() { if (this.model.doc.items.length >= LIM.items) this.panel.status(`Elérted a ${LIM.items} elemes határt.`, 'bad'); }
 
   setStartAt(aim) {
-    const pl = placement('start', aim.hit, { grid: this.grid, camYaw: this.cam.yaw });
+    const pl = this.placeOn(paletteOf('start'), aim);
     this.model.setStart(pl.pos, pl.yaw);
     this.select('start');
     this.panel.status('Rajtpont áthelyezve.', 'info', 1500);
@@ -534,24 +609,127 @@ export class Editor {
     this.setStartAt(aim);
   }
 
-  beginDrag(pk) {
-    const it = this.model.find(pk.id), base = it.c || it.pos;
-    this.drag = { id: pk.id, key: 'drag' + (++this.dragN), y: pk.point[1], off: [base[0] - pk.point[0], base[2] - pk.point[2]], from: [this.mouse.x, this.mouse.y], moved: false };
+  // The mouse at normalised device coordinates (the debug hook; also keeps the pixel position the 4 px drag threshold and the rectangle use).
+  setMouseNdc(ndc) {
+    const r = this.app.gfx.canvas.getBoundingClientRect();
+    this.mouse.ndc = ndc.slice(); this.mouse.inside = true;
+    this.mouse.x = r.left + ((ndc[0] + 1) / 2) * r.width; this.mouse.y = r.top + ((1 - ndc[1]) / 2) * r.height;
+  }
+
+  // ---- the three drags: move (one item or the whole selection), resize (an arrow), selection rectangle
+  beginDrag(pk, group = false) {
+    const m = this.model, ids = this.selIds.slice(), it = m.find(pk.id), base = it.c || it.pos;
+    this.drag = {
+      kind: 'move', id: pk.id, ids, orig: new Map(ids.map((id) => [id, JSON.parse(JSON.stringify(m.find(id)))])), key: 'drag' + (++this.dragN),
+      y: pk.point[1], off: [base[0] - pk.point[0], base[2] - pk.point[2]], from: [this.mouse.x, this.mouse.y], moved: false,
+      start: base.slice(), cache: aabbCache(m.doc, m.rev), delta: null, collapse: group,   // (start: the centre it began from: its grid starts at its min corner; the others do not move meanwhile)
+    };
+  }
+  beginBox(add) { this.drag = { kind: 'box', add, from: [this.mouse.x, this.mouse.y], cur: [this.mouse.x, this.mouse.y], moved: false }; }
+  beginHandle(hh, aim) {
+    const m = this.model, it = m.find(this.sel), b = itemAabb(it), vec = [0, 0, 0];
+    vec[hh.axis] = 1;
+    const s0 = axisParam(aim.ray, hh.face, vec);
+    if (s0 === null) return;   // (looking along the arrow: nothing to grab)
+    // the face that stays; a pillar's side arrow scales the radius about the centre, so there the face's distance from the centre is what follows the
+    // pointer, times k = (the width of its bounds) / (that distance now): an odd number of sides is not symmetric about the centre
+    const fixed = hh.kind === 'r' ? it.c[hh.axis] : hh.dir > 0 ? b.min[hh.axis] : b.max[hh.axis];
+    const k = hh.kind === 'r' ? (b.max[hh.axis] - b.min[hh.axis]) / (hh.dir * (hh.face[hh.axis] - fixed)) : 1;
+    this.drag = {
+      kind: 'handle', id: it.id, h: hh, vec, s0, fixed, k, box: b, orig: JSON.parse(JSON.stringify(it)), key: 'handle' + (++this.dragN),
+      cache: aabbCache(m.doc, m.rev), from: [this.mouse.x, this.mouse.y], moved: false,
+    };
   }
   dragMove(ndc = null) {
-    const d = this.drag, m = this.model;
+    const d = this.drag;
+    if (ndc) this.setMouseNdc(ndc);
     if (!ndc && !d.moved && Math.hypot(this.mouse.x - d.from[0], this.mouse.y - d.from[1]) < 4) return;
-    const g = this.app.gfx, ray = rayFromCamera(this.cam, ndc || this.mouse.ndc, g.camera.fov, g.aspect);
+    if (d.kind === 'box') this.moveBox(d);
+    else if (d.kind === 'handle') this.moveHandle(d);
+    else this.moveItems(d);
+  }
+  moveItems(d) {
+    const m = this.model, g = this.app.gfx, ray = rayFromCamera(this.cam, this.mouse.ndc, g.camera.fov, g.aspect);
     const p = rayPlaneY(ray.o, ray.d, d.y);
     if (!p || Math.hypot(p[0] - ray.o[0], p[2] - ray.o[2]) > 500) return;
     d.moved = true;
     document.body.classList.add('ed-drag');
     const it = m.find(d.id);
     if (!it) { this.drag = null; return; }
-    const ws = worldSize(it), x = p[0] + d.off[0], z = p[2] + d.off[1];
-    const nx = BOXY.has(it.t) ? snapMin(x, ws[0], this.grid) : snap(x, this.grid), nz = BOXY.has(it.t) ? snapMin(z, ws[2], this.grid) : snap(z, this.grid);
     const k = it.c ? 'c' : 'pos', cur = it[k];
-    m.update(d.id, { [k]: [r2(nx), cur[1], r2(nz)] }, { label: 'Mozgatás', mergeKey: d.key, mergeMs: Infinity });
+    // the pointer's item sticks to its neighbours, everything selected moves by the same step from where it began
+    const to = stickMove(it, [p[0] + d.off[0], cur[1], p[2] + d.off[1]], d.start, { cache: d.cache, grid: this.grid, exclude: d.ids });
+    const delta = [to[0] - d.start[0], 0, to[2] - d.start[2]];
+    if (d.delta && d.delta[0] === delta[0] && d.delta[2] === delta[2]) return;
+    d.delta = delta;
+    m.batch('Mozgatás', () => { for (const id of d.ids) m.update(id, this.shifted(d.orig.get(id), delta, d.ids.length > 1)); },
+      { mergeKey: d.key, mergeMs: Infinity, sel: () => [d.ids, d.ids] });
+  }
+  moveHandle(d) {
+    const m = this.model, g = this.app.gfx, h = d.h, ax = h.axis, ray = rayFromCamera(this.cam, this.mouse.ndc, g.camera.fov, g.aspect);
+    const s = axisParam(ray, h.face, d.vec);
+    if (s === null) return;
+    d.moved = true;
+    document.body.classList.add('ed-drag');
+    // the face follows the pointer along the arrow; a face of a neighbour (that is beside this face) within the reach (a fifth of the extent along
+    // the arrow, half a grid step to a metre) wins over the grid
+    const side = this.grid / 2, f0 = h.face[ax] + (s - d.s0), B = d.box, k = d.k;
+    let f = null, best = moveReach(this.grid, B.max[ax] - B.min[ax]) + 1e-9;
+    for (const e of d.cache) {
+      if (e.id === d.id || [0, 1, 2].some((o) => o !== ax && (e.b.min[o] > B.max[o] + side || e.b.max[o] < B.min[o] - side))) continue;
+      for (const c of [e.b.min[ax], e.b.max[ax]]) if (Math.abs(c - f0) < best) { best = Math.abs(c - f0); f = c; }
+    }
+    const dist = h.dir * ((f === null ? f0 : f) - d.fixed);   // how far the face is from the one that stays (a pillar: from its centre)
+    const q = f !== null ? dist : h.kind === 'r' ? snap(dist * 2, this.grid) / 2 : snap(dist, this.grid);   // (a pillar: its width is on the grid when it is symmetric)
+    const extent = clamp(k * q, LIM.sizeMin, LIM.sizeMax);   // (no flipping through the opposite face)
+    m.update(d.id, resizePatch(d.orig, ax, h.dir, extent), { label: 'Átméretezés', mergeKey: d.key, mergeMs: Infinity });
+    this.afterEdit();
+  }
+  moveBox(d) {
+    d.moved = true;
+    d.cur = [this.mouse.x, this.mouse.y];
+    this.panel.setMarquee({ x: Math.min(d.from[0], d.cur[0]), y: Math.min(d.from[1], d.cur[1]), w: Math.abs(d.cur[0] - d.from[0]), h: Math.abs(d.cur[1] - d.from[1]) });
+  }
+  // the rectangle is done: without moving it is a click on empty space (clears the selection, Shift keeps it); else the items that are wholly
+  // inside it (all 8 corners of their bounds, in front of the camera) are selected, a pad / a light / the start point by their spot; Shift adds
+  // them to the selection. (A big floor under the things in the rectangle is not taken.)
+  endBox(d) {
+    this.panel.setMarquee(null);
+    if (!d.moved) { if (!d.add) this.select(null); return; }
+    const g = this.app.gfx, r = g.canvas.getBoundingClientRect();
+    const nx = (x) => ((x - r.left) / r.width) * 2 - 1, ny = (y) => -(((y - r.top) / r.height) * 2 - 1);
+    const x0 = nx(Math.min(d.from[0], d.cur[0])), x1 = nx(Math.max(d.from[0], d.cur[0])), y0 = ny(Math.max(d.from[1], d.cur[1])), y1 = ny(Math.min(d.from[1], d.cur[1]));
+    const ids = [];
+    const inside = (p) => { const w = worldToNdc(this.cam, p, g.camera.fov, g.aspect); return !!w && w[0] >= x0 && w[0] <= x1 && w[1] >= y0 && w[1] <= y1; };
+    for (const it of [this.model.find('start'), ...this.model.doc.items]) {
+      const b = itemAabb(it);
+      const spots = BODIES.has(it.t) ? Array.from({ length: 8 }, (_, i) => [i & 1 ? b.max[0] : b.min[0], i & 2 ? b.max[1] : b.min[1], i & 4 ? b.max[2] : b.min[2]]) : [it.pos];
+      if (spots.every(inside)) ids.push(it.id);
+    }
+    this.setSel(d.add ? [...this.selIds, ...ids] : ids);
+  }
+
+  // ---- the resize arrows of the one selected item
+  handleHit(ndc) {
+    if (this.tool !== 'select' || this.selIds.length !== 1 || !ndc) return null;
+    const list = handlesFor(this.model.find(this.sel));
+    if (!list.length) return null;
+    const g = this.app.gfx, r = g.canvas.getBoundingClientRect();
+    return hitHandle(list, this.cam, ndc, g.camera.fov, g.aspect, r.width, r.height);
+  }
+  // every frame: the arrows of the selected item (only while no other drag is on), the one under the pointer (or being dragged) highlighted
+  updateHandles() {
+    const d = this.drag, g = this.app.gfx;
+    const it = this.tool === 'select' && this.selIds.length === 1 && (!d || d.kind === 'handle') ? this.model.find(this.sel) : null;
+    const list = it ? handlesFor(it) : [];
+    this.handleList = list;
+    let hover = -1;
+    const find = (h) => (h ? list.findIndex((x) => x.axis === h.axis && x.dir === h.dir) : -1);
+    if (d && d.kind === 'handle') hover = find(d.h);
+    else if (list.length && this.mouse.inside && !this.looking) hover = find(this.handleHit(this.mouse.ndc));
+    this.hoverHandle = hover >= 0 ? list[hover] : null;
+    this.gizmos.setHandles(list.length ? list.map((h) => ({ ...handleSeg(h, this.cam, g.camera.fov), axis: h.axis, dir: h.dir })) : null, hover);
+    document.body.classList.toggle('ed-handle', hover >= 0);
   }
 
   // ---------------------------------------------------------------- editing the selection
@@ -581,7 +759,19 @@ export class Editor {
     return { fwd: dom(f), right: dom(r) };
   }
 
+  // the patch that moves an item by v; in a group a pad takes its target and apex along, alone it moves only its own spot
+  shifted(it, v, group) {
+    const add = (p) => p.map((x, i) => x + v[i]);
+    if (it.t === 'pad') return group ? { pos: add(it.pos), target: add(it.target), apex: it.apex + v[1] } : { pos: add(it.pos) };
+    return { [it.c ? 'c' : 'pos']: add(it.c || it.pos) };
+  }
+
   nudge(vec) {
+    if (this.selIds.length > 1) {
+      const m = this.model, ids = this.selIds.slice();
+      m.batch('Mozgatás', () => { for (const id of ids) m.update(id, this.shifted(m.find(id), vec, true)); }, { mergeKey: 'nudge:' + ids.slice().sort().join(','), sel: () => [ids, ids] });
+      return;
+    }
     const it = this.sel && this.model.find(this.sel);
     if (!it) return;
     const k = it.c ? 'c' : 'pos';
@@ -590,43 +780,36 @@ export class Editor {
 
   // grow (+1) / shrink (-1) by one grid step along a world axis: the face on the +direction side of that axis moves, the other one stays
   resizeSel(axisVec, sign) {
+    if (this.selIds.length > 1) { this.panel.status('Csoportot nem lehet átméretezni', 'warn', 2000); return; }
     const it = this.sel && this.model.find(this.sel), m = this.model;
     if (!it) return;
     const ax = axisVec.findIndex((v) => v !== 0), dir = axisVec[ax], step = this.grid * sign, key = 'size:' + it.id;
     const opts = { label: 'Átméretezés', mergeKey: key };
     switch (it.t) {
-      case 'prism':
-        if (ax === 1) { const h = clamp(r2(it.h + step), 0.1, LIM.sizeMax), d = h - it.h; if (d) m.update(it.id, { h, c: [it.c[0], r2(it.c[1] + d / 2), it.c[2]] }, opts); }
-        else m.update(it.id, { r: clamp(r2(it.r + step / 2), 0.1, LIM.sizeMax / 2) }, opts);
-        break;
       case 'pad': if (ax === 1) m.update(it.id, { apex: r2(it.apex + step) }, opts); break;
       case 'light': if (ax === 1) m.update(it.id, { range: clamp(r2(it.range + sign), 1, 100) }, opts); break;
       case 'start': break;
-      default: {
-        if (!it.size) break;
-        const turned = (it.t === 'block' || it.t === 'ramp' || it.t === 'deco') && Math.round(it.yaw / 90) % 2 === 1;
-        const la = ax === 1 ? 1 : turned ? 2 - ax : ax;
-        const nv = clamp(r2(it.size[la] + step), 0.1, LIM.sizeMax), d = nv - it.size[la];
-        if (!d) break;
-        const size = it.size.slice(); size[la] = nv;
-        const k = it.c ? 'c' : 'pos', c = it[k].slice(); c[ax] = r2(c[ax] + (dir * d) / 2);
-        m.update(it.id, { size, [k]: c }, opts);
+      default: {   // a box or a pillar: that face moves by one step, the opposite one stays
+        const patch = resizePatch(it, ax, dir, extentOf(it, ax) + step);
+        if (patch) m.update(it.id, patch, opts);
       }
     }
     this.afterEdit();
   }
 
   focusSel() {
-    const it = this.sel && this.model.find(this.sel);
-    if (!it) { this.panel.status('Nincs kijelölt elem.', 'warn', 1500); return; }
-    const b = itemAabb(it), c = [0, 1, 2].map((a) => (b.min[a] + b.max[a]) / 2);
+    const items = this.selItems();
+    if (!items.length) { this.panel.status('Nincs kijelölt elem.', 'warn', 1500); return; }
+    const b = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };   // (the bounds of everything selected)
+    for (const it of items) { const ib = itemAabb(it); for (let a = 0; a < 3; a++) { b.min[a] = Math.min(b.min[a], ib.min[a]); b.max[a] = Math.max(b.max[a], ib.max[a]); } }
+    const c = [0, 1, 2].map((a) => (b.min[a] + b.max[a]) / 2);
     const dist = Math.max(5, Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) * 1.3), a = aimOf(this.cam.yaw, this.cam.pitch);
     this.cam.pos = [c[0] - a[0] * dist, c[1] - a[1] * dist, c[2] - a[2] * dist];
   }
 
   // the buttons and keys that do something to the selection / the document
   action(name) {
-    const m = this.model, it = this.sel && m.find(this.sel);
+    const m = this.model, group = this.selIds.length > 1, it = !group && this.sel && m.find(this.sel);
     switch (name) {
       case 'undo': this.undo(); break;
       case 'redo': this.redo(); break;
@@ -637,11 +820,13 @@ export class Editor {
       case 'export': this.exportMap(); break;
       case 'exit': this.app.exitEditor(); break;
       case 'rotate':
+        if (group) { this.rotateGroup(); break; }
         if (!it) { this.toolYaw = wrap360(this.toolYaw + 90); this.panel.status(`Az új elem forgatása: ${this.toolYaw}°`, 'info', 1500); break; }
         m.rotate(it.id);
         if (it.t === 'block' || it.t === 'ramp' || it.t === 'prism' || it.t === 'deco') this.toolYaw = m.find(it.id).yaw;
         break;
       case 'duplicate': {
+        if (group) { this.duplicateGroup(); break; }
         if (!it || it.id === 'start' || it.t === 'finish') break;
         const { fwd } = this.camAxes(), ws = worldSize(it), ax = fwd.findIndex((v) => v !== 0), off = [0, 0, 0];
         off[ax] = fwd[ax] * Math.max(this.grid, snap(ws[ax], this.grid));
@@ -650,6 +835,7 @@ export class Editor {
         break;
       }
       case 'delete':
+        if (group) { this.deleteGroup(); break; }
         if (!it || it.id === 'start') break;
         m.remove(it.id);
         this.select(null);
@@ -660,13 +846,72 @@ export class Editor {
     }
   }
 
+  // ---- operations on a group (several items selected): each is ONE undo step that brings the selection back
+  // the panel's material for all of them
+  patchGroup(patch, key = null) {
+    const m = this.model, ids = this.selIds.slice();
+    return m.batch('Módosítás', () => { for (const id of ids) m.update(id, patch); }, { mergeKey: key, sel: () => [ids, ids] });
+  }
+  // 90 degrees about a pivot, each item also turning on its own (model.rotate). Only the items with a footprint make the bounds (a pad, a light and
+  // the start point are points: with nothing else, the spots do). If the min corner of the bounds is on the grid the pivot is the grid point nearest
+  // their middle (a quarter turn about a grid point takes grid points to grid points, so blocks on the grid stay on it), else the middle itself
+  // (an off-grid group is not pulled). Turning again at once (same selection and grid, nothing edited since) keeps the pivot: four turns are the identity.
+  rotateGroup() {
+    const m = this.model, ids = this.selIds.slice(), items = this.selItems(), bodies = items.filter((it) => BODIES.has(it.t));
+    const lo = [Infinity, 0, Infinity], hi = [-Infinity, 0, -Infinity], spots = [];
+    const grow = (x, z) => { lo[0] = Math.min(lo[0], x); hi[0] = Math.max(hi[0], x); lo[2] = Math.min(lo[2], z); hi[2] = Math.max(hi[2], z); };
+    if (bodies.length) for (const it of bodies) { const b = itemAabb(it); grow(b.min[0], b.min[2]); grow(b.max[0], b.max[2]); }
+    else for (const it of items) for (const p of it.t === 'pad' ? [it.pos, it.target] : [it.pos]) { grow(p[0], p[2]); spots.push(p); }
+    const memo = this.turnMemo, onGrid = (v) => Math.abs(v / this.grid - Math.round(v / this.grid)) < 1e-6;
+    const gridded = bodies.length ? onGrid(lo[0]) && onGrid(lo[2]) : spots.every((p) => onGrid(p[0]) && onGrid(p[2]));
+    const mx = (lo[0] + hi[0]) / 2, mz = (lo[2] + hi[2]) / 2;
+    const pivot = memo && memo.selVer === this.selVer && memo.rev === m.rev && memo.grid === this.grid ? memo.pivot : gridded ? [snap(mx, this.grid), snap(mz, this.grid)] : [r2(mx), r2(mz)];   // (0.01 m numbers: the turns stay exact)
+    const turn = (p) => [pivot[0] + (p[2] - pivot[1]), p[1], pivot[1] - (p[0] - pivot[0])];   // (dx, dz) -> (dz, -dx): the way a yaw of +90 turns things in three.js and in itemAabb
+    const ok = m.batch('Forgatás', () => {
+      for (const it of items) {
+        m.rotate(it.id);   // (a pad and a light have no turn of their own)
+        m.update(it.id, it.t === 'pad' ? { pos: turn(it.pos), target: turn(it.target) } : { [it.c ? 'c' : 'pos']: turn(it.c || it.pos) });
+      }
+    }, { sel: () => [ids, ids] });
+    if (ok) this.turnMemo = { selVer: this.selVer, rev: m.rev, grid: this.grid, pivot };
+  }
+  // copies one step along the axis the camera looks along, after the last selected item in the list, in the original order; the start point and
+  // the finish are not copied; all or nothing; the copies become the selection
+  duplicateGroup() {
+    const m = this.model, items = this.selItems().filter((it) => it.id !== 'start' && it.t !== 'finish').sort((a, b) => m.indexOf(a.id) - m.indexOf(b.id));
+    if (!items.length) return;
+    if (m.doc.items.length + items.length > LIM.items) {
+      this.panel.status(`A másolatok nem férnek el: ${items.length} új elem kellene, de a ${LIM.items} elemes határig csak ${LIM.items - m.doc.items.length} fér még.`, 'bad', 5000);
+      return;
+    }
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const it of items) { const b = itemAabb(it); for (let a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], b.min[a]); hi[a] = Math.max(hi[a], b.max[a]); } }
+    const { fwd } = this.camAxes(), ax = fwd.findIndex((v) => v !== 0), off = [0, 0, 0];
+    off[ax] = fwd[ax] * Math.max(this.grid, snap(hi[ax] - lo[ax], this.grid));
+    const before = this.selIds.slice(), made = [], last = Math.max(...items.map((it) => m.indexOf(it.id)));
+    const ok = m.batch('Másolás', () => {
+      for (const it of items) { const id = m.duplicate(it.id, off, { index: last + 1 + made.length }); if (id == null) return false; made.push(id); }
+    }, { sel: () => [before, made] });
+    if (ok) this.setSel(made);
+  }
+  // everything selected but the start point
+  deleteGroup() {
+    const m = this.model, ids = this.selIds.filter((id) => id !== 'start'), before = this.selIds.slice();
+    if (!ids.length) return;
+    m.batch('Elemek törlése', () => { for (const id of ids) m.remove(id); }, { sel: () => [before, before.filter((id) => id === 'start')] });
+    this.setSel(before.filter((id) => id === 'start'));
+  }
+
   undo() { this.afterHistory(this.model.undo(), 'Visszavonva', 'Nincs mit visszavonni.'); }
   redo() { this.afterHistory(this.model.redo(), 'Újra', 'Nincs mit újra csinálni.'); }
   afterHistory(r, ok, none) {
     if (!r) { this.panel.status(none, 'warn', 1500); return; }
     this.panel.status(`${ok}: ${r.label}`, 'info', 1800);
-    if (this.sel && !this.model.find(this.sel)) this.select(null);
-    if (!this.sel && r.ids.length && this.model.find(r.ids[0])) this.select(r.ids[0]);
+    if (r.sel) this.setSel(r.sel);   // (a group operation brings its selection back)
+    else {
+      this.pruneSel();
+      if (!this.sel && r.ids.length && this.model.find(r.ids[0])) this.select(r.ids[0]);
+    }
     this.panel.setSelection();
   }
 
@@ -731,7 +976,8 @@ export class Editor {
       this.testing = true;
       this.endLookForTest(); this.drag = null; this.keys.clear();
       this.root.hidden = true;
-      document.body.classList.remove('editing', 'ed-look', 'ed-drag');
+      this.panel.setMarquee(null);
+      document.body.classList.remove('editing', 'ed-look', 'ed-drag', 'ed-handle');
       this.gizmos.setVisible(false);
       this.host.beginTest({ from, pose });
       return true;
@@ -776,7 +1022,7 @@ export class Editor {
   snapshot() {
     const m = this.model, d = m && m.doc, c = this.cam, w = this.world;
     return {
-      active: this.active, ready: this.ready, testing: this.testing, tool: this.tool, sel: this.sel, rev: m ? m.rev : null, builtRev: this.builtRev, building: !!this.building,
+      active: this.active, ready: this.ready, testing: this.testing, tool: this.tool, sel: this.sel, sels: this.selIds.slice(), rev: m ? m.rev : null, builtRev: this.builtRev, building: !!this.building,
       items: d ? d.items.length : 0, cps: m ? m.cpItems().length : 0, finish: !!(m && m.finish), name: d ? d.name : null, theme: d ? d.theme : null,
       grid: this.grid, flySpeed: Math.round(this.flySpeed * 10) / 10, toolYaw: this.toolYaw, padPending: this.padPending ? this.padPending.pos : null,
       cam: { pos: c.pos.map(r2), yawDeg: r2(c.yaw / DEG), pitchDeg: r2(c.pitch / DEG) }, canUndo: !!m && m.history.canUndo, canRedo: !!m && m.history.canRedo,
@@ -805,7 +1051,7 @@ export class Editor {
       remove(id) { const ok = deleteMap(ed.app.store, id); ed.forget(id); return ok; },
       doc: () => JSON.parse(JSON.stringify(ed.model && ed.model.doc)),
       // ops: add(itemOrPaletteId, over?) update(id, patch) remove(id) duplicate(id, offset?) rotate(id) reorderCp(id, dir) setStart(pos, yawDeg) setTheme(id)
-      //      setName(name) undo() redo() select(id|null) tool(id) grid(0.5|0.1) toolYaw(deg); async: resolves after the rebuild with { ok, result, rev, rebuildMs, items }
+      //      setName(name) undo() redo() select(id|[ids]|null) selectAll() tool(id) grid(0.5|0.1) toolYaw(deg); async: resolves after the rebuild with { ok, result, rev, rebuildMs, items }
       async exec(op, ...a) {
         need();
         const m = ed.model;
@@ -813,16 +1059,17 @@ export class Editor {
         switch (op) {
           case 'add': r = m.add(typeof a[0] === 'string' ? newItem(a[0], a[1] || {}) : a[0]); break;
           case 'update': r = m.update(a[0], a[1]); break;
-          case 'remove': r = m.remove(a[0]); if (ed.sel === a[0]) ed.select(null); break;
+          case 'remove': r = m.remove(a[0]); ed.pruneSel(); break;
           case 'duplicate': r = m.duplicate(a[0], a[1]); break;
           case 'rotate': r = m.rotate(a[0]); break;
           case 'reorderCp': r = m.reorderCp(a[0], a[1]); break;
           case 'setStart': r = m.setStart(a[0], a[1]); break;
           case 'setTheme': r = m.setTheme(a[0]); break;
           case 'setName': r = m.setName(a[0]); break;
-          case 'undo': r = m.undo(); if (ed.sel && !m.find(ed.sel)) ed.select(null); break;
-          case 'redo': r = m.redo(); if (ed.sel && !m.find(ed.sel)) ed.select(null); break;
-          case 'select': ed.select(a[0] ?? null); r = ed.sel; break;
+          case 'undo': r = m.undo(); ed.pruneSel(); break;
+          case 'redo': r = m.redo(); ed.pruneSel(); break;
+          case 'select': if (Array.isArray(a[0])) { ed.setSel(a[0]); r = ed.selIds.slice(); } else { ed.select(a[0] ?? null); r = ed.sel; } break;
+          case 'selectAll': ed.selectAll(); r = ed.selIds.length; break;
           case 'tool': ed.setTool(a[0]); r = ed.tool; break;
           case 'grid': ed.grid = a[0] === 0.1 ? 0.1 : 0.5; r = ed.grid; break;
           case 'toolYaw': ed.toolYaw = wrap360(Math.round((a[0] || 0) / 90) * 90); r = ed.toolYaw; break;
@@ -835,22 +1082,40 @@ export class Editor {
       // the virtual mouse at normalised device coordinates (-1..1, +y up): -> { hit: { point, normal }, pick: { id, t, point } (select tool), ghost }
       aim(x = 0, y = 0) {
         need();
-        ed.mouse.ndc = [x, y]; ed.mouse.inside = true;
+        ed.setMouseNdc([x, y]);
         ed.computeAim();
         ed.updateGizmos();
         const s = ed.snapshot(), pk = ed.aim && ed.aim.pick;
         return { hit: s.aim && s.aim.hit, pick: pk ? { id: pk.id, t: r2(pk.t), point: pk.point.map(r2) } : null, ghost: s.ghost };
       },
-      // a left click at the aim: places (tool) or selects; -> { id, sel }
-      click() { need(); ed.computeAim(); const id = ed.primaryDown(); ed.primaryUp(); return settle({ id, sel: ed.sel, tool: ed.tool }); },
-      // drag the item under `from` to `to` (ndc pairs): one undo step; -> { id, sel }
-      drag(from, to) {
+      // a left click at the aim: places (tool) or selects; mods = { shift } -> { id, sel, sels, tool }
+      click(mods = {}) { need(); ed.computeAim(); const id = ed.primaryDown(mods); ed.primaryUp(); return settle({ id, sel: ed.sel, sels: ed.selIds.slice(), tool: ed.tool }); },
+      // drag from `from` to `to` (ndc pairs) with the left button: the item under `from` (the whole selection when it is in a group) moves, a resize arrow
+      // resizes, empty space makes a selection rectangle; one undo step; -> { id, sel, sels }
+      drag(from, to, mods = {}) {
         need();
-        ed.mouse.ndc = from; ed.mouse.inside = true; ed.computeAim();
-        const id = ed.primaryDown();
-        if (id != null && ed.drag) { ed.dragMove(to); }
+        ed.setMouseNdc(from); ed.computeAim();
+        const id = ed.primaryDown(mods);
+        if (ed.drag) ed.dragMove(to);
         ed.primaryUp();
-        return settle({ id, sel: ed.sel });
+        return settle({ id, sel: ed.sel, sels: ed.selIds.slice() });
+      },
+      // the selection rectangle from `a` to `b` (ndc pairs), also over items; mods = { shift } adds to the selection; -> { sel, sels }
+      boxSelect(a, b, mods = {}) {
+        need();
+        ed.setMouseNdc(a); ed.beginBox(!!mods.shift);
+        ed.dragMove(b);
+        ed.primaryUp();
+        return settle({ sel: ed.sel, sels: ed.selIds.slice() });
+      },
+      // the resize arrows of the one selected item: [{ axis, dir, kind, ndc }] (ndc: the middle of the arrow on the screen; null: behind the camera)
+      handles() {
+        need();
+        const g = ed.app.gfx, it = ed.selIds.length === 1 ? ed.model.find(ed.sel) : null;
+        return handlesFor(it).map((h) => {
+          const s = handleSeg(h, ed.cam, g.camera.fov), n = worldToNdc(ed.cam, [0, 1, 2].map((a) => (s.base[a] + s.tip[a]) / 2), g.camera.fov, g.aspect);
+          return { axis: h.axis, dir: h.dir, kind: h.kind, ndc: n ? [n[0], n[1]] : null };
+        });
       },
       // a key press, e.g. key('KeyR'), key('KeyZ', { ctrlKey: true }), key('ArrowUp', { shiftKey: true }); -> whether the editor used it
       key(code, mods = {}) { need(); const used = ed.handleKey({ code, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, preventDefault() {}, ...mods }); return settle({ used, ...ed.snapshot() }); },
