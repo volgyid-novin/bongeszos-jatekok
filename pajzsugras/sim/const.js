@@ -1,7 +1,7 @@
 // All tuning of the PAJZSUGRÁS simulation, in one place. Y up, metres, seconds; yaw/pitch in radians inside the sim.
 // Changing a number here (or the movement/collision code) changes the physics: bump SIM_VER. SIM_VER is part of the
 // map hash, so stored global times for the old physics disappear instead of being compared with the new ones.
-export const SIM_VER = 4;   // 4: the shield gun follows the UT2004 rules (a 7.8 .. 12 m/s push over a 0.4 .. 2.5 s hold, a ray from the body centre, a lift on the ground, a halved push above 7.6 m/s, a 0.6 s refire time)
+export const SIM_VER = 5;   // 5: the double jump is once per airtime for good (a wall dodge no longer gives a used one back); the shield charges twice as fast (full at 1.25 s, a tap up to 0.2 s); 4: the UT2004 shield rules
 
 export const TICK = 120;            // fixed simulation rate (Hz)
 export const DT = 1 / TICK;
@@ -14,7 +14,7 @@ export const FRICTION = 8;          // ground friction (Q3 style), also the blee
 export const STOP = 2.5;            // Q3 stopspeed: friction never works on less than this (snappy stop)
 export const AIR_CONTROL = 0.35;    // UT air control: in the air the wish direction accelerates at AIR_CONTROL · ACCEL, but never past max(speed, RUN)
 export const JUMP_V = 6.8;          // ground jump, m/s up
-export const DJ_V = 7.3;            // double jump: a Space press in the air SETS vy to this, once per airtime (a wall dodge gives it back); no timing window, but a press while vy is already above it is ignored (it would cut a shield / pad / lift launch short)
+export const DJ_V = 7.3;            // double jump: a Space press in the air SETS vy to this, once per airtime (only a landing, a jump pad or a respawn gives it back); no timing window, but a press while vy is already above it is ignored (it would cut a shield / pad / lift launch short)
 export const DODGE_XY = 13.2;       // dodge speed along the dodge direction
 export const DODGE_Y = 4.2;         // dodge hop
 export const WALL_RANGE = 0.64;     // wall dodge: a wall within this distance of the hull, behind the dodge or to its sides (UT: 32 UU)
@@ -32,8 +32,8 @@ export const OVERCLIP = 1.001;
 export const DIST_EPS = 0.001;      // trace pull-back from surfaces
 
 // shield gun (UT2004 ShieldFire + Pawn.TakeDamage / AddVelocity: the self push is MinForce .. MaxForce · 0.6 / Mass 100 in UU/s, 50 UU = 1 m)
-export const CHARGE_T = 2.5;        // s of holding for a full gun (UT FullyChargedTime): ps.charge = hold / CHARGE_T, which the bar, the viewmodel and the sounds follow
-export const SH_MIN_HOLD = 0.4;     // s: a release at or before this hold pushes with SH_IMIN (UT MinHoldTime); the force grows linearly up to CHARGE_T
+export const CHARGE_T = 1.25;       // s of holding for a full gun (UT FullyChargedTime 2.5, here twice as fast): ps.charge = hold / CHARGE_T, which the bar, the viewmodel and the sounds follow
+export const SH_MIN_HOLD = 0.2;     // s: a release at or before this hold pushes with SH_IMIN (UT MinHoldTime 0.4, twice as fast); the force grows linearly up to CHARGE_T
 export const SH_IMIN = 7.8;         // push of a tap, m/s (65000 · 0.6 / 100 = 390 UU/s)
 export const SH_IMAX = 12.0;        // push of a full charge (100000 · 0.6 / 100 = 600 UU/s)
 export const SH_RANGE = 2.24;       // blast ray length from the body centre (UT ShieldRange 112 UU)

@@ -618,7 +618,7 @@ test('shield: releasing and pressing the button again inside one display frame (
 });
 
 // ================================================================ the sim: a wall dodge with the double jump already spent
-test('wall dodge with the double jump already used: it gives the double jump back - Space after it (at once, later, in the same tick) is one more immediate double jump, never a third, nothing buffered, no automatic one; the other order gives exactly one', () => {
+test('wall dodge with the double jump already used: it does NOT give it back - Space after it (at once, later, in the same tick) does nothing, nothing buffered, no automatic one; the other order (wall dodge first, then Space) gives exactly one', () => {
   const run = (script, ticks = 260) => {
     const w = arena(WALL);
     w.teleport([0, 0, -9.5], 0);
@@ -634,12 +634,12 @@ test('wall dodge with the double jump already used: it gives the double jump bac
     }
     return { ev, dj: ev.filter((e) => e.type === 'dj'), wd: ev.filter((e) => e.type === 'walldodge'), bufSeen, w };
   };
-  // jump, double jump (Space again), wall dodge, then Space at once / 1 / 5 / 20 ticks later and in the same tick: the restored double jump fires on the press tick, and a further press does nothing
+  // jump, double jump (Space again), wall dodge, then Space at once / 1 / 5 / 20 ticks later and in the same tick: the double jump is spent, no press does anything
   const bad = [];
   for (const after of [0, 1, 5, 20]) {
     const r = run((t, c) => { if (t === 0 || t === 10) c.jump = true; if (t === 18) c.dodge = DODGE.B; if (t === 18 + after || t === 18 + after + 3) c.jump = true; });
     if (r.wd.length !== 1) bad.push(`+${after}: ${r.wd.length} wall dodges`);
-    if (r.dj.length !== 2 || r.dj[0].t !== 10 || r.dj[1].t !== 18 + after || r.dj[1].auto) bad.push(`+${after}: double jumps ${JSON.stringify(r.dj)}`);
+    if (r.dj.length !== 1 || r.dj[0].t !== 10 || r.dj[0].auto) bad.push(`+${after}: double jumps ${JSON.stringify(r.dj)}`);
     if (r.bufSeen) bad.push(`+${after}: the double jump was buffered`);
   }
   // the other order: wall dodge first, Space with it: one double jump; more Space presses afterwards: none

@@ -1,7 +1,7 @@
-// The fixed double jump / wall dodge rules (SIM_VER 3) on the player's REAL map (maps/uj-palya.js, the editor export) through the real input path
+// The fixed double jump / wall dodge rules (SIM_VER 5) on the player's REAL map (maps/uj-palya.js, the editor export) through the real input path
 // (input.js -> cmd -> World) at 60 and 144 Hz, plus the properties that must hold whatever the player does: one wall dodge per airtime, at most
-// two double jumps per airtime, no height without limit; and a double jump pressed while a shield jump / a pad is still rising faster than DJ_V.
-// What v2-tests.mjs / third-person-edge-tests.mjs already check on the synthetic wall (Space 0 - 400 ms after a wall dodge, restored double jump,
+// one double jump per airtime, no height without limit; and a double jump pressed while a shield jump / a pad is still rising faster than DJ_V.
+// What v2-tests.mjs / third-person-edge-tests.mjs already check on the synthetic wall (Space 0 - 400 ms after a wall dodge, a spent double jump stays spent,
 // reach, vy 4.2) is not repeated: this file is about the real geometry (the wall at x = -1.5, z -16.5 .. -10.5, y 0 .. 4; the 12 m wall of the second platform; the
 // 2 m corridor with a wall on each side), the frame loop of main.js and the limits.
 // The real map: start platform x -1 .. 5, z -3.5 .. 2.5 (top y = 1); a 7 m gap; the wall to the left of the line x = -0.6 at z -10.5 .. -16.5;
@@ -75,7 +75,7 @@ test('real map, real input at 60 / 144 Hz: jump along the wall, double-tap D (wa
   assert.ok(!bad.length, bad.slice(0, 3).join('; '));
 });
 
-test('real map, real input at 60 / 144 Hz: jump, double jump, wall dodge, Space - a SECOND double jump (at once or 250 ms later); a third Space, and a second double-tap at the wall, add nothing', () => {
+test('real map, real input at 60 / 144 Hz: jump, double jump, wall dodge, Space - NO second double jump (at once or 250 ms later): it is spent for the airtime; a further Space, and a second double-tap at the wall, add nothing', () => {
   const bad = [];
   for (const [hz, delay] of [[60, 0], [144, 250]]) {
     const WD = 1250;
@@ -83,9 +83,8 @@ test('real map, real input at 60 / 144 Hz: jump, double jump, wall dodge, Space 
       k(WD + delay + 150, 'Space', true), k(WD + delay + 210, 'Space', false), ...TAP_D(WD + delay + 320)];
     const r = loop(ev, { hz, ms: 2800, start: START1 });
     const tag = `${hz} Hz +${delay} ms`, dj = r.of('dj'), wd = r.of('walldodge');
-    if (dj.length !== 2 || dj.some((e) => e.auto)) bad.push(`${tag}: double jumps ${JSON.stringify(dj.map((e) => [e.tick, e.auto]))} (${r.text})`);
-    else if (wd.length !== 1 || !(dj[0].tick < wd[0].tick && wd[0].tick <= dj[1].tick)) bad.push(`${tag}: order ${r.text}`);
-    else if (Math.abs(dj[1].vy - VY_AFTER_DJ) > 1e-6) bad.push(`${tag}: the restored double jump leaves with vy ${dj[1].vy.toFixed(4)}`);
+    if (dj.length !== 1 || dj[0].auto) bad.push(`${tag}: double jumps ${JSON.stringify(dj.map((e) => [e.tick, e.auto]))} (${r.text})`);
+    else if (wd.length !== 1 || !(dj[0].tick < wd[0].tick)) bad.push(`${tag}: order ${r.text}`);
   }
   assert.ok(!bad.length, bad.slice(0, 3).join('; '));
 });
@@ -96,7 +95,7 @@ const T0 = 500;
 const DIAG_LEFT = [k(T0, 'KeyA', true), k(T0 + 40, 'KeyA', false), k(T0 + 80, 'KeyA', true), k(T0 + 82, 'Space', true), k(T0 + 90, 'Space', false), k(T0 + 220, 'KeyA', false)];
 const TAP_S = (t) => [k(t - 70, 'KeyS', true), k(t - 40, 'KeyS', false), k(t, 'KeyS', true), k(t + 60, 'KeyS', false)];
 
-test('real map, real input at 60 / 144 Hz: diagonal jump, then a wall dodge before the apex (drops the buffered double jump, the next Space is an immediate one) or after the automatic double jump (restores it: a second one)', () => {
+test('real map, real input at 60 / 144 Hz: diagonal jump, then a wall dodge before the apex (drops the buffered double jump, the next Space is an immediate one) or after the automatic double jump (spent for the airtime: the Space after it does nothing)', () => {
   const bad = [];
   for (const [hz, name, wdAt, delay] of [[60, 'before the apex', 100, 120], [144, 'after the automatic double jump', 330, 0]]) {
     const ev = [...DIAG_LEFT, ...TAP_S(T0 + wdAt), k(T0 + wdAt + delay, 'Space', true), k(T0 + wdAt + delay + 50, 'Space', false), k(T0 + wdAt + delay + 200, 'Space', true), k(T0 + wdAt + delay + 250, 'Space', false)];
@@ -106,8 +105,8 @@ test('real map, real input at 60 / 144 Hz: diagonal jump, then a wall dodge befo
     const manual = dj.filter((e) => !e.auto), auto = dj.filter((e) => e.auto);
     if (dodge.length !== 1 || wd.length !== 1) { bad.push(`${tag}: ${dodge.length} dodges, ${wd.length} wall dodges (${r.text})`); continue; }
     if (name === 'before the apex' && !(auto.length === 0 && manual.length === 1 && manual[0].tick > wd[0].tick)) bad.push(`${tag}: ${r.text}`);
-    if (name !== 'before the apex' && !(auto.length === 1 && manual.length === 1 && auto[0].tick < wd[0].tick && manual[0].tick >= wd[0].tick)) bad.push(`${tag}: ${r.text}`);
-    if (dj.length > 2) bad.push(`${tag}: ${dj.length} double jumps`);
+    if (name !== 'before the apex' && !(auto.length === 1 && manual.length === 0 && auto[0].tick < wd[0].tick)) bad.push(`${tag}: ${r.text}`);
+    if (dj.length > 1) bad.push(`${tag}: ${dj.length} double jumps`);
   }
   assert.ok(!bad.length, bad.slice(0, 3).join('; '));
 });
@@ -136,7 +135,7 @@ function stats(w, drive, n, init = {}) {
 const tallWall = () => new World(testArena((b) => { b.box([-10, 0, -6], [10, 80, -5], { mat: 'wall' }); }).build());
 const chimney = () => new World(testArena((b) => { b.box([-3, 0, -30], [-0.7, 80, 30], { mat: 'wall' }); b.box([0.7, 0, -30], [3, 80, 30], { mat: 'wall' }); }).build());
 
-test('limits: a player who tries everything against a tall wall, between two walls 1.4 m apart, against the real 12 m wall and in the real 2 m corridor - at most one wall dodge and two double jumps per airtime, and never more than ~4.5 m above the takeoff (no climbing a wall)', () => {
+test('limits: a player who tries everything against a tall wall, between two walls 1.4 m apart, against the real 12 m wall and in the real 2 m corridor - at most one wall dodge and one double jump per airtime, and never more than ~4.5 m above the takeoff (no climbing a wall)', () => {
   const spots = [
     ['tall wall', tallWall, [0, 0, -4.5], 0, {}], ['chimney', chimney, [0, 0, 0], 0, {}], ['real 12 m wall', real, [2, 1, -28.0], 0, {}],
     ['real corridor', real, [-9, 12, -23], Math.PI / 2, { fwd: 1, yaw: Math.PI / 2 }],   // the strip at y 12 running into the 2 m corridor: walls on both sides
@@ -161,7 +160,7 @@ test('limits: a player who tries everything against a tall wall, between two wal
     }, 4000, init);
     for (const [kind, s] of [['greedy', greedy], ['spam', spam]]) {
       if (s.max.wd > 1) bad.push(`${name}/${kind}: ${s.max.wd} wall dodges in one airtime`);
-      if (s.max.dj > 2) bad.push(`${name}/${kind}: ${s.max.dj} double jumps in one airtime`);
+      if (s.max.dj > 1) bad.push(`${name}/${kind}: ${s.max.dj} double jumps in one airtime`);
       if (s.max.gain > 4.6) bad.push(`${name}/${kind}: rose ${s.max.gain.toFixed(2)} m in one airtime`);
       bestGain = Math.max(bestGain, s.max.gain); wdAirtimes += s.withWd;
     }

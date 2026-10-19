@@ -77,7 +77,7 @@ export function play(w, g, pos, yaw, steps, o = {}) {
   const ps = w.ps, goal = g.goal;
   if (!ps.grounded) return { skipped: 'not on the ground' };
   if (o.deny && inKill(w)) return { skipped: 'in a kill volume' };
-  if (o.charged) ps.charge = 1;   // as if the gun had been held for 2.5 s at the start (saves the 300 idle ticks of every wall boost run)
+  if (o.charged) ps.charge = 1;   // as if the gun had been held for 1.25 s at the start (saves the 150 idle ticks of every wall boost run)
   w.takeEvents();
   const bot = new Bot(w, steps, { seed: o.seed ?? 1, jitter: o.jitter });
   const res = { reached: false, died: false, hopeless: false, error: null, closest: Infinity, closestPos: null, land: null, landPos: null, takeoff: null, reach: 0, ticks: 0, ev: null, skipped: null };
@@ -154,7 +154,7 @@ export function buildRun(fam, p, g, ctx) {
       if (p.dj !== undefined) st.dj = p.dj;
       if (p.gap) st.gap = p.gap;   // ticks between the jump and the release (> 0: jump first, < 0: release first): they stack within COMBO_TICKS
       const run = mk(`shield c${n1(p.charge)}${p.pre ? ' pre' : ''} p${n1(p.pitch)}${djName(p.dj)}${p.gap ? ' gap' + p.gap : ''}${p.steer ? ' steer' + n1(p.steer) : ''}${p.aim === 'run' ? ' run' : ''}${p.lip === 'hull' ? ' hull' : ''}${p.lead !== undefined && p.lead !== LEAD ? ' lead' + n1(p.lead) : ''}`, [R.shieldJump(st)], ['blast'], p.dj !== undefined ? ['dj'] : undefined);
-      return p.pre ? { ...run, charged: true } : run;   // pre: the gun was charged standing first (a full gun takes 2.5 s: a short lane cannot charge it while running)
+      return p.pre ? { ...run, charged: true } : run;   // pre: the gun was charged standing first (a full gun takes 1.25 s: a short lane cannot charge it while running)
     }
     case 'wallBoost': {
       // full charge held, jump, release at a wall (aimed back / left / right, pitch -20 / -50) from..s into the flight; or released on the takeoff

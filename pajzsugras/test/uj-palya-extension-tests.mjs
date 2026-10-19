@@ -4,11 +4,11 @@
 //     changes nothing in the document and the document builds;
 //   - the checkpoint flow in a real World: spawns stand on a floor, the order is enforced (a later checkpoint does not count first, the finish
 //     only counts after all seven), R and a fall respawn at the last checkpoint;
-//   - the two hard sections (S4 straight up beside a wall, S5 the corner corridor) are not knife-edge: a human who is a bit off (0.5 m aside,
+//   - the three shield sections (S2 a standing shield jump across, S4 straight up beside a wall, S5 the corner corridor) are not knife-edge: a human who is a bit off (0.5 m aside,
 //     +-5 degrees, a 0.9 charge, late keys) still gets through at least some of the time; and their "no single technique" deny search also holds with
 //     lanes (+-2 m) from other starting points (margin 0.6 m on S4, the gates' own; a wider 0.8 m on S5);
 //   - BUG cases (they assert the wanted behaviour and FAIL until the map is fixed);
-//   - the user's own 11 m climb (platform 2 -> the strip at y 12) is possible: shield jump + double jump + a SECOND blast at the wall + wall dodge + double jump;
+//   - the user's own 11 m climb (platform 2 -> the strip at y 12) is possible: shield jump + double jump + a SECOND blast at the wall + wall dodge (the double jump after it is gone since SIM_VER 5);
 //   - the editor copy in the git-ignored local-maps/ (only when the folder is there).
 // Geometry is read from the document by item id (G3 55, W4 57, G4 58, G5 66, cp 47 48 49 51 54 56 59, finish 67), so lifting a platform by a few
 // centimetres does not break these cases.
@@ -154,19 +154,19 @@ test('uj-palya extension: R (manual respawn) at each checkpoint puts the player 
 });
 
 // ---------------------------------------------------------------- the hard sections with a human who is a bit off
-// S4: cp6 (the platform G3) -> G4, 9 m up: stand against the wall W4 facing the ledge, floor blast straight down + double jump, wall dodge away from the wall, double jump.
+// S4: cp6 (the platform G3) -> G4, 9 m up: stand against the wall W4 facing the ledge, floor blast straight down + double jump, wall dodge away from the wall (a second double jump no longer exists: once per airtime).
 const G3 = item(55), W4 = item(57), G4 = item(58), G5 = item(66);
 const w4Face = W4.c[2] + W4.size[2] / 2;
 const standZ = w4Face + HULL_HX + 0.15;   // 0.15 m off the wall: where the bot stands
 const s4Steps = ({ x = G3.c[0], z = standZ, yaw = 180, pitch = -89, charge = 1, gap = 0, steer = 5, dj = true } = {}) => [
   R.run(x, z, { tol: 0.1, stop: true }),
-  R.shieldJump({ charge, yaw, pitch, gap, to: [G4.c[0], topOf(G4), G4.c[2] - 2], steer, air: dj ? [R.doubleJump('apex'), R.wallDodge(180, { at: 'apex' }), R.doubleJump('apex')] : [] }),
+  R.shieldJump({ charge, yaw, pitch, gap, to: [G4.c[0], topOf(G4), G4.c[2] - 2], steer, air: dj ? [R.doubleJump('apex'), R.wallDodge(180, { at: 'apex' })] : [] }),
 ];
-// S5: cp7 (G4) -> G5: a running shield jump (the gun charged standing first, released at the lip) down the corridor, wall dodge sideways at the wall F, double jump through the opening.
+// S5: cp7 (G4) -> G5: a running shield jump (the gun charged standing first, released at the lip) down the corridor, wall dodge sideways at the wall F, the (still unused) double jump through the opening.
 const s5Steps = ({ x = G4.c[0], pitch = -50, charge = 1, lead, gap = 0 } = {}) => [
   R.run(x, G4.c[2] - G4.size[2] / 2 + 0.5, { tol: 0.3 }),
-  R.charge(true, { to: 1 }),   // (a full gun takes 2.5 s: charged standing, then run)
-  R.shieldJump({ push: [x, 250], run: [x, 250], pitch, charge, gap, lead, to: [G4.c[0], topOf(G5), G5.c[2] + 2], edge: true, air: [R.doubleJump('apex'), R.wallDodge(-90, { at: 'wall' }), R.doubleJump('apex')] }),
+  R.charge(true, { to: 1 }),   // (a full gun takes 1.25 s: charged standing, then run)
+  R.shieldJump({ push: [x, 250], run: [x, 250], pitch, charge, gap, lead, to: [G4.c[0], topOf(G5), G5.c[2] + 2], edge: true, air: [R.wallDodge(-90, { at: 'wall' }), R.doubleJump('apex')] }),
 ];
 
 function tries(map, startCp, steps, goalId, jitter, seeds = [1, 2, 3]) {
@@ -175,6 +175,28 @@ function tries(map, startCp, steps, goalId, jitter, seeds = [1, 2, 3]) {
   for (const seed of seeds) if (play(w, g, c.spawn, c.yaw, steps, { jitter, seed }).reached) ok++;
   return ok;
 }
+
+// S2: cp4 (P1) -> G2, 11 m across and 4 m up: a standing full shield jump back and down (the push toward G2) + the double jump at the apex (the shield section since SIM_VER 5).
+const P1 = item(50), G2 = item(53);
+const s2Steps = ({ pitch = -70, charge = 1, gap = 0 } = {}) => [R.shieldJump({ push: [-250, P1.c[2]], pitch, charge, gap, to: [G2.c[0], topOf(G2), P1.c[2]], dj: 'apex' })];
+test('S2 (a standing shield jump + double jump, 11 m across and 4 m up) is not knife-edge: stand anywhere along P1 (0.5 m from its ends), pitch -55 / -80, a 0.9 charge, jump and release 3 ticks apart either way, keys 9 ticks late - each variant lands on G2 in at least one of three tries, and most do', () => {
+  const map = buildMap();
+  const w = new World(map), c = map.checkpoints[3], g = { goal: landingGoal(53) };
+  const variants = {
+    'bot spot': [{}, null], 'x -74.5': [{}, -74.5], 'x -80.5': [{}, -80.5], 'x -79': [{}, -79], 'pitch -55': [{ pitch: -55 }, null], 'pitch -80': [{ pitch: -80 }, null],
+    'charge 0.9': [{ charge: 0.9 }, null], 'gap +3': [{ gap: 3 }, null], 'gap -3': [{ gap: -3 }, null], 'keys 9 ticks late': [{}, null, { press: 9, aim: 5 }],
+  };
+  const res = {};
+  let sum = 0;
+  for (const [name, [o, x, jit]] of Object.entries(variants)) {
+    const pos = x === null ? c.spawn : [x, c.spawn[1], c.spawn[2]];
+    res[name] = [1, 2, 3].filter((seed) => play(w, g, pos, c.yaw, s2Steps(o), { jitter: jit || JIT, seed }).reached).length;
+    sum += res[name];
+  }
+  const bad = Object.entries(res).filter(([, k]) => k === 0).map(([n]) => n);
+  assert.deepEqual(bad, [], `no success at all: ${bad.join(', ')} (${JSON.stringify(res)})`);
+  assert.ok(sum >= 0.6 * 3 * Object.keys(variants).length, `only ${sum} of ${3 * Object.keys(variants).length}: ${JSON.stringify(res)}`);
+});
 
 test('S4 (straight up, 9 m) is not knife-edge: stand 0.5 m aside, +-5 degrees, a pitch of -80, a 0.95 charge (released a hair early), standing 0.45 m further from the wall - each variant still gets onto the ledge in at least one of three sloppy tries, and most do', () => {
   const map = buildMap();
@@ -253,7 +275,7 @@ test('S4 (UT shield rules): a single shield jump + double jump (release and jump
 
 // ---------------------------------------------------------------- the user's own climb (platform 2, top y 1 -> the strip, top y 12)
 // raw keys: a human with the shield gun. 1st blast straight down from the floor, a double jump at the apex, a SECOND blast at the wall (charging again since the gun
-// came back), a wall dodge away from the wall at the next apex, a double jump, W onto the strip. Under the old shield the strip needed the second blast (the best
+// came back), a wall dodge away from the wall at the next apex, W onto the strip (a final double jump is only pressed if one is left: none is, since SIM_VER 5). Under the old shield the strip needed the second blast (the best
 // without it was y 11.5, the strip needs 11.63); with the UT2004 rules (SIM_VER 4) one full shield jump + double jump released 10 ticks before the Space reaches it as well.
 function climb({ gap = 0, pitch2, b, ch2 }) {
   const map = buildMap();
@@ -261,7 +283,7 @@ function climb({ gap = 0, pitch2, b, ch2 }) {
   w.teleport([2, 1, -28.0], 0);
   settle(w, 6);
   let fire = false, dj1 = null, wd = null, blast2 = null, jumped = false, air = false;
-  const REL = 300;   // (a full gun: 2.5 s)
+  const REL = 150;   // (a full gun: 1.25 s)
   let peak = 0;
   for (let t = 0; t < 1500; t++) {
     const cmd = makeCmd();
@@ -293,7 +315,7 @@ function climb({ gap = 0, pitch2, b, ch2 }) {
   return { peak };
 }
 
-test('the user\'s own climb (platform 2 -> the strip at y 12, 11 m beside the wall z -28.5) is possible: shield jump + double jump + a second blast at the wall + wall dodge + double jump lands on the strip', () => {
+test('the user\'s own climb (platform 2 -> the strip at y 12, 11 m beside the wall z -28.5) is possible: shield jump + double jump + a second blast at the wall + wall dodge lands on the strip', () => {
   const rows = [{ pitch2: -30, b: 10, ch2: 30 }, { pitch2: -30, b: 20, ch2: 60 }, { pitch2: -45, b: 30, ch2: 30 }].map((o) => ({ o, r: climb(o) }));
   const onStrip = (r) => r.land && r.land[1] > 11.9 && r.land[0] >= -1 && r.land[0] <= 5 && r.land[2] >= -26 && r.land[2] <= -20;
   assert.ok(rows.every(({ r }) => !r.died), 'died');

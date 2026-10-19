@@ -35,7 +35,7 @@
 //   R.air(actions, { ... })                                      a jump with air actions
 //   R.shieldJump({ yaw, pitch = -89, aimAt, push, charge = 1, gap = 0, run, ... })
 //        stands (or runs toward `run`), aims, charges to `charge` (0 = tap), then jump + release. `charge` is how full the gun is (hold / CHARGE_T, a
-//        full gun takes 2.5 s of holding: charge it standing first, R.charge(true, { to: 1 }), when the run-up is short; 0.16 and less all push like a tap).
+//        full gun takes 1.25 s of holding: charge it standing first, R.charge(true, { to: 1 }), when the run-up is short; 0.16 and less all push like a tap).
 //        aim: yaw/pitch degrees, or
 //        aimAt [x, y, z], or push [x, z] (aim behind the player so the blast pushes toward that point; pitch default -45).
 //        gap: ticks between the two presses: 0 = same tick, > 0 jump first then release, < 0 release first then jump.

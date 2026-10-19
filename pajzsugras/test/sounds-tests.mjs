@@ -37,13 +37,13 @@ test('sounds: every file is a 24 kHz mono 16-bit PCM WAV with a consistent heade
     assert.equal(buf.readUInt32LE(4), buf.length - 8, f + ': RIFF size');
     assert.equal(buf.readUInt32LE(40), w.samples.length * 2, f + ': data size');
     assert.equal(buf.length, 44 + w.samples.length * 2, f + ': no trailing bytes');
-    assert.ok(w.samples.length / 24000 >= 0.15 && w.samples.length / 24000 <= Math.max(1.25, CHARGE_T), `${f}: ${(w.samples.length / 24000).toFixed(2)} s`);
+    assert.ok(w.samples.length / 24000 >= 0.15 && w.samples.length / 24000 <= 1.25, `${f}: ${(w.samples.length / 24000).toFixed(2)} s`);
   }
 });
 
-test('sounds: the whole set is at most 520 KB', () => {
+test('sounds: the whole set is at most 480 KB', () => {
   const total = wavs().reduce((a, f) => a + statSync(DIR + f).size, 0);
-  assert.ok(total <= 520 * 1000, `${total} bytes`);
+  assert.ok(total <= 480 * 1000, `${total} bytes`);
 });
 
 test('sounds: peaks stay at or below -1 dBFS, no DC, and no click at the start or the end of a one-shot', () => {

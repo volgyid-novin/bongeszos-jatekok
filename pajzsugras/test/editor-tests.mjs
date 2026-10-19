@@ -36,7 +36,7 @@ const stripNext = (doc) => { const d = JSON.parse(JSON.stringify(doc)); delete d
 // A fixed document: its mapHash is pinned (it changes with the builder, the brush maths and SIM_VER on purpose: update it with them). The real
 // built-in map is the player's export (maps/uj-palya.js) and changes whenever it is re-exported, so its hash is not pinned.
 const BUILTIN_HASH = '0123456789abcd';   // a stand-in hash for the personal-best key tests below
-const PINNED_HASH = '1579a965b02cc0';
+const PINNED_HASH = '134e475c76d1a3';
 const PINNED_DOC = { v: 1, id: 'pin', name: 'Pin', theme: 'kikepzes', start: { pos: [0, 1, 0], yaw: 0 },
   items: [{ id: 1, t: 'block', c: [0, 0.5, 0], size: [6, 1, 6], yaw: 0, mat: 'floor' }, { id: 2, t: 'block', c: [0, 2, -6], size: [6, 1, 3], yaw: 90, mat: 'wall' }] };
 test('editor: a built-in map made from a document (builtinDef) keeps its mapHash: the geometry is hashed, the meta is not', () => {

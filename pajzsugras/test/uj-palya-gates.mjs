@@ -4,12 +4,16 @@
 // and the route through all five from the checkpoint 3 to the finish.
 //
 //   S1 diagonal jump                        E -> P1             15 m gap       deny jump dj dodge
-//   S2 jump + double jump + wall dodge + dj P1 -> G2            wall W2        deny jump dj dodge dodgeJump diag wallDodge
+//   S2 standing shield jump + dj           P1 -> G2            11 m, 4 m up   deny jump dj dodge dodgeJump diag wallDodge
 //   S3 running shield jump + double jump   G2 -> G3            24 m gap       deny jump dj dodge dodgeJump diag
-//   S4 shield jump up + dj + wall dodge + dj G3 -> G4          9.25 m up     deny all
+//   S4 shield jump up + dj + wall dodge    G3 -> G4          9.25 m up     deny all
 //   S5 running shield jump + wall dodge + dj G4 -> G5          corner corridor deny all
 //
-// A full gun takes 2.5 s of holding and a run along the 8 m long platform G2 about 0.9 s, so S3 (and S5, on its lane) charge the gun standing, then run.
+// The double jump is once per airtime for good (SIM_VER 5: a wall dodge no longer gives a used one back), so the old chains "jump, dj, wall dodge, dj" lost their last
+// double jump. S4 and S5 do not need it (their solves drop it). S2 was built on it: jump + dj + wall dodge rises only 3.08 m (the best any non-shield chain gets), G2 is
+// 4.0 m up (3.63 m with the airborne step-up), so S2 is a shield section now: a standing full shield jump back and down + the double jump at the apex lands on G2 from
+// anywhere on P1 (the wall W2 is not needed); jump, dj, dodge, dodgeJump, diag and wallDodge still fall short (closest 0.9 m), the shield is the intended technique.
+// A full gun takes 1.25 s of holding and a run along the 8 m long platform G2 about 0.9 s, so S3 (and S5, on its lane) charge the gun standing, then run.
 // S1-S3 teach: the shield jump (the strongest single technique) is left out of their deny lists and may skip them. The proof stands on this
 // exact map: the hash covers the geometry AND the physics version (SIM_VER), so a re-export or a physics change makes the run FAIL (staleReason, counted
 // like any failure, also under --gate=S) until the gates are proved again and PROVED_HASH is set to the new hash. The gates and the route still run then,
@@ -19,7 +23,7 @@ import { World } from '../sim/world.js';
 import { DEG } from '../sim/math.js';
 
 export const MAP_ID = 'uj-palya';
-export const PROVED_HASH = '184503162b99f0';   // the hash of the map these gates were proved on (SIM_VER 4)
+export const PROVED_HASH = '0dbedae8bd65f5';   // the hash of the map these gates were proved on (SIM_VER 5)
 
 const goal = (x0, x1, z0, z1, top) => ({ min: [x0, top - 0.1, z0], max: [x1, top + 2.5, z1] });   // the whole top of a landing platform
 
@@ -33,9 +37,9 @@ const SECTIONS = [
     solve: [R.run(-50, -18.6, { tol: 0.2 }), R.diagJump('L', { to: [-77, 11, -23], approach: 45, edge: true })],
   },
   {
-    name: 'S2 ugrás, dupla ugrás, falról ugrás', combo: 'ugrás + dupla ugrás + kiugrás a falról + dupla ugrás', cp: 3, deny: ['jump', 'dj', 'dodge', 'dodgeJump', 'diag', 'wallDodge'],
+    name: 'S2 pajzsugrás', combo: 'pajzsugrás + dupla ugrás', cp: 3, deny: ['jump', 'dj', 'dodge', 'dodgeJump', 'diag', 'wallDodge'],
     goal: goal(-100, -92, -27, -19, 15),
-    solve: [R.run(-73.5, -26.4, { tol: 0.2 }), R.jump({ to: [-96, 15, -26.4], approach: 90, edge: true, air: [R.doubleJump('apex'), R.wallDodge('F', { at: 'apex' }), R.doubleJump('apex')] })],
+    solve: [R.shieldJump({ push: [-250, -23], pitch: -70, charge: 1, to: [-96, 15, -23], dj: 'apex' })],
   },
   {
     name: 'S3 futó pajzsugrás', combo: 'futó pajzsugrás + dupla ugrás', cp: 4, deny: ['jump', 'dj', 'dodge', 'dodgeJump', 'diag'],
@@ -43,14 +47,14 @@ const SECTIONS = [
     solve: [R.charge(true, { to: 1 }), R.run(-92.5, -23), R.shieldJump({ push: [-250, -23], run: [-250, -23], pitch: -75, charge: 1, to: [-129, 17, -23], edge: true, dj: 'apex' })],
   },
   {
-    name: 'S4 pajzsugrás fel', combo: 'pajzsugrás egyenesen fel + dupla ugrás + kiugrás a falról + dupla ugrás', cp: 5, deny: 'all',
+    name: 'S4 pajzsugrás fel', combo: 'pajzsugrás egyenesen fel + dupla ugrás + kiugrás a falról', cp: 5, deny: 'all',
     goal: goal(-132, -124, -20.5, -7.5, 26.25),
-    solve: [R.run(-128, -26.45, { tol: 0.1, stop: true }), R.shieldJump({ charge: 1, yaw: 180, pitch: -89, to: [-128, 26.25, -16], steer: 5, air: [R.doubleJump('apex'), R.wallDodge(180, { at: 'apex' }), R.doubleJump('apex')] })],
+    solve: [R.run(-128, -26.45, { tol: 0.1, stop: true }), R.shieldJump({ charge: 1, yaw: 180, pitch: -89, to: [-128, 26.25, -16], steer: 5, air: [R.doubleJump('apex'), R.wallDodge(180, { at: 'apex' })] })],
   },
   {
     name: 'S5 sarokfolyosó', combo: 'futó pajzsugrás + kiugrás a falról oldalra + dupla ugrás', cp: 6, deny: 'all',
     goal: goal(-116, -108, 10.5, 14.5, 26.25),
-    solve: [R.run(-128, -20, { tol: 0.3 }), R.charge(true, { to: 1 }), R.shieldJump({ push: [-128, 250], run: [-128, 250], pitch: -50, charge: 1, to: [-128, 26.25, 14.5], edge: true, air: [R.doubleJump('apex'), R.wallDodge(-90, { at: 'wall' }), R.doubleJump('apex')] })],
+    solve: [R.run(-128, -20, { tol: 0.3 }), R.charge(true, { to: 1 }), R.shieldJump({ push: [-128, 250], run: [-128, 250], pitch: -50, charge: 1, to: [-128, 26.25, 14.5], edge: true, air: [R.wallDodge(-90, { at: 'wall' }), R.doubleJump('apex')] })],
   },
 ];
 

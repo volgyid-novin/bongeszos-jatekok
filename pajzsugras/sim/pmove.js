@@ -2,9 +2,10 @@
 // triggers/clock after). Quake 3 slide/step move on exact swept-box traces, UT dodge / double jump / shield gun,
 // UT air control (steering, never speed gain).
 //
-// Fixed rules, no timing windows: the double jump always fires on a Space press in the air (once per airtime) and always sets
-// vy = DJ_V; a successful wall dodge gives the double jump back (djUsed / djBuf cleared: jump -> double jump -> wall dodge -> Space
-// jumps again). Only a press while vy is already above DJ_V is ignored (it would cut a shield / pad / lift launch short), and it does not
+// Fixed rules, no timing windows: the double jump always fires on a Space press in the air (strictly once per airtime: only a landing, a jump pad
+// (padLaunch starts a new airtime: it also gives the wall dodge back) or a respawn gives it back, a wall dodge does not) and always sets vy = DJ_V; a wall dodge that finds the double jump still unused leaves it
+// available as an immediate press (djBuf cleared), a used one stays used (jump -> double jump -> wall dodge -> Space does nothing). Only a
+// press while vy is already above DJ_V is ignored (it would cut a shield / pad / lift launch short), and it does not
 // spend the double jump. A wall dodge (once per airtime, also after a ground dodge / diagonal jump) needs a near-vertical wall within
 // WALL_RANGE of the hull (its full height) behind the dodge direction or beside it; it always sets vy = DODGE_Y, and every dodge SETS
 // the speed along its direction to DODGE_XY (UT PerformDodge; the sideways part is kept).
@@ -19,8 +20,8 @@
 // launch) first clamps the ground speed to RUN. The diagonal jump: a jump and a dodge within DODGE_JUMP_TICKS of each other
 // (either order, or the same tick) give the 13.2 m/s dodge on the dodge's arc, and the double jump fires by itself at the apex.
 // (Next to a wall a quick dodge after the jump is a wall dodge instead. A wall dodge is not part of the diagonal jump and buffers
-// nothing: it clears the buffer and gives the double jump back, so a Space press on the wall-dodge tick or after it is an ordinary,
-// immediate double jump.)
+// nothing: it clears the buffer, so a Space press on the wall-dodge tick or after it is an ordinary, immediate double jump, as long as
+// the double jump is not used up yet.)
 //
 // Velocity while grounded on a mover is RELATIVE to the mover (World carries the position); leaving the ground adds
 // the mover's velocity, landing subtracts it, so a lift jump inherits the lift's speed.
@@ -336,9 +337,9 @@ export function stepPlayer(ps, cmd, cw, emit) {
       if (ps.dodgeCd === 0) { takeoffClamp(ps); doDodge(ps, dir, DODGE_Y); ps.noSnap = NOSNAP_T; emit('dodge', { dir }); dodged = true; }
     } else {
       const n = ps.wallUsed ? null : findWall(ps, cw, dir);   // a wall in reach: a wall dodge (once per airtime), never the conversion
-      if (n) {   // it gives the double jump back and drops a waiting diagonal-jump buffer: the next Space is an immediate double jump
+      if (n) {   // it drops a waiting diagonal-jump buffer (the double jump stays as it is: unused = the next Space is an immediate one, used = gone)
         // (and it closes the jump / shield combo windows: a shield release or a Space within COMBO_TICKS of the takeoff must not lift the fixed vy back up)
-        doDodge(ps, dir, DODGE_Y); ps.dodgeT = -999; ps.wallUsed = true; ps.djUsed = false; ps.djBuf = false; ps.lastJumpT = -999; ps.blastGround = false;
+        doDodge(ps, dir, DODGE_Y); ps.dodgeT = -999; ps.wallUsed = true; ps.djBuf = false; ps.lastJumpT = -999; ps.blastGround = false;
         emit('walldodge', { dir, normal: n });
       }
       else if (ps.t - ps.lastJumpT <= DODGE_JUMP_TICKS && ps.blastFlash < ps.lastJumpT && !ps.dodging && !ps.wallUsed && !ps.djUsed && ps.dodgeCd === 0) {

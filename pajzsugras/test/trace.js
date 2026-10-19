@@ -227,7 +227,7 @@ const wallDodgeWorld = () => {
 };
 test('wall dodge: a shield release within COMBO_TICKS of the jump adds the blast to the fixed wall dodge height, it does not lift it back to JUMP_V first', () => {
   const { w, c } = wallDodgeWorld();
-  c.fire = true; run(w, c, 40); c.pitch = -1.4;   // a charge, aimed at the floor under the feet
+  c.fire = true; run(w, c, 20); c.pitch = -1.4;   // a charge (a tap: under SH_MIN_HOLD), aimed at the floor under the feet
   c.jump = true; w.step(c); c.jump = false; run(w, c, 2);
   c.dodge = DODGE.B; w.step(c); c.dodge = 0;   // away from the wall behind: a wall dodge
   const walled = w.ps.wallUsed, vy0 = w.ps.vel[1];
@@ -237,7 +237,7 @@ test('wall dodge: a shield release within COMBO_TICKS of the jump adds the blast
 });
 test('wall dodge: a Space within COMBO_TICKS of a shield launch from the floor is the plain double jump (DJ_V), not the launch + JUMP_V combo', () => {
   const { w, c } = wallDodgeWorld();
-  c.fire = true; run(w, c, 40); c.pitch = -1.4;
+  c.fire = true; run(w, c, 20); c.pitch = -1.4;
   c.fire = false; w.step(c);   // a shield launch from the floor
   const launched = w.ps.blastGround;
   c.dodge = DODGE.B; w.step(c); c.dodge = 0;
@@ -259,15 +259,15 @@ test('shield: a blast into thin air does nothing; one at the floor launches', ()
 
 // ---- the UT2004 shield gun rules (SIM_VER 4): push by the hold time, the ray from the body centre, the lift on the ground, the halving above 7.6 m/s
 const DOWN = -89 * Math.PI / 180;
-test('shield (UT2004): the push is 7.8 m/s for any hold up to 0.4 s and grows to 12 m/s at 2.5 s: standing straight down it lifts the feet 1.60 m (tap) .. 3.79 m (full)', () => {
+test('shield (UT2004): the push is 7.8 m/s for any hold up to 0.2 s and grows to 12 m/s at 1.25 s: standing straight down it lifts the feet 1.60 m (tap) .. 3.79 m (full)', () => {
   const rise = (hold) => {
     const w = mk(), c = cmdOf({ fire: true, pitch: DOWN });
     run(w, c, hold); c.fire = false;
     let top = 0; run(w, c, 300, () => { top = Math.max(top, w.ps.pos[1]); });
     return top;
   };
-  const [tap, edge, mid, full] = [1, 48, 150, 300].map(rise), g = (m) => (m * m) / (2 * G);   // (150 ticks = 1.25 s: m = 7.8 + 4.2 · 0.85 / 2.1)
-  return { ok: Math.abs(tap - 1.60) < 0.02 && Math.abs(edge - tap) < 0.005 && Math.abs(mid - g(7.8 + (4.2 * 0.85) / 2.1) * Math.sin(DOWN) ** 2) < 0.03 && Math.abs(full - 3.79) < 0.02, detail: `tap ${f(tap, 3)}, 0.4 s ${f(edge, 3)}, 1.25 s ${f(mid, 3)}, full ${f(full, 3)}` };
+  const [tap, edge, mid, full] = [1, 24, 75, 150].map(rise), g = (m) => (m * m) / (2 * G);   // (75 ticks = 0.625 s: m = 7.8 + 4.2 · 0.425 / 1.05)
+  return { ok: Math.abs(tap - 1.60) < 0.02 && Math.abs(edge - tap) < 0.005 && Math.abs(mid - g(7.8 + (4.2 * 0.425) / 1.05) * Math.sin(DOWN) ** 2) < 0.03 && Math.abs(full - 3.79) < 0.02, detail: `tap ${f(tap, 3)}, 0.2 s ${f(edge, 3)}, 0.625 s ${f(mid, 3)}, full ${f(full, 3)}` };
 });
 test('shield (UT2004): the ray is 2.24 m long and starts at the body centre: aimed straight down it hits the floor from the jump apex (feet 1.22 m up) but not from a double jump apex (feet 2.6 m up)', () => {
   const blastAt = (doubleJump) => {
@@ -388,7 +388,7 @@ test('shield (UT2004): the reach is 2.24 m from the body centre: aimed down, fro
   const hit = shot(1.32), miss = shot(1.40), lock = Math.round(SH_LOCK * TICK);
   return { ok: hit.hit === true && hit.dvy > 7 && miss.hit === false && miss.dvy < 0 && Math.abs(miss.n - lock) <= 2 && Math.abs(hit.n - lock) <= 2, detail: `feet 1.32: hit ${hit.hit}, dvy ${f(hit.dvy, 2)}; feet 1.40: hit ${miss.hit}, dvy ${f(miss.dvy, 2)}; a held button charges ${miss.n} ticks after the miss (${hit.n} after the hit), lock ${lock}` };
 });
-test('shield (UT2004): ps.charge is hold / 2.5 s: below 1 at 299 ticks, 1 (within rounding) at 300, never above 1; a 5 s hold pushes exactly like 2.5 s and the blast event reports at most 1', () => {
+test('shield (UT2004): ps.charge is hold / 1.25 s: 0.5 at 75 ticks, below 1 at 149, 1 (within rounding) at 150, never above 1; a 5 s hold pushes exactly like 1.25 s and the blast event reports at most 1', () => {
   const hold = (ticks) => {
     const w = mk(), c = cmdOf({ fire: true, pitch: DOWN });
     const at = {}; let max = 0;
@@ -396,9 +396,9 @@ test('shield (UT2004): ps.charge is hold / 2.5 s: below 1 at 299 ticks, 1 (withi
     c.fire = false; w.step(c);
     return { at, max, vy: w.ps.vel[1], ev: w.takeEvents().find((e) => e.type === 'blast') };
   };
-  const a = hold(300), b = hold(600);
-  const ok = a.at[150] > 0.5 - 1e-9 && a.at[150] < 0.5 + 1e-9 && a.at[299] < 1 - 1e-3 && a.at[299] > 0.99 && 1 - a.at[300] < 1e-9 && b.max <= 1 && Math.abs(a.vy - b.vy) < 1e-9 && a.ev.charge <= 1 && b.ev.charge <= 1 && b.ev.hit;
-  return { ok, detail: `charge at 150 / 299 / 300 ticks: ${f(a.at[150], 6)} / ${f(a.at[299], 6)} / ${a.at[300]}; max over 600 ticks ${b.max}; vy after the blast ${f(a.vy, 4)} (2.5 s) vs ${f(b.vy, 4)} (5 s)` };
+  const a = hold(150), b = hold(600);
+  const ok = a.at[75] > 0.5 - 1e-9 && a.at[75] < 0.5 + 1e-9 && a.at[149] < 1 - 1e-3 && a.at[149] > 0.99 && 1 - a.at[150] < 1e-9 && b.max <= 1 && Math.abs(a.vy - b.vy) < 1e-9 && a.ev.charge <= 1 && b.ev.charge <= 1 && b.ev.hit;
+  return { ok, detail: `charge at 75 / 149 / 150 ticks: ${f(a.at[75], 6)} / ${f(a.at[149], 6)} / ${a.at[150]}; max over 600 ticks ${b.max}; vy after the blast ${f(a.vy, 4)} (1.25 s) vs ${f(b.vy, 4)} (5 s)` };
 });
 test('shield (UT2004): the ground lift replaces a downward push: standing and aimed straight up at a low ceiling the player is thrown UP 0.4 of the push, in the air the same shot pushes down the whole 7.8 m/s', () => {
   const up = Math.PI / 2;   // (the sim clamps the pitch to 89 degrees)

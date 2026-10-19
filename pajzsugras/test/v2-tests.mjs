@@ -2,7 +2,7 @@
 // blast, a buffered double jump that a wall boost postpones and a wall dodge drops, djBuf cleared by respawn / restart, air control and VMAX bounds,
 // World reuse (the gate checker restarts one World for ~1100 runs) is a full reset, the real input path (input.js -> cmd -> World) of the
 // diagonal jump in all three orders, the fixed double jump (Space 0 - 400 ms after a wall dodge is always an immediate double jump with vy = DJ_V,
-// a wall dodge gives it back, a press while rising faster than DJ_V is ignored), the wall dodge's reach and fixed height, the 60 Hz frame path of
+// a wall dodge does not give a used one back, a press while rising faster than DJ_V is ignored), the wall dodge's reach and fixed height, the 60 Hz frame path of
 // Space (a release and a new press inside one frame are two presses), and a check of the texts. What test/trace.js and test/probes.js already check
 // (same-tick / jump-first / dodge-first / window / cooldown / air-control random input / held Space) is not repeated here.
 // Each case returns { name, ok, detail } (the shape of test/trace.js); runV2Tests() runs them all.
@@ -152,7 +152,7 @@ test('jump-first conversion is refused after a blast since the jump (a hit shiel
   return { ok: a.ok && b.ok, detail: `jump, release 2 ticks later, dodge: [${a.ok ? 'refused' : 'FAILED: ' + a.ev + ' speed ' + f(a.speed)}] (blast hit ${a.hit}); jump + release same tick, dodge: [${b.ok ? 'refused' : 'FAILED: ' + b.ev + ' speed ' + f(b.speed)}] (blast hit ${b.hit})` };
 });
 
-test('a buffered double jump survives a wall boost before the apex (postponed to the new apex, fired exactly once); a wall dodge drops the buffer and gives the double jump back (no automatic one, the next Space is an immediate double jump)', () => {
+test('a buffered double jump survives a wall boost before the apex (postponed to the new apex, fired exactly once); a wall dodge drops the buffer and leaves the unused double jump as an immediate press (no automatic one, the next Space is an immediate double jump)', () => {
   const wall = (b) => b.box([-40, 0, -12], [40, 40, -10], { mat: 'wall' });
   const go = (script) => {
     const w = mk(wall, [0, 0, -9.5], 0);
@@ -222,15 +222,19 @@ test('wall dodge: Space on the wall-dodge tick or 1 - 48 ticks (0 - 400 ms) afte
   return { ok: !bad.length, detail: bad.length ? bad.slice(0, 5).join('; ') : `${n} press delays from 0 to 48 ticks: one immediate double jump each, vy ${f(VY_AFTER_DJ, 3)} after the press tick` };
 });
 
-test('wall dodge restores the double jump: jump -> double jump -> wall dodge -> Space is a second double jump (at once, later, falling), and still only one more; a dodge without a wall restores nothing', () => {
+test('wall dodge does NOT restore a used double jump: jump -> double jump -> wall dodge -> Space does nothing (at once, later, falling), the double jump stays spent; a dodge without a wall changes nothing either', () => {
   const bad = [];
   for (const d of [0, 1, 10, 30, 48]) {
     const r = wallHop({ preDj: 4, delay: d });
-    if (r.dj.length !== 2 || r.dj[0].k !== 4 || r.dj[1].k !== r.K1 + d || r.dj.some((e) => e.auto)) bad.push(`+${d}: ${JSON.stringify(r.dj)}`);
-    if (r.dj.length === 2 && Math.abs(r.dj[1].vy - VY_AFTER_DJ) > 1e-6) bad.push(`+${d}: second dj vy ${f(r.dj[1].vy, 3)}`);
-    const three = wallHop({ preDj: 4, delay: [d, d + 2] });   // a third press in the same airtime: nothing
-    if (three.dj.length !== 2) bad.push(`+${d}, +${d + 2}: ${three.dj.length} double jumps`);
+    if (r.dj.length !== 1 || r.dj[0].k !== 4 || r.dj[0].auto) bad.push(`+${d}: ${JSON.stringify(r.dj)}`);
+    if (!r.w.ps.djUsed && r.w.ps.grounded === false) bad.push(`+${d}: djUsed was cleared`);
+    const three = wallHop({ preDj: 4, delay: [d, d + 2] });   // more presses in the same airtime: nothing
+    if (three.dj.length !== 1) bad.push(`+${d}, +${d + 2}: ${three.dj.length} double jumps`);
+    if (r.wd.length !== 1) bad.push(`+${d}: wall dodges ${JSON.stringify(r.wd)}`);
   }
+  // an unused double jump survives the wall dodge (the case above: an immediate press), and a landing gives it back
+  const keep = wallHop({ delay: 5 });
+  if (keep.dj.length !== 1 || keep.dj[0].auto) bad.push('unused double jump after a wall dodge: ' + JSON.stringify(keep.dj));
   // no wall behind the dodge: the dodge in the air does nothing and the spent double jump stays spent
   const w = mk();
   const c = makeCmd();
@@ -240,7 +244,7 @@ test('wall dodge restores the double jump: jump -> double jump -> wall dodge -> 
   const refused = !evs(w).some((e) => e.type === 'walldodge' || e.type === 'dodge') && w.ps.djUsed;
   w.step(cmdOf({ jump: false })); w.step(cmdOf({ jump: true }));
   if (!refused || evs(w).some((e) => e.type === 'dj')) bad.push('without a wall: refused ' + refused);
-  return { ok: !bad.length, detail: bad.length ? bad.join('; ') : 'a second double jump after every wall dodge, never a third; nothing without a wall' };
+  return { ok: !bad.length, detail: bad.length ? bad.join('; ') : 'no second double jump after any wall dodge; an unused one is still an immediate press; nothing without a wall' };
 });
 
 test('double jump while rising faster than DJ_V (right after a shield launch or a pad): the press is ignored and does not spend it; once vy is below DJ_V a press sets vy = DJ_V', () => {
@@ -257,7 +261,7 @@ test('double jump while rising faster than DJ_V (right after a shield launch or 
   return { ok: ignored && dj && !dj.auto && Math.abs(w.ps.vel[1] - VY_AFTER_DJ) < 1e-6, detail: `press at vy 12: ignored ${ignored}; press at vy < 6: dj ${dj ? 'yes' : 'no'}, vy ${f(w.ps.vel[1], 3)}` };
 });
 
-test('wall dodge on top of a diagonal jump: allowed (a wall dodge after a ground dodge), drops the buffered double jump and gives it back; the next Space - at once, later or falling - is one immediate double jump', () => {
+test('wall dodge on top of a diagonal jump: allowed (a wall dodge after a ground dodge), drops the buffered double jump, which stays unused; the next Space - at once, later or falling - is one immediate double jump', () => {
   const base = wallHop({ diag: true, wallDodge: false }), tried = wallHop({ diag: true });
   const sp = [0, 1, 5, 12, 30].map((d) => ({ d, r: wallHop({ diag: true, delay: d }) }));
   const bad = [];
@@ -267,10 +271,111 @@ test('wall dodge on top of a diagonal jump: allowed (a wall dodge after a ground
     if (r.wd.length !== 1 || r.dj.length !== 1 || r.dj[0].auto || r.dj[0].k !== r.K1 + d) bad.push(`wall dodge + Space at +${d}: ${JSON.stringify(r.log)}`);
     if (r.w.ps.djBuf) bad.push(`+${d}: djBuf left over`);
   }
-  // diagonal jump -> a second Space (the double jump now) -> wall dodge -> Space: the restored one
+  // diagonal jump -> a second Space (the double jump now) -> wall dodge -> Space: the double jump is spent, nothing comes
   const twice = wallHop({ diag: true, preDj: 3, delay: 2 });
-  if (twice.dj.length !== 2 || twice.dj[1].auto) bad.push('diagonal jump, immediate dj, wall dodge, Space: ' + JSON.stringify(twice.dj));
+  if (twice.dj.length !== 1 || twice.dj[0].auto) bad.push('diagonal jump, immediate dj, wall dodge, Space: ' + JSON.stringify(twice.dj));
   return { ok: !bad.length, detail: bad.length ? bad.join('; ') : `undisturbed auto dj at ${base.dj[0].k}; a wall dodge at 6 drops it (no dj without Space); Space at +0 / +1 / +5 / +12 / +30: one immediate dj each` };
+});
+
+// ---- the double jump is once per airtime (SIM_VER 5): the paths into the second press that wallHop above does not drive
+// hand-driven airtime: script(k, c) sets the buttons of tick k (jump / dodge / fire are cleared first); the events come back with their tick k
+function driveAir(w, script, ticks, probe) {
+  const c = makeCmd(), log = [];
+  for (let k = 0; k < ticks; k++) {
+    c.jump = false; c.dodge = 0; c.fire = false;
+    script(k, c);
+    w.step(c);
+    for (const e of w.takeEvents()) if (e.type !== 'clockStart') log.push({ k, type: e.type, auto: !!e.auto, hit: e.hit });
+    if (probe) probe(k);
+  }
+  return log;
+}
+const ofType = (log, type) => log.filter((e) => e.type === type);
+
+test('double jump once per airtime, ground dodge chain: ground dodge -> double jump -> wall dodge -> Space (at once, 5 and 30 ticks later, still airborne) does nothing - one double jump in the whole airtime', () => {
+  const w = mk(WALL, [0, 0, -9.5], 0), presses = [16, 21, 46], airborne = [];
+  let usedAtEnd = null;
+  const log = driveAir(w, (k, c) => {
+    if (k === 0) c.dodge = DODGE.R;                       // a plain ground dodge (no jump): the dodge hop
+    if (k === 12 || presses.includes(k)) c.jump = true;   // k 12: the double jump (past the 8 tick diagonal-jump window, so not buffered)
+    if (k === 16) c.dodge = DODGE.B;                      // the wall dodge, away from the wall on the -z side
+  }, 130, (k) => { if (presses.includes(k)) { airborne.push(!w.ps.grounded); usedAtEnd = w.ps.djUsed; } });
+  const dj = ofType(log, 'dj'), bad = [];
+  if (ofType(log, 'dodge').length !== 1 || ofType(log, 'walldodge').length !== 1) bad.push('setup: ' + JSON.stringify(log));
+  if (dj.length !== 1 || dj[0].k !== 12 || dj[0].auto) bad.push('double jumps ' + JSON.stringify(dj));
+  if (!airborne.every(Boolean) || airborne.length !== presses.length) bad.push('a press came on the ground: ' + airborne);
+  if (usedAtEnd !== true) bad.push('djUsed was cleared by the wall dodge');
+  return { ok: !bad.length, detail: bad.length ? bad.join('; ') : 'one double jump (tick 12); the three Space presses after the wall dodge changed nothing' };
+});
+
+test('double jump once per airtime, ground dodge chain with the double jump still unused: ground dodge -> wall dodge -> Space is ONE immediate double jump on the press tick (nothing before it), a later Space does nothing', () => {
+  const w = mk(WALL, [0, 0, -9.5], 0);
+  let buf = false;
+  const log = driveAir(w, (k, c) => {
+    if (k === 0) c.dodge = DODGE.R;
+    if (k === 12) c.dodge = DODGE.B;
+    if (k === 14 || k === 30) c.jump = true;
+  }, 130, (k) => { if (k >= 12 && w.ps.djBuf) buf = true; });
+  const dj = ofType(log, 'dj'), bad = [];
+  if (ofType(log, 'walldodge').length !== 1) bad.push('setup: ' + JSON.stringify(log));
+  if (dj.length !== 1 || dj[0].k !== 14 || dj[0].auto) bad.push('double jumps ' + JSON.stringify(dj));
+  if (buf) bad.push('a double jump was buffered after the wall dodge (it would fire by itself at the apex)');
+  return { ok: !bad.length, detail: bad.length ? bad.join('; ') : 'wall dodge at 12, the only double jump at 14 (the press tick), the press at 30 did nothing, no buffer' };
+});
+
+test('double jump once per airtime, shield blast in mid-air: a blast does not give the double jump back (jump -> double jump -> blast at the wall -> Space: none) and does not spend it either (jump -> blast -> Space: one)', () => {
+  const bad = [];
+  const shot = (k, c) => { if (k === 14) c.fire = true; };   // a tap: charge released on tick 15, aimed horizontally at the wall 0.5 m ahead (yaw 0 = -z)
+  // used: the blast comes after the double jump
+  let w = mk(WALL, [0, 0, -9.5], 0);
+  const a = driveAir(w, (k, c) => { shot(k, c); if (k === 0 || k === 10 || k === 20 || k === 40) c.jump = true; }, 100);
+  if (ofType(a, 'blast').length !== 1 || ofType(a, 'blast')[0].hit !== true) bad.push('setup, no hit blast: ' + JSON.stringify(a));
+  if (ofType(a, 'dj').length !== 1 || ofType(a, 'dj')[0].k !== 10) bad.push('after the double jump: double jumps ' + JSON.stringify(ofType(a, 'dj')));
+  // unused: the blast comes first (a blast outside the 10 tick combo window of the jump), the Space after it is the double jump
+  w = mk(WALL, [0, 0, -9.5], 0);
+  const b = driveAir(w, (k, c) => { shot(k, c); if (k === 0 || k === 40 || k === 60) c.jump = true; }, 100);
+  if (ofType(b, 'blast').length !== 1 || ofType(b, 'dj').length !== 1 || ofType(b, 'dj')[0].k !== 40) bad.push('blast first: ' + JSON.stringify(b));
+  return { ok: !bad.length, detail: bad.length ? bad.join('; ') : 'blast after the double jump: the later Space presses did nothing; blast before it: still exactly one (tick 40)' };
+});
+
+test('double jump once per airtime: a landing gives it back (jump -> double jump -> Space: none -> land -> jump -> double jump -> Space: none = one per airtime), and so does a respawn', () => {
+  const w = mk(null, [0, 0, 0], 0);
+  let grounded2 = null, usedBefore = null;
+  const log = driveAir(w, (k, c) => {
+    if (k === 0 || k === 10 || k === 25 || k === 200 || k === 210 || k === 225) c.jump = true;
+  }, 400, (k) => { if (k === 199) grounded2 = w.ps.grounded; if (k === 30) usedBefore = w.ps.djUsed; });
+  const dj = ofType(log, 'dj'), bad = [];
+  if (ofType(log, 'land').length < 2 || grounded2 !== true) bad.push('setup: the player did not land before tick 200: ' + JSON.stringify(log));
+  if (dj.map((e) => e.k).join() !== '10,210') bad.push('double jumps at ' + dj.map((e) => e.k) + ' (expected 10 and 210)');
+  // a respawn after a used double jump
+  w.teleport([0, 20, 0], 0);   // mid-air
+  w.step(cmdOf({ jump: true }));
+  const spent = w.ps.djUsed;
+  w.respawn();
+  if (usedBefore !== true || spent !== true || w.ps.djUsed !== false || w.ps.wallUsed !== false) bad.push(`djUsed before ${usedBefore}, spent ${spent}, after the respawn ${w.ps.djUsed}`);
+  return { ok: !bad.length, detail: bad.length ? bad.join('; ') : 'double jumps at ticks 10 and 210 only (one per airtime); a respawn clears djUsed' };
+});
+
+test('double jump and a jump pad: a pad launch (padLaunch resets djUsed / wallUsed) starts a new airtime - after jump -> double jump -> pad exactly ONE more double jump comes, and only once vy is below DJ_V (the presses while the pad throws the player up faster are ignored and not spent)', () => {
+  const w = mk((b) => b.pad([0, 3, -4], { target: [0, 0, -40], apex: 10 }), [0, 0, 0], 0);   // a floating pad in the path of the double jump
+  const vyAfter = {};   // vy at the end of tick k = what the press of tick k + 1 meets
+  const log = driveAir(w, (k, c) => {
+    c.fwd = 1;
+    if (k === 0 || k === 5 || (k >= 100 && k % 10 === 0 && k < 300)) c.jump = true;
+  }, 400, (k) => { vyAfter[k] = w.ps.vel[1]; });
+  const pad = ofType(log, 'pad')[0], dj = ofType(log, 'dj'), bad = [];
+  if (!pad || pad.k < 10) bad.push('setup: the pad did not fire in the air after the double jump: ' + JSON.stringify(log));
+  const before = dj.filter((e) => pad && e.k < pad.k), after = dj.filter((e) => pad && e.k > pad.k);
+  if (before.length !== 1 || before[0].k !== 5) bad.push('before the pad: ' + JSON.stringify(dj));
+  if (after.length !== 1) bad.push(`after the pad ${after.length} double jumps (expected exactly 1): ` + JSON.stringify(after));
+  // the accepted press came when the player was no longer rising faster than DJ_V, and it was the FIRST press at that vy (the earlier ones were ignored, not spent)
+  else {
+    if (vyAfter[after[0].k - 1] > DJ_V + 1e-9) bad.push(`the double jump fired at vy ${f(vyAfter[after[0].k - 1], 2)} > DJ_V`);
+    const earlier = [];
+    for (let k = 100; k < after[0].k; k += 10) if (vyAfter[k - 1] <= DJ_V) earlier.push(k);
+    if (earlier.length) bad.push(`presses at ${earlier} met vy <= DJ_V but did not fire`);
+  }
+  return { ok: !bad.length, detail: bad.length ? bad.join('; ') : `double jump at 5, pad at ${pad.k}, one more at ${after[0].k} (the presses from 100 on, while rising faster than DJ_V, were ignored)` };
 });
 
 // the player floats at y = 5 (feet) facing -z with vy `vy`; the wall brush is made by wallFn(gap) with its face `gap` m from the hull; dodge `dir`

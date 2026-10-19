@@ -103,9 +103,9 @@ export const PROBES = [
     steps: [R.jump({ to: FAR, air: [R.wallDodge('F', { at: 0.2 }), R.doubleJump(0.35)] })], expect: { dist: [13.9, 15.1], height: [2.65, 2.95] },
   },
   {
-    id: 'dj-walldodge-dj', label: 'ugrás, dupla ugrás, falról kiugrás, és a visszakapott dupla ugrás',
+    id: 'dj-walldodge-dj', label: 'ugrás, dupla ugrás, falról kiugrás: a második dupla ugrás már nincs meg',
     arena: 'wall', start: [0, 0, -9.5], yaw: 0,
-    steps: [R.jump({ to: FAR, steer: 'act', air: [R.doubleJump(0.05), R.wallDodge('F', { at: 0.25 }), R.doubleJump(0.4)] })], expect: { dist: [14.4, 15.7], height: [3.05, 3.4] },
+    steps: [R.jump({ to: FAR, steer: 'act', air: [R.doubleJump(0.05), R.wallDodge('F', { at: 0.25 }), R.doubleJump(0.4)] })], expect: { dist: [8.7, 9.3], height: [1.75, 1.95] },
   },
   {
     id: 'wallboost', label: 'pajzs falról (wall boost, teljes)',
