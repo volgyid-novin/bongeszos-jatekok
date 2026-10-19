@@ -34,7 +34,9 @@
 //        Sloppy runs also steer 0..0.2 s late (they keep the run-up view and hold W, like a human who has not reacted yet).
 //   R.air(actions, { ... })                                      a jump with air actions
 //   R.shieldJump({ yaw, pitch = -89, aimAt, push, charge = 1, gap = 0, run, ... })
-//        stands (or runs toward `run`), aims, charges to `charge` (0 = tap), then jump + release. aim: yaw/pitch degrees, or
+//        stands (or runs toward `run`), aims, charges to `charge` (0 = tap), then jump + release. `charge` is how full the gun is (hold / CHARGE_T, a
+//        full gun takes 2.5 s of holding: charge it standing first, R.charge(true, { to: 1 }), when the run-up is short; 0.16 and less all push like a tap).
+//        aim: yaw/pitch degrees, or
 //        aimAt [x, y, z], or push [x, z] (aim behind the player so the blast pushes toward that point; pitch default -45).
 //        gap: ticks between the two presses: 0 = same tick, > 0 jump first then release, < 0 release first then jump.
 //        edge: true also works here (run with the gun charged, fire when the ground runs out); approach: yawDeg = run heading
@@ -55,7 +57,7 @@
 // and the release does not wait for the full charge, so a short lane cannot make the run walk off the lip without ever releasing).
 // An air action takes `rel` (seconds after the previous action) as its trigger. Any launch step takes `direct: true`: the air steering is plain
 // "W, looking at `to`" (no landing prediction, so it also brakes / overshoots like a hasty human).
-import { DT, TICK, G, FRICTION, EYE, SH_RANGE, DODGE, DODGE_XY, CHARGE_T, HULL_HX, HULL_H } from './const.js';
+import { DT, TICK, G, FRICTION, EYE, SH_RANGE, DODGE, DODGE_XY, CHARGE_T, HULL_HX, HULL_HY, HULL_H } from './const.js';
 import { DEG, angDiff, yawTo, fwdOf, rightOf, aimOf, mulberry32 } from './math.js';
 import { makeCmd, findWall, dodgeVec, PlayerState, stepPlayer } from './pmove.js';
 import { cycleInfo } from './world.js';
@@ -436,7 +438,7 @@ export class Bot {
       if (at === 'apex') return ps.vel[1] <= 0 && ready();
       if (at === 'wall') return a.dirVec && findWall(ps, w.cw, a.dirVec) && ready();
       if (at === 'hit') {
-        const d = aimOf(aim[0], aim[1]), e = [ps.pos[0], ps.pos[1] + EYE, ps.pos[2]];
+        const d = aimOf(aim[0], aim[1]), e = [ps.pos[0], ps.pos[1] + HULL_HY, ps.pos[2]];   // (the shield ray starts at the body centre)
         return w.cw.traceRay(e, [e[0] + d[0] * SH_RANGE, e[1] + d[1] * SH_RANGE, e[2] + d[2] * SH_RANGE]).fraction < 1 && ready();
       }
       if (typeof at === 'object') return ps.vel[1] < 0 && ps.pos[1] <= at.y && ready();

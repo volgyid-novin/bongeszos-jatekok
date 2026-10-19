@@ -162,9 +162,10 @@ const s4Steps = ({ x = G3.c[0], z = standZ, yaw = 180, pitch = -89, charge = 1, 
   R.run(x, z, { tol: 0.1, stop: true }),
   R.shieldJump({ charge, yaw, pitch, gap, to: [G4.c[0], topOf(G4), G4.c[2] - 2], steer, air: dj ? [R.doubleJump('apex'), R.wallDodge(180, { at: 'apex' }), R.doubleJump('apex')] : [] }),
 ];
-// S5: cp7 (G4) -> G5: a running shield jump (the gun charged, released at the lip) down the corridor, wall dodge sideways at the wall F, double jump through the opening.
+// S5: cp7 (G4) -> G5: a running shield jump (the gun charged standing first, released at the lip) down the corridor, wall dodge sideways at the wall F, double jump through the opening.
 const s5Steps = ({ x = G4.c[0], pitch = -50, charge = 1, lead, gap = 0 } = {}) => [
   R.run(x, G4.c[2] - G4.size[2] / 2 + 0.5, { tol: 0.3 }),
+  R.charge(true, { to: 1 }),   // (a full gun takes 2.5 s: charged standing, then run)
   R.shieldJump({ push: [x, 250], run: [x, 250], pitch, charge, gap, lead, to: [G4.c[0], topOf(G5), G5.c[2] + 2], edge: true, air: [R.doubleJump('apex'), R.wallDodge(-90, { at: 'wall' }), R.doubleJump('apex')] }),
 ];
 
@@ -204,35 +205,35 @@ test('S5 (corner corridor) is not knife-edge: another lane (+-0.5 m), pitch -45 
   assert.ok(sum >= 0.6 * 3 * Object.keys(variants).length, `only ${sum} of ${3 * Object.keys(variants).length}: ${JSON.stringify(res)}`);
 });
 
-// S4 keeps the gates' own margin (0.6 m): since the checker also tries jump / blast gaps of +-10 ticks, its best single (shield, gap -10) ends ~0.64 m off the
-// goal: its feet peak at y 25.66, ~0.6 m below G4's top (26.25); the airborne step-up of 0.37 m would need feet >= 25.88, so it falls 0.22 m short. A wider margin
-// would need G4 so high that the intended combo turns fiddly (Optimus, 2026-10-18).
-test('S4 / S5 "no single technique": the deny-all search (all eight families) with lanes (+-2 m) finds nothing - margin 0.6 m on S4, a wider 0.8 m on S5 - from the checkpoint and from other starting points on the platform', () => {
+// S5 keeps a wider margin (0.8 m) than the gates' own 0.6 m. S4 (SIM_VER 4, the UT2004 shield rules): the strongest single technique, a standing full shield jump,
+// now rises 9.30 m (+ the double jump 10.70 m) against the 9.25 m of G4, so ONE technique lands on the ledge: S4 is expected to FAIL the deny-all search (crossable).
+// That is a fact about the map and the new physics, pinned here; raising G4 (the user's map) would make it a combo again, and this case then has to flip back.
+test('S4 / S5 "no single technique": the deny-all search (all eight families) with lanes (+-2 m) finds nothing on S5 (a wider 0.8 m margin); on S4 it now finds the single full shield jump - from the checkpoint and from other starting points on the platform', () => {
   const map = buildMap();
   const cps = map.checkpoints;
-  const mk = (name, pos, yaw, goalId, solve, margin) => ({ name, combo: '', start: { pos, yaw }, goal: landingGoal(goalId), solve, deny: 'all', spread: 2, margin });
+  const mk = (name, pos, yaw, goalId, solve, margin, crossable = false) => ({ name, combo: '', start: { pos, yaw }, goal: landingGoal(goalId), solve, deny: 'all', spread: 2, margin, crossable });
   const gates = [
-    mk('S4 cp6', cps[5].spawn, cps[5].yaw, 58, s4Steps(), 0.6),
-    mk('S4 by the wall', [G3.c[0] + 2, topOf(G3), standZ], 180, 58, s4Steps(), 0.6),
+    mk('S4 cp6', cps[5].spawn, cps[5].yaw, 58, s4Steps(), 0.6, true),
+    mk('S4 by the wall', [G3.c[0] + 2, topOf(G3), standZ], 180, 58, s4Steps(), 0.6, true),
     mk('S5 cp7', cps[6].spawn, cps[6].yaw, 66, s5Steps(), 0.8),
     mk('S5 back of G4', [G4.c[0] - 1, topOf(G4), G4.c[2] - G4.size[2] / 2 + 0.4], 180, 66, s5Steps(), 0.8),
   ];
   const fails = [];
   for (const g of gates) {
     const r = checkGate(map, g, { nSloppy: 0, sloppy: JIT });
+    if (g.crossable) { if (r.ok || !/shield/.test(r.fail || '')) fails.push(`${g.name}: expected the single shield jump to cross, got ok=${r.ok} ${r.fail}`); continue; }
     if (!r.ok) fails.push(`${g.name}: ${r.fail}`);
     assert.ok(r.denyRuns > 900, `${g.name}: only ${r.denyRuns} deny runs`);
   }
   assert.deepEqual(fails, []);
 });
 
-// ---------------------------------------------------------------- BUG: a single shield jump skips S4
-// The shield and the jump stack when they come within COMBO_TICKS (10) of each other. Releasing first and pressing Space exactly 10 ticks later gives the
-// highest single shield jump: 8.66 m (a gap of 0 gives 7.97). With the double jump the feet reach ~8.7 m above the platform G3 = y 25.66, and the airborne step-up
-// (0.35 m + slack) puts the player on a ledge up to 0.37 m above that. With G4 9.0 m above G3 ONE technique (shield jump + double jump) landed on the ledge's edge,
-// and the gate's deny search did not vary the jump / blast gap, so it did not see it. G4 is now 9.25 m above G3 (feet would need >= 25.88: 0.22 m more than the best
-// single gives) and the checker tries gaps of +-10 ticks itself (test/gates.mjs GAPS); this case pins both.
-test('BUG: S4 - no single shield jump + double jump (release and jump up to 10 ticks apart, any steering time, standing anywhere along G3) lands on the ledge G4', () => {
+// ---------------------------------------------------------------- S4: a single shield jump skips it (since SIM_VER 4)
+// The shield and the jump stack when they come within COMBO_TICKS (10) of each other. With the UT2004 rules a full shield pushes at 12 m/s: a standing jump
+// (release and Space together) rises 9.30 m, +1.40 m with the double jump (10.70 m); releasing 10 ticks before the Space rises higher still. G4 is 9.25 m above
+// G3 (the airborne step-up of 0.37 m means feet >= 25.88 suffice), so ONE technique lands on the ledge. Under the old rules (a 9 m push, 8.66 m at best) this
+// case asserted the opposite. It pins the new fact; raising G4 (the user's map) would flip it back.
+test('S4 (UT shield rules): a single shield jump + double jump (release and jump up to 10 ticks apart, standing anywhere along G3) lands on the ledge G4 - known, G4 is 9.25 m up', () => {
   const map = buildMap();
   const w = new World(map);
   const g = { goal: landingGoal(58) };
@@ -247,19 +248,20 @@ test('BUG: S4 - no single shield jump + double jump (release and jump up to 10 t
     if (r.landPos && r.landPos[1] >= top - 0.1) hits.push(`stand z ${z.toFixed(2)}, release ${-gap} ticks before the jump, steer ${steer.toFixed(2)} s -> lands at ${r.landPos.map((v) => v.toFixed(2))}`);
   }
   assert.ok(n >= 40);
-  assert.deepEqual(hits.slice(0, 3), [], `${hits.length} of ${n} single shield jumps land on G4 (top ${top}): the ledge is within reach of one technique`);
+  assert.ok(hits.length >= 0.8 * n, `only ${hits.length} of ${n} single shield jumps land on G4 (top ${top})`);
 });
 
 // ---------------------------------------------------------------- the user's own climb (platform 2, top y 1 -> the strip, top y 12)
 // raw keys: a human with the shield gun. 1st blast straight down from the floor, a double jump at the apex, a SECOND blast at the wall (charging again since the gun
-// came back), a wall dodge away from the wall at the next apex, a double jump, W onto the strip. Without the second blast the best is y 11.5 (the strip needs 11.63).
+// came back), a wall dodge away from the wall at the next apex, a double jump, W onto the strip. Under the old shield the strip needed the second blast (the best
+// without it was y 11.5, the strip needs 11.63); with the UT2004 rules (SIM_VER 4) one full shield jump + double jump released 10 ticks before the Space reaches it as well.
 function climb({ gap = 0, pitch2, b, ch2 }) {
   const map = buildMap();
   const w = new World(map), ps = w.ps;
   w.teleport([2, 1, -28.0], 0);
   settle(w, 6);
   let fire = false, dj1 = null, wd = null, blast2 = null, jumped = false, air = false;
-  const REL = 150;
+  const REL = 300;   // (a full gun: 2.5 s)
   let peak = 0;
   for (let t = 0; t < 1500; t++) {
     const cmd = makeCmd();
@@ -292,7 +294,7 @@ function climb({ gap = 0, pitch2, b, ch2 }) {
 }
 
 test('the user\'s own climb (platform 2 -> the strip at y 12, 11 m beside the wall z -28.5) is possible: shield jump + double jump + a second blast at the wall + wall dodge + double jump lands on the strip', () => {
-  const rows = [{ pitch2: -60, b: 10, ch2: 36 }, { pitch2: -65, b: 20, ch2: 50 }, { pitch2: -55, b: 15, ch2: 24 }].map((o) => ({ o, r: climb(o) }));
+  const rows = [{ pitch2: -30, b: 10, ch2: 30 }, { pitch2: -30, b: 20, ch2: 60 }, { pitch2: -45, b: 30, ch2: 30 }].map((o) => ({ o, r: climb(o) }));
   const onStrip = (r) => r.land && r.land[1] > 11.9 && r.land[0] >= -1 && r.land[0] <= 5 && r.land[2] >= -26 && r.land[2] <= -20;
   assert.ok(rows.every(({ r }) => !r.died), 'died');
   assert.ok(rows.filter(({ r }) => onStrip(r)).length >= 2, JSON.stringify(rows.map(({ o, r }) => ({ ...o, peak: +r.peak.toFixed(2), land: r.land && r.land.map((v) => +v.toFixed(2)) }))));

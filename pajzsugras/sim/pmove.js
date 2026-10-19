@@ -26,8 +26,8 @@
 // the mover's velocity, landing subtracts it, so a lift jump inherits the lift's speed.
 import {
   DT, G, RUN, ACCEL, FRICTION, STOP, AIR_CONTROL, DODGE_JUMP_TICKS, JUMP_V, DJ_V, DODGE_XY, DODGE_Y, WALL_RANGE, WALL_NY, DODGE_CD,
-  STEP, STEP_SLACK, MIN_WALK_NY, GROUND_D, NOSNAP, VMAX, OVERCLIP, CHARGE_T, SH_IMIN, SH_IMAX, SH_RANGE, SH_LOCK,
-  COMBO_TICKS, HULL_HX, HULL_HY, EYE, PAD_CD, DODGE, FLAG, ticks,
+  STEP, STEP_SLACK, MIN_WALK_NY, GROUND_D, NOSNAP, VMAX, OVERCLIP, CHARGE_T, SH_MIN_HOLD, SH_IMIN, SH_IMAX, SH_RANGE, SH_LIFT, SH_HALVE_VY, SH_LOCK,
+  COMBO_TICKS, HULL_HX, HULL_HY, PAD_CD, DODGE, FLAG, ticks,
 } from './const.js';
 import { clamp, fwdOf, rightOf, aimOf } from './math.js';
 
@@ -200,23 +200,29 @@ function doDodge(ps, dir, vy) {
   ps.dodging = true; ps.dodgeT = ps.t;
 }
 
+// The UT2004 shield gun on a surface: a ray of SH_RANGE from the body centre along the view; a hit pushes the player back along the aim,
+// SH_IMIN .. SH_IMAX over a hold of SH_MIN_HOLD .. CHARGE_T. Order as in UT (TakeDamage, then AddVelocity): the ground lift, the halving check on the
+// current velocity, the add. A jump a few ticks ago counts as the moment of the release (the windows stack in either order): the lift applies and
+// vy is topped up to a full jump, which is what the release-first order gives too.
 function blast(ps, cw, emit) {
   const c = ps.charge;
   ps.charge = 0; ps.charging = false; ps.shieldLock = LOCK_T; ps.blastFlash = ps.t;
   const aim = aimOf(ps.yaw, ps.pitch);
-  const eye = [ps.pos[0], ps.pos[1] + EYE, ps.pos[2]];
-  const tr = cw.traceRay(eye, [eye[0] + aim[0] * SH_RANGE, eye[1] + aim[1] * SH_RANGE, eye[2] + aim[2] * SH_RANGE]);
+  const o = [ps.pos[0], ps.pos[1] + HULL_HY, ps.pos[2]], end = [o[0] + aim[0] * SH_RANGE, o[1] + aim[1] * SH_RANGE, o[2] + aim[2] * SH_RANGE];
+  const tr = cw.traceRay(o, end);
   if (tr.fraction >= 1) {
-    emit('blast', { pos: [eye[0] + aim[0] * SH_RANGE, eye[1] + aim[1] * SH_RANGE, eye[2] + aim[2] * SH_RANGE], normal: null, dir: aim, charge: c, hit: false });
+    emit('blast', { pos: end, normal: null, dir: aim, charge: c, hit: false });
     return;
   }
-  const m = -(SH_IMIN + (SH_IMAX - SH_IMIN) * c);
-  const J = [aim[0] * m, aim[1] * m, aim[2] * m];
+  const m = SH_IMIN + (SH_IMAX - SH_IMIN) * ((clamp(c * CHARGE_T, SH_MIN_HOLD, CHARGE_T) - SH_MIN_HOLD) / (CHARGE_T - SH_MIN_HOLD));
+  const J = [-aim[0] * m, -aim[1] * m, -aim[2] * m];
   const v = ps.vel;
-  // jump and release within the same window stack in either order: a jump a few ticks ago is topped up to full
-  if (J[1] > 0 && ps.t - ps.lastJumpT <= COMBO_TICKS) v[1] = Math.max(v[1], JUMP_V);
-  const fromGround = ps.grounded && J[1] > 0;
+  const stacked = ps.t - ps.lastJumpT <= COMBO_TICKS;
+  if (ps.grounded || stacked) J[1] = Math.max(J[1], SH_LIFT * m);
+  if (stacked) v[1] = Math.max(v[1], JUMP_V);
+  const fromGround = ps.grounded;   // (the lift makes every push from the ground an upward one: it always leaves the ground)
   if (fromGround) { takeoffClamp(ps); launch(ps); ps.noSnap = NOSNAP_T; }
+  if (v[1] > SH_HALVE_VY && J[1] > 0) J[1] *= 0.5;
   v[0] += J[0]; v[1] += J[1]; v[2] += J[2];
   if (fromGround) { ps.blastGround = true; ps.blastT = ps.t; ps.blastVy = v[1]; } else ps.blastGround = false;
   emit('blast', { pos: tr.endpos.slice(), normal: tr.normal.slice(), dir: aim, charge: c, hit: true });
@@ -375,7 +381,7 @@ export function stepPlayer(ps, cmd, cw, emit) {
   }
 
   // shield gun
-  if (ps.shieldLock > 0) { ps.charging = false; ps.charge = 0; }
+  if (ps.shieldLock > 0) { ps.charging = false; ps.charge = 0; }   // (UT: the fire press is refused until NextFireTime = release + FireRate: the hold starts after the lock)
   else if (cmd.fire) {
     if (!ps.charging) { ps.charging = true; emit('shieldCharge', { on: true }); }
     ps.charge = Math.min(1, ps.charge + DT / CHARGE_T);

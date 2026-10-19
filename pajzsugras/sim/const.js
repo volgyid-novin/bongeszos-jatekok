@@ -1,7 +1,7 @@
 // All tuning of the PAJZSUGRÁS simulation, in one place. Y up, metres, seconds; yaw/pitch in radians inside the sim.
 // Changing a number here (or the movement/collision code) changes the physics: bump SIM_VER. SIM_VER is part of the
 // map hash, so stored global times for the old physics disappear instead of being compared with the new ones.
-export const SIM_VER = 3;   // 3: the double jump always sets vy = DJ_V and a wall dodge gives it back; the wall dodge always sets vy = DODGE_Y and reaches further, and closes the jump / shield combo windows
+export const SIM_VER = 4;   // 4: the shield gun follows the UT2004 rules (a 7.8 .. 12 m/s push over a 0.4 .. 2.5 s hold, a ray from the body centre, a lift on the ground, a halved push above 7.6 m/s, a 0.6 s refire time)
 
 export const TICK = 120;            // fixed simulation rate (Hz)
 export const DT = 1 / TICK;
@@ -31,12 +31,15 @@ export const FASTEST_XZ = 30;       // the horizontal speed no run reaches witho
 export const OVERCLIP = 1.001;
 export const DIST_EPS = 0.001;      // trace pull-back from surfaces
 
-// shield gun
-export const CHARGE_T = 1.2;        // s from 0 to 100 %
-export const SH_IMIN = 2.5;         // impulse of a tap, m/s
-export const SH_IMAX = 9.0;         // impulse of a full charge
-export const SH_RANGE = 2.4;        // blast ray length from the eye
-export const SH_LOCK = 0.2;         // s after a blast in which the gun is dead
+// shield gun (UT2004 ShieldFire + Pawn.TakeDamage / AddVelocity: the self push is MinForce .. MaxForce · 0.6 / Mass 100 in UU/s, 50 UU = 1 m)
+export const CHARGE_T = 2.5;        // s of holding for a full gun (UT FullyChargedTime): ps.charge = hold / CHARGE_T, which the bar, the viewmodel and the sounds follow
+export const SH_MIN_HOLD = 0.4;     // s: a release at or before this hold pushes with SH_IMIN (UT MinHoldTime); the force grows linearly up to CHARGE_T
+export const SH_IMIN = 7.8;         // push of a tap, m/s (65000 · 0.6 / 100 = 390 UU/s)
+export const SH_IMAX = 12.0;        // push of a full charge (100000 · 0.6 / 100 = 600 UU/s)
+export const SH_RANGE = 2.24;       // blast ray length from the body centre (UT ShieldRange 112 UU)
+export const SH_LIFT = 0.4;         // on the ground the push's y is at least this part of its length, and any blast makes the player airborne (UT bExtraMomentumZ)
+export const SH_HALVE_VY = 7.6;     // a push upward is halved when vy is already above this (UT Pawn.AddVelocity: 380 UU/s)
+export const SH_LOCK = 0.6;         // s after a blast in which the gun is dead and a held button charges nothing (UT FireRate 0.6: the next shot starts no sooner)
 export const COMBO_TICKS = 10;      // jump and release this close together (either order) stack
 
 // player hull: an upright box, origin at the feet

@@ -9,6 +9,7 @@ import { KEYS, NAMES, renderWav } from '../tools/gen-sounds.mjs';
 import { readWav } from '../tools/sfx/dsp.mjs';
 import { GameAudio } from '../audio.js';
 import { loadUTSounds } from '../ut-local-sounds.js';
+import { CHARGE_T } from '../sim/const.js';
 
 const DIR = fileURLToPath(new URL('../assets/sounds/', import.meta.url));
 const wavs = () => readdirSync(DIR).filter((f) => f.endsWith('.wav')).sort();
@@ -36,13 +37,13 @@ test('sounds: every file is a 24 kHz mono 16-bit PCM WAV with a consistent heade
     assert.equal(buf.readUInt32LE(4), buf.length - 8, f + ': RIFF size');
     assert.equal(buf.readUInt32LE(40), w.samples.length * 2, f + ': data size');
     assert.equal(buf.length, 44 + w.samples.length * 2, f + ': no trailing bytes');
-    assert.ok(w.samples.length / 24000 >= 0.15 && w.samples.length / 24000 <= 1.25, `${f}: ${(w.samples.length / 24000).toFixed(2)} s`);
+    assert.ok(w.samples.length / 24000 >= 0.15 && w.samples.length / 24000 <= Math.max(1.25, CHARGE_T), `${f}: ${(w.samples.length / 24000).toFixed(2)} s`);
   }
 });
 
-test('sounds: the whole set is at most 480 KB', () => {
+test('sounds: the whole set is at most 520 KB', () => {
   const total = wavs().reduce((a, f) => a + statSync(DIR + f).size, 0);
-  assert.ok(total <= 480 * 1000, `${total} bytes`);
+  assert.ok(total <= 520 * 1000, `${total} bytes`);
 });
 
 test('sounds: peaks stay at or below -1 dBFS, no DC, and no click at the start or the end of a one-shot', () => {
@@ -62,7 +63,7 @@ test('sounds: peaks stay at or below -1 dBFS, no DC, and no click at the start o
 test('sounds: the charged loop closes without a step, and the charge rise runs into its first sample', () => {
   const loop = load('charged').samples, rise = load('charge').samples;
   assert.equal(loop.length, 24000, 'one second: 18 tremolo cycles, 110 / 440 / 660 Hz on whole cycles');
-  assert.equal(rise.length, Math.round(1.2 * 24000), 'CHARGE_T long');
+  assert.equal(rise.length, Math.round(CHARGE_T * 24000), 'CHARGE_T long');
   // the second difference (the change of the slope) across the seam must be no bigger than inside the loop; a loop cut a few samples short, or a
   // rise that ends out of phase, has a step of the signal's own size there (about 15 times the average)
   const n = loop.length;
@@ -147,7 +148,7 @@ test('audio: the charge rise and the charged loop are scheduled back to back on 
   audio.setCharge(true, 0);
   assert.equal(sources.length, 2);
   const [rise, loop] = sources, dur = rise.buffer.duration;
-  assert.ok(Math.abs(dur - 1.2) < 1e-9 && !rise.loop);
+  assert.ok(Math.abs(dur - CHARGE_T) < 1e-9 && !rise.loop);
   assert.ok(Math.abs(rise.started[0] - 10.01) < 1e-9 && rise.started[1] === 0, 'the rise starts 10 ms ahead on the clock');
   assert.ok(loop.loop && loop.loopStart === 0 && Math.abs(loop.loopEnd - loop.buffer.duration) < 1e-12 && Math.abs(loop.buffer.duration - 1) < 1e-9);
   assert.ok(Math.abs(loop.started[0] - (10.01 + dur)) < 1e-9, 'the loop starts exactly where the rise ends: ' + loop.started[0]);
@@ -158,8 +159,8 @@ test('audio: the charge rise and the charged loop are scheduled back to back on 
   audio.setCharge(true, 0.5);
   const mid = sources.slice(2);
   assert.equal(mid.length, 2);
-  assert.ok(Math.abs(mid[0].started[1] - 0.6) < 1e-9, 'half charged: the rise starts in the middle');
-  assert.ok(Math.abs(mid[1].started[0] - (10.01 + 0.6)) < 1e-9, 'and the loop follows after the other half');
+  assert.ok(Math.abs(mid[0].started[1] - 0.5 * CHARGE_T) < 1e-9, 'half charged: the rise starts in the middle');
+  assert.ok(Math.abs(mid[1].started[0] - (10.01 + 0.5 * CHARGE_T)) < 1e-9, 'and the loop follows after the other half');
   audio.setCharge(false);
   audio.setCharge(true, 1);
   const full = sources.slice(4);

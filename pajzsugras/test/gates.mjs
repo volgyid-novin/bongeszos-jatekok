@@ -77,7 +77,7 @@ export function play(w, g, pos, yaw, steps, o = {}) {
   const ps = w.ps, goal = g.goal;
   if (!ps.grounded) return { skipped: 'not on the ground' };
   if (o.deny && inKill(w)) return { skipped: 'in a kill volume' };
-  if (o.charged) ps.charge = 1;   // as if the gun had been held for 1.2 s at the start (saves the 144 idle ticks of every wall boost run)
+  if (o.charged) ps.charge = 1;   // as if the gun had been held for 2.5 s at the start (saves the 300 idle ticks of every wall boost run)
   w.takeEvents();
   const bot = new Bot(w, steps, { seed: o.seed ?? 1, jitter: o.jitter });
   const res = { reached: false, died: false, hopeless: false, error: null, closest: Infinity, closestPos: null, land: null, landPos: null, takeoff: null, reach: 0, ticks: 0, ev: null, skipped: null };
@@ -153,7 +153,8 @@ export function buildRun(fam, p, g, ctx) {
       if (p.aim === 'run') st.yaw = t.h + 180; else st.push = gx;
       if (p.dj !== undefined) st.dj = p.dj;
       if (p.gap) st.gap = p.gap;   // ticks between the jump and the release (> 0: jump first, < 0: release first): they stack within COMBO_TICKS
-      return mk(`shield c${n1(p.charge)} p${n1(p.pitch)}${djName(p.dj)}${p.gap ? ' gap' + p.gap : ''}${p.steer ? ' steer' + n1(p.steer) : ''}${p.aim === 'run' ? ' run' : ''}${p.lip === 'hull' ? ' hull' : ''}${p.lead !== undefined && p.lead !== LEAD ? ' lead' + n1(p.lead) : ''}`, [R.shieldJump(st)], ['blast'], p.dj !== undefined ? ['dj'] : undefined);
+      const run = mk(`shield c${n1(p.charge)}${p.pre ? ' pre' : ''} p${n1(p.pitch)}${djName(p.dj)}${p.gap ? ' gap' + p.gap : ''}${p.steer ? ' steer' + n1(p.steer) : ''}${p.aim === 'run' ? ' run' : ''}${p.lip === 'hull' ? ' hull' : ''}${p.lead !== undefined && p.lead !== LEAD ? ' lead' + n1(p.lead) : ''}`, [R.shieldJump(st)], ['blast'], p.dj !== undefined ? ['dj'] : undefined);
+      return p.pre ? { ...run, charged: true } : run;   // pre: the gun was charged standing first (a full gun takes 2.5 s: a short lane cannot charge it while running)
     }
     case 'wallBoost': {
       // full charge held, jump, release at a wall (aimed back / left / right, pitch -20 / -50) from..s into the flight; or released on the takeoff
@@ -238,6 +239,7 @@ export function* runsOf(fam, g, ctx) {
         const [h, off] = k.split(':').map(Number);
         for (const aim of h === 0 ? ['run', 'away'] : ['run']) for (const pitch of [-65, -45]) for (const dj of [undefined, 'apex', 0.9, 1.25]) for (const charge of [0.2, 0.35, 0.5, 0.7, 1]) {
           yield B({ h, off, charge, pitch, dj, steer: 0, aim, lead: LEAD, lip: 'center' });
+          if (charge === 1) yield B({ h, off, charge, pitch, dj, steer: 0, aim, lead: LEAD, lip: 'center', pre: true });
         }
       }
       for (const charge of [0, 0.5, 1]) for (const pitch of [-89, -65, -45, -25]) for (const dj of [undefined, 'apex', 0.9, 1.25]) for (const steer of [0, 0.4]) {

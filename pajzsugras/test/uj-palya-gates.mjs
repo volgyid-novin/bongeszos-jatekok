@@ -9,7 +9,7 @@
 //   S4 shield jump up + dj + wall dodge + dj G3 -> G4          9.25 m up     deny all
 //   S5 running shield jump + wall dodge + dj G4 -> G5          corner corridor deny all
 //
-// The platform G2 is only 8 m long, so S3 holds the gun from the first step on (the charge takes 1.2 s, a run along G2 about 0.9 s).
+// A full gun takes 2.5 s of holding and a run along the 8 m long platform G2 about 0.9 s, so S3 (and S5, on its lane) charge the gun standing, then run.
 // S1-S3 teach: the shield jump (the strongest single technique) is left out of their deny lists and may skip them. The proof stands on this
 // exact map: the hash covers the geometry AND the physics version (SIM_VER), so a re-export or a physics change makes the run FAIL (staleReason, counted
 // like any failure, also under --gate=S) until the gates are proved again and PROVED_HASH is set to the new hash. The gates and the route still run then,
@@ -19,7 +19,7 @@ import { World } from '../sim/world.js';
 import { DEG } from '../sim/math.js';
 
 export const MAP_ID = 'uj-palya';
-export const PROVED_HASH = '115ee6f8364bd4';   // the hash of the map these gates were proved on (SIM_VER 3)
+export const PROVED_HASH = '184503162b99f0';   // the hash of the map these gates were proved on (SIM_VER 4)
 
 const goal = (x0, x1, z0, z1, top) => ({ min: [x0, top - 0.1, z0], max: [x1, top + 2.5, z1] });   // the whole top of a landing platform
 
@@ -40,7 +40,7 @@ const SECTIONS = [
   {
     name: 'S3 futó pajzsugrás', combo: 'futó pajzsugrás + dupla ugrás', cp: 4, deny: ['jump', 'dj', 'dodge', 'dodgeJump', 'diag'],
     goal: goal(-132, -124, -27, -19, 17),
-    solve: [R.charge(true), R.run(-92.5, -23), R.shieldJump({ push: [-250, -23], run: [-250, -23], pitch: -50, charge: 1, to: [-129, 17, -23], edge: true, dj: 'apex' })],
+    solve: [R.charge(true, { to: 1 }), R.run(-92.5, -23), R.shieldJump({ push: [-250, -23], run: [-250, -23], pitch: -75, charge: 1, to: [-129, 17, -23], edge: true, dj: 'apex' })],
   },
   {
     name: 'S4 pajzsugrás fel', combo: 'pajzsugrás egyenesen fel + dupla ugrás + kiugrás a falról + dupla ugrás', cp: 5, deny: 'all',
@@ -50,7 +50,7 @@ const SECTIONS = [
   {
     name: 'S5 sarokfolyosó', combo: 'futó pajzsugrás + kiugrás a falról oldalra + dupla ugrás', cp: 6, deny: 'all',
     goal: goal(-116, -108, 10.5, 14.5, 26.25),
-    solve: [R.run(-128, -20, { tol: 0.3 }), R.shieldJump({ push: [-128, 250], run: [-128, 250], pitch: -50, charge: 1, to: [-128, 26.25, 14.5], edge: true, air: [R.doubleJump('apex'), R.wallDodge(-90, { at: 'wall' }), R.doubleJump('apex')] })],
+    solve: [R.run(-128, -20, { tol: 0.3 }), R.charge(true, { to: 1 }), R.shieldJump({ push: [-128, 250], run: [-128, 250], pitch: -50, charge: 1, to: [-128, 26.25, 14.5], edge: true, air: [R.doubleJump('apex'), R.wallDodge(-90, { at: 'wall' }), R.doubleJump('apex')] })],
   },
 ];
 

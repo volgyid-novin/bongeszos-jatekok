@@ -101,11 +101,11 @@
 //        Measured reaches on flat ground (horizontal takeoff -> landing / peak height above the takeoff; run-up speed 8.8 m/s; the numbers
 //        of the probe table in test/probes.js): jump 6.2 / 1.22; jump + double jump 11.15 / 2.62; dodge 5.7; dodge + double jump 13.9 / 1.87;
 //        DIAGONAL JUMP 16.65 / 1.87 (15.9 m/s; Space 3 ticks before the dodge 16.1, 12 ticks after it 14.4 = no diagonal jump); wall dodge
-//        after a jump 8.3 / 1.44; wall boost 7.1; standing full shield jump 6.57 high (+ double jump 7.97); RUNNING shield jump 21.0 / 4.94
-//        (+ double jump 28.1 / 6.34); diagonal jump + wall dodge forward along a wall 20.5 / 2.25 (the wall dodge sets 13.2 m/s along its direction); diagonal jump + wall boost (wall 0.9 m
-//        beside the flight, full shield held, aimed at the wall, pitch -40, released 0.62 s into the flight) 23.8 / 2.70; dodge jump into a
+//        after a jump 8.3 / 1.44; wall boost 14.8; standing full shield jump 9.30 high (+ double jump 10.70; a tap 5.61 with the Space); RUNNING shield jump 27.8 / 6.73
+//        (+ double jump 35.6 / 8.13); diagonal jump + wall dodge forward along a wall 20.5 / 2.25 (the wall dodge sets 13.2 m/s along its direction); diagonal jump + wall boost (wall 0.9 m
+//        beside the flight, full shield held, aimed at the wall, pitch -40, released 0.62 s into the flight) 27.5 / 3.37; dodge jump into a
 //        wall 10.5 m ahead + wall dodge sideways 9.2 m sideways; running shield jump + double jump into a wall 24 m ahead + wall dodge
-//        sideways 13.7 m sideways (6.35 high); full vertical shield jump at a wall + wall dodge away at the apex + double jump 20.6 / 8.43.
+//        sideways 14.4 m sideways (7.25 high); full vertical shield jump at a wall + wall dodge away at the apex + double jump 22.5 / 11.17.
 //        Design notes (learned the hard way): (a) a dodge keeps the sideways part of the run velocity, so a run-up lane that is angled to the
 //        goal makes even a plain dodge jump toward the goal fast (15 m/s): the diag and dodgeJump families both find it, size lanes with
 //        the checker, not with the table; (b) measure a gap from the corner of the lane's end face that is nearest the goal; (c) a straight

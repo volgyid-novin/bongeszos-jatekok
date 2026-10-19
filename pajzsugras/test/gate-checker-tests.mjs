@@ -28,7 +28,7 @@ const gate = (gap, ledge, deny, solve, margin = 0.6) => ({
 const to = (gap) => [-6, 0, EDGE - gap - 3];
 const jumpSolve = (gap) => [R.run(0, -19, { tol: 0.5 }), R.jump({ to: to(gap), edge: true })];
 const dodgeJumpSolve = (gap) => [R.run(0, -19, { tol: 0.5 }), R.dodgeJump('F', { to: to(gap), edge: true })];
-const shieldSolve = (gap) => [R.shieldJump({ push: [0, -250], pitch: -50, charge: 1, run: [0, -250], to: to(gap), edge: true, dj: 'apex' })];
+const shieldSolve = (gap) => [R.charge(true, { to: 1 }), R.shieldJump({ push: [0, -250], pitch: -50, charge: 1, run: [0, -250], to: to(gap), edge: true, dj: 'apex' })];
 const SLOPPY = { press: 3, aim: 2 };
 const f2 = (v) => (v === null || v === undefined ? '-' : v.toFixed(2));
 

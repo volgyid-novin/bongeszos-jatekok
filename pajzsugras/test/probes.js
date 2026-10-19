@@ -79,14 +79,14 @@ export const PROBES = [
   },
   { id: 'diag-chain', label: 'átlós ugrás, majd ugrás a földetéréskor', steps: [...diag('L', L56), R.jump({ to: AHEAD })], expect: { speed: [0, 8.81] } },
   { id: 'strafe-dead', label: 'strafe ugrás: a régi tökéletes bemenet, 6 ugrás', drive: strafeDriver, expect: { speed: [0, 8.81] } },
-  { id: 'shield-tap', label: 'pajzsugrás, koppintás', steps: [R.shieldJump({ charge: 0, to: AHEAD })], expect: { height: [2.15, 2.45] } },
-  { id: 'shield-half', label: 'pajzsugrás, fél töltés', steps: [R.shieldJump({ charge: 0.5, to: AHEAD })], expect: { height: [3.9, 4.4] } },
-  { id: 'shield-full', label: 'pajzsugrás, teljes töltés', steps: [R.shieldJump({ charge: 1, to: AHEAD })], expect: { height: [6.4, 6.8] } },
-  { id: 'shield-full-dj', label: 'teljes pajzsugrás + dupla ugrás', steps: [R.shieldJump({ charge: 1, to: AHEAD, dj: 'apex' })], expect: { height: [7.8, 8.25] } },
-  { id: 'shield-gap+4', label: 'pajzsugrás: ugrás előbb (+4 tick)', steps: [R.shieldJump({ charge: 1, gap: 4, to: AHEAD })], expect: { height: [6.4, 7.3] } },
-  { id: 'shield-gap-4', label: 'pajzsugrás: lövés előbb (-4 tick)', steps: [R.shieldJump({ charge: 1, gap: -4, to: AHEAD })], expect: { height: [6.4, 7.3] } },
-  { id: 'shield-gap+9', label: 'pajzsugrás: ugrás előbb (+9 tick)', steps: [R.shieldJump({ charge: 1, gap: 9, to: AHEAD })], expect: { height: [6.4, 7.3] } },
-  { id: 'shield-gap-9', label: 'pajzsugrás: lövés előbb (-9 tick)', steps: [R.shieldJump({ charge: 1, gap: -9, to: AHEAD })], expect: { height: [6.4, 7.3] } },
+  { id: 'shield-tap', label: 'pajzsugrás, koppintás', steps: [R.shieldJump({ charge: 0, to: AHEAD })], expect: { height: [5.4, 5.8] } },
+  { id: 'shield-half', label: 'pajzsugrás, fél töltés', steps: [R.shieldJump({ charge: 0.5, to: AHEAD })], expect: { height: [6.8, 7.2] } },
+  { id: 'shield-full', label: 'pajzsugrás, teljes töltés', steps: [R.shieldJump({ charge: 1, to: AHEAD })], expect: { height: [9.1, 9.5] } },
+  { id: 'shield-full-dj', label: 'teljes pajzsugrás + dupla ugrás', steps: [R.shieldJump({ charge: 1, to: AHEAD, dj: 'apex' })], expect: { height: [10.5, 10.9] } },
+  { id: 'shield-gap+4', label: 'pajzsugrás: ugrás előbb (+4 tick)', steps: [R.shieldJump({ charge: 1, gap: 4, to: AHEAD })], expect: { height: [9.1, 10.4] } },
+  { id: 'shield-gap-4', label: 'pajzsugrás: lövés előbb (-4 tick)', steps: [R.shieldJump({ charge: 1, gap: -4, to: AHEAD })], expect: { height: [9.1, 10.4] } },
+  { id: 'shield-gap+9', label: 'pajzsugrás: ugrás előbb (+9 tick)', steps: [R.shieldJump({ charge: 1, gap: 9, to: AHEAD })], expect: { height: [9.1, 10.4] } },
+  { id: 'shield-gap-9', label: 'pajzsugrás: lövés előbb (-9 tick)', steps: [R.shieldJump({ charge: 1, gap: -9, to: AHEAD })], expect: { height: [9.1, 10.4] } },
   {
     id: 'walldodge', label: 'falról kiugrás (ugrás + wall dodge)',
     arena: 'wall', start: [0, 0, -9.5], yaw: 0,
@@ -110,20 +110,20 @@ export const PROBES = [
   {
     id: 'wallboost', label: 'pajzs falról (wall boost, teljes)',
     arena: 'wall', start: [0, 0, -9.5], yaw: 180,
-    steps: [R.charge(true, { to: 1 }), R.air([R.wallBoost({ aimAt: [0, 1.6, -10.5], at: 'hit' })], { to: FAR })], expect: { dist: [6.7, 7.4] },
+    steps: [R.charge(true, { to: 1 }), R.air([R.wallBoost({ aimAt: [0, 1.6, -10.5], at: 'hit' })], { to: FAR })], expect: { dist: [14.4, 15.3] },
   },
   {
     id: 'shield-run', label: 'futó pajzsugrás (futás közben, előre lökve)',
-    steps: [R.run(0, -20), R.shieldJump({ push: [0, -250], pitch: -50, charge: 1, run: [0, -250], to: AHEAD })], expect: { dist: [20.0, 22.1], speed: [13.9, 15.3] },
+    steps: [R.run(0, -20), R.shieldJump({ push: [0, -250], pitch: -50, charge: 1, run: [0, -250], to: AHEAD })], expect: { dist: [27.0, 28.6], speed: [16.0, 17.0] },
   },
   {
     id: 'shield-run-dj', label: 'futó pajzsugrás + dupla ugrás',
-    steps: [R.run(0, -20), R.shieldJump({ push: [0, -250], pitch: -50, charge: 1, run: [0, -250], to: AHEAD, dj: 'apex' })], expect: { dist: [26.7, 29.5] },
+    steps: [R.run(0, -20), R.shieldJump({ push: [0, -250], pitch: -50, charge: 1, run: [0, -250], to: AHEAD, dj: 'apex' })], expect: { dist: [34.7, 36.6] },
   },
   {
     id: 'diag-wallboost', label: 'átlós ugrás + pajzs a falon (0,9 m-re a repüléstől)',
     arena: 'side', start: [-16.43, 0, -8.82], yaw: -56,   // a 20 m lane at -56° (toward the wall) that ends beside the wall, flying along it
-    steps: [R.charge(true, { to: 1 }), R.run(0.15, -20, { tol: 0.2 }), R.diagJump('L', { to: AHEAD, approach: -56, air: [R.wallBoost({ yaw: -90, pitch: -40, at: 0.62 })] })], expect: { height: [2.55, 2.85], dist: [22.6, 25.0] },
+    steps: [R.charge(true, { to: 1 }), R.run(0.15, -20, { tol: 0.2 }), R.diagJump('L', { to: AHEAD, approach: -56, air: [R.wallBoost({ yaw: -90, pitch: -40, at: 0.62 })] })], expect: { height: [3.2, 3.55], dist: [26.7, 28.3] },
   },
   {
     id: 'diag-wd', label: 'átlós ugrás + falról kiugrás előre a fal mentén (a csúcs után; a kiugrás 13,2 m/s-ra állítja a sebességet)',
@@ -136,12 +136,12 @@ export const PROBES = [
   },
   {
     id: 'shield-run-dj-wd-side', label: 'futó pajzsugrás + dupla ugrás a falnak (24 m) + falról kiugrás oldalra',
-    arena: 'front24', start: [0, 0, 20], yaw: 0, steps: [R.run(0, 0, { tol: 0.5 }), R.shieldJump({ push: [0, -250], pitch: -50, charge: 1, run: [0, -250], to: [0, 0, -23.5], air: [R.doubleJump('apex'), R.wallDodge(-90, { at: 'wall' })] })], expect: { height: [6.0, 6.7], lat: [13.0, 14.4] },
+    arena: 'front24', start: [0, 0, 20], yaw: 0, steps: [R.run(0, 0, { tol: 0.5 }), R.shieldJump({ push: [0, -250], pitch: -50, charge: 1, run: [0, -250], to: [0, 0, -23.5], air: [R.doubleJump('apex'), R.wallDodge(-90, { at: 'wall' })] })], expect: { height: [7.05, 7.45], lat: [13.9, 14.9] },
   },
   {
     id: 'shield-wd-dj', label: 'pajzsugrás függőlegesen a falnál + wall dodge a csúcson + dupla ugrás',
     arena: 'wall', start: [0, 0, -9.5], yaw: 0,
-    steps: [R.shieldJump({ pitch: -89, charge: 1, to: FAR, steer: 'act', air: [R.wallDodge('F', { at: 'apex' }), R.doubleJump('apex')] })], expect: { dist: [19.6, 21.6], height: [8.0, 8.85], speed: [12.5, 13.9] },
+    steps: [R.shieldJump({ pitch: -89, charge: 1, to: FAR, steer: 'act', air: [R.wallDodge('F', { at: 'apex' }), R.doubleJump('apex')] })], expect: { dist: [21.9, 23.2], height: [10.9, 11.45], speed: [12.5, 13.9] },
   },
 ];
 

@@ -373,7 +373,7 @@ test('speed bounds: after a real blast launch (> RUN) random input in the air ne
   return { ok: launch > RUN + 3 && n > 40 && worst < 1e-9 && sp <= VMAX + 1e-6 && sp2 <= VMAX + 1e-6, detail: `launch speed ${f(launch)} m/s, ${n} random-input air ticks, worst excess over max(previous, RUN) ${worst.toExponential(1)}; 135 m/s start -> ${f(sp)}; pad at 2500 m -> ${f(sp2)} (VMAX ${VMAX})` };
 });
 
-const SEED_A = 11;
+const SEED_A = 13;   // (a seed whose script holds a diagonal jump with its automatic double jump: the case below needs one; 11 lost it when the shield refire time became 0.6 s)
 test('World reuse (restart + teleport, as the gate checker does for ~1100 runs) is a full reset: a random-input script replays bit-identical on a dirty World', () => {
   const map = course();   // (walls, a tunnel, a checkpoint: the geometry the random script bumps into)
   const script = (seed, n) => {
